@@ -11,6 +11,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.bundled_skill import read_bundled_skill
+from gymrat.config import CONFIG_DEFAULTS
 from gymrat.errors import GymratError
 from tests._ansi import normalize
 from tests._markdown import md_section
@@ -219,6 +220,16 @@ def _unwrapped_section(heading: str) -> str:
             id="background",
         ),
         pytest.param(
+            partial(_paragraph, SKILL_HEADING, "`samples` defaults to"),
+            ("`iterate`", "`compare`", "refuse", "odd"),
+            id="odd-samples",
+        ),
+        pytest.param(
+            partial(_unwrapped_section, "## Keeping iterations cheap"),
+            ("--samples 6", "`probe` defaults to 6", "`detectable_pct` before buying more samples"),
+            id="detectable-change",
+        ),
+        pytest.param(
             partial(_paragraph, "## Syncing main-tree edits", "Under supervise"),
             (
                 "refused",
@@ -237,3 +248,11 @@ def test_read_bundled_skill_when_section_inspected_does_state_its_rule(
 
     missing = [phrase for phrase in phrases if phrase not in text]
     assert missing == []
+
+
+def test_read_bundled_skill_when_default_samples_stated_does_match_the_config_default():
+    skill = normalize(read_bundled_skill())
+
+    stated = re.findall(r"`samples` defaults to `(\d+)`", skill)
+
+    assert stated == [str(CONFIG_DEFAULTS.samples)]
