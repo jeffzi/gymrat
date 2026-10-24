@@ -193,23 +193,25 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     Returns:
         The verdict fields as a flat dict suitable for merging into a row. Every
         field is null when ``verdict`` is ``None``. Otherwise ``noise_pct`` is
-        null for an exact verdict, ``p`` is set only for a permutation verdict,
-        ``band_pct`` repeats ``noise_pct`` for a band verdict and is null for the
-        other methods, and ``reason``, why a no-signal verdict was withheld, is
-        null for an exact verdict and when none was withheld.
+        null for an exact verdict, ``detectable_pct`` is null for an exact
+        verdict and when no figure applies, ``p`` is set only for a permutation
+        verdict, ``band_pct`` repeats ``noise_pct`` for a band verdict and is null
+        for the other methods, and ``reason``, why a no-signal verdict was
+        withheld, is null for an exact verdict and when none was withheld.
     """
     name: str | None = None
     method: str | None = None
     delta: float | None = None
     p: float | None = None
     noise_pct: float | None = None
+    detectable_pct: float | None = None
     band_pct: float | None = None
     reason: WithheldReason | None = None
     if verdict is not None:
         name = verdict.verdict
         method = verdict.method
         delta = verdict.delta
-        p, noise_pct, reason, _detectable_pct = verdict_stats(verdict)
+        p, noise_pct, reason, detectable_pct = verdict_stats(verdict)
         if isinstance(verdict, BandVerdict):
             band_pct = noise_pct
     return {
@@ -217,6 +219,7 @@ def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
         "method": method,
         "delta_pct": delta,
         "noise_pct": noise_pct,
+        "detectable_pct": detectable_pct,
         "p": p,
         "band_pct": band_pct,
         "reason": reason,
@@ -460,6 +463,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
             "method": verdict.method,
             "p": verdict.p,
             "noise_pct": verdict.noise_pct,
+            "detectable_pct": verdict.detectable_pct,
             "reason": verdict.reason,
             "gating": verdict.gating,
             "confirmed": verdict.confirmed,

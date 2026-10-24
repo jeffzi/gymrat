@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -140,6 +141,7 @@ def test_render_json_when_exact_verdict_does_null_statistical_fields():
 
     assert candidate["method"] == "exact"
     assert candidate["noise_pct"] is None
+    assert candidate["detectable_pct"] is None
     assert candidate["p"] is None
     assert candidate["band_pct"] is None
     assert candidate["reason"] is None
@@ -167,6 +169,31 @@ def test_render_json_when_approximate_verdict_does_serialize_its_withheld_reason
     candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
 
     assert candidate["reason"] == expected
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        pytest.param(
+            replace(permutation_verdict(delta=0.4), detectable_pct=2.1),
+            2.1,
+            id="permutation-figure",
+        ),
+        pytest.param(replace(band_verdict(delta=-1.0), detectable_pct=3.5), 3.5, id="band-figure"),
+        pytest.param(permutation_verdict(delta=0.4), None, id="no-figure"),
+    ],
+)
+def test_render_json_when_approximate_verdict_does_serialize_its_detectable_change(
+    verdict: BandVerdict | PermutationVerdict, expected: float | None
+):
+    metric = shared_baseline_metric(
+        [CandidateMetric(median=100.4, spread=1.0, verdict=verdict)], name="decode/time"
+    )
+    result = create_comparison_result(metrics={"decode/time": metric})
+
+    candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
+
+    assert candidate["detectable_pct"] == expected
 
 
 def _first_candidate_delta(doc: dict[str, Any]) -> object:
@@ -262,6 +289,7 @@ _UNMEASURED_ROW: dict[str, object] = {
     "method": None,
     "delta_pct": None,
     "noise_pct": None,
+    "detectable_pct": None,
     "p": None,
     "band_pct": None,
     "reason": None,
@@ -365,6 +393,19 @@ def test_render_iterate_json_when_verdict_was_withheld_does_serialize_its_reason
     doc = json.loads(render_iterate_json(IterateResult(record=record, report="iteration report")))
 
     assert doc["metrics"]["total_ms"]["reason"] == "noise"
+
+
+@pytest.mark.parametrize(
+    "detectable_pct", [pytest.param(2.1, id="figure"), pytest.param(None, id="no-figure")]
+)
+def test_render_iterate_json_when_verdict_recorded_does_serialize_its_detectable_change(
+    detectable_pct: float | None,
+):
+    record = iteration_record(metrics={"total_ms": metric_verdict(detectable_pct=detectable_pct)})
+
+    doc = json.loads(render_iterate_json(IterateResult(record=record, report="iteration report")))
+
+    assert doc["metrics"]["total_ms"]["detectable_pct"] == detectable_pct
 
 
 @pytest.mark.parametrize(
