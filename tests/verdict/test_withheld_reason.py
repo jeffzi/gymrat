@@ -81,6 +81,25 @@ _MISMATCHED_B = create_samples(4, 9.0) + samples(9.5) + create_samples(5, 10.1)
             "non-finite-delta",
             id="band-non-finite-delta",
         ),
+        # A subnormal baseline overflows the percentage to an infinite delta.
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            create_samples(2, 5e-324),
+            create_samples(2, 100.0),
+            "no-signal",
+            "non-finite-delta",
+            id="band-overflow-positive",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            create_samples(2, 5e-324),
+            create_samples(2, -100.0),
+            "no-signal",
+            "non-finite-delta",
+            id="band-overflow-negative",
+        ),
         pytest.param(
             get_band,
             METRIC_BYTES_LOWER,

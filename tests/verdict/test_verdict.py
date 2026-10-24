@@ -198,6 +198,34 @@ def test_compute_verdicts_when_permutation_delta_not_finite_does_report_no_signa
 
 
 @pytest.mark.parametrize(
+    ("meta", "values_b", "expected_usable_n", "expected_noise_pct"),
+    [
+        pytest.param(METRIC_APPROX_LOWER, [100.0, 100.0], 2, 0.5, id="lower-overflow-positive"),
+        pytest.param(METRIC_APPROX_LOWER, [-100.0, -100.0], 2, 0.5, id="lower-overflow-negative"),
+        pytest.param(METRIC_APPROX_HIGHER, [100.0, 100.0], 2, 0.5, id="higher-overflow-positive"),
+        # One pair differs, too few for the band, and the delta still has no size.
+        pytest.param(METRIC_APPROX_LOWER, [5e-324, 100.0], 1, 150.0, id="too-few-differ"),
+    ],
+)
+def test_compute_verdicts_when_band_delta_not_finite_does_report_no_signal(
+    meta: dict[str, MetricMeta],
+    values_b: list[float],
+    expected_usable_n: int,
+    expected_noise_pct: float,
+):
+    result = run(samples(5e-324, 5e-324), samples(*values_b), meta)
+
+    verdict = get_band(result)
+    assert not math.isfinite(verdict.delta)
+    assert (verdict.verdict, verdict.reason, verdict.usable_n) == (
+        "no-signal",
+        "non-finite-delta",
+        expected_usable_n,
+    )
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct)
+
+
+@pytest.mark.parametrize(
     ("meta", "samples_a", "samples_b", "expected_verdict"),
     [
         pytest.param(

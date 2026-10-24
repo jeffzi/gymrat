@@ -265,12 +265,13 @@ def _compute_approximate_verdict(
     noise band otherwise. Tied pairs contribute no sign to flip, so a long but
     mostly identical run falls back to the band just as a short one does.
 
+    On either path the signal requires a finite delta, since an undefined or
+    overflowing ratio has no size to report.
+
     The permutation test reads the paired differences, while the reported delta
     compares the medians, so a significant p-value alone is not enough on the
     permutation path. The signal also requires that:
 
-    - the delta is finite, since an undefined or overflowing ratio has no size
-      to report;
     - the signed-rank sum of the paired differences points the same way as the
       delta, since the pairs and the medians can disagree on the direction of
       the move;
@@ -297,7 +298,8 @@ def _compute_approximate_verdict(
 
     record: PermutationVerdict | BandVerdict
     if nonzero_n < PERMUTATION_MIN_N:
-        has_signal = nonzero_n >= BAND_MIN_N and abs(delta) > noise.pct
+        clears_band = nonzero_n >= BAND_MIN_N and abs(delta) > noise.pct
+        has_signal = clears_band and math.isfinite(delta)
         verdict = _determine_verdict(delta, meta.direction, has_signal=has_signal)
         record = BandVerdict(
             method="band",
@@ -307,7 +309,7 @@ def _compute_approximate_verdict(
             noise_abs=noise.abs,
             delta=delta,
             n=n,
-            reason=_withheld_reason(verdict, delta, noise, noise_rejects=not has_signal),
+            reason=_withheld_reason(verdict, delta, noise, noise_rejects=not clears_band),
         )
     else:
         p, statistic = sign_flip_permutation_test(samples.left, samples.right)
