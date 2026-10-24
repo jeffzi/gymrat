@@ -4,7 +4,10 @@ Runs a bench command a fixed number of times against each target, parsing every
 run's output into a metric record. Runs are strictly sequential and interleaved
 by round: every target is sampled once before any target is sampled again, so a
 transient slowdown on the machine spreads across both sides rather than skewing
-one. An optional prepare command runs once per target before sampling begins.
+one. Each round starts one target further along than the round before, wrapping
+around, so no target always runs first: over every full cycle of as many rounds
+as there are targets, each target runs once in each position. An optional
+prepare command runs once per target, in target order, before sampling begins.
 
 A single policy site turns a failed command (non-zero exit or timeout) into a
 :class:`~gymrat.errors.CommandError`, so a failure anywhere stops the schedule
@@ -31,6 +34,7 @@ import itertools
 import statistics
 import tempfile
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -479,14 +483,17 @@ async def collect_samples(
 ) -> list[TargetSamples]:
     """Run the prepare and bench schedule and collect each target's samples.
 
-    Prepare (when set) runs once per target in order before any bench run. Then
-    for each round, bench runs once per target in order, so round ``n+1`` never
-    starts before round ``n`` has run every target. Each successful bench run
-    contributes one parsed metric record to its target.
+    Prepare (when set) runs once per target before any bench run. Then for each
+    round, bench runs once per target, so round ``n+1`` never starts before
+    round ``n`` has run every target. Round ``r`` (1-based) starts at target
+    index ``(r - 1) mod N`` for ``N`` targets and continues cyclically, so no
+    target always runs first. Each successful bench run contributes one parsed
+    metric record to its target, so a target's samples stay in round order
+    whatever the run order.
 
     Args:
         adapter: Parses a bench run's stdout into a metric record.
-        targets: The targets to sample, in the order they are run and returned.
+        targets: The targets to sample, in the order they are prepared and returned.
         options: The bench and prepare commands, round count, timeout, and hooks.
         abort: An event whose being set kills the in-flight command; passed
             through to the command runner.
@@ -526,14 +533,16 @@ async def collect_samples(
                 options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock())
             )
 
+    run_order = deque(collected)
     for round_number in range(1, options.samples + 1):
-        for target in collected:
+        for target in run_order:
             emit_pass(PassStarted, round_number, target.ctx)
             stdout = await _run_command(
                 "bench", round_number, options.bench, target.ctx, timeout_ms, abort
             )
             emit_pass(PassFinished, round_number, target.ctx)
             target.samples.append(adapter.parse(stdout, options.warn))
+        run_order.rotate(-1)
 
     return collected
 

@@ -363,11 +363,13 @@ gymrat export --endpoint http://localhost:4318              # override the colle
 
 ## How verdicts work
 
-Each candidate is sampled in strict alternation with its baseline, so machine drift hits both
-sides equally. A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of
-the paired differences. Tied pairs carry no sign to flip. When fewer than 6 pairs differ, a
-noise-band fallback applies: the percentage change between the two sides' medians must exceed the
-metric's noise band.
+Each candidate is sampled in rounds with its baseline: every round runs each side once, so machine
+drift hits both sides equally. The order rotates every round, so neither side always runs first.
+When the sample count is not a multiple of the number of targets, some targets run first one more
+time than others: with one candidate, that means an odd sample count. A metric's verdict
+comes from a sign-flip permutation test on the signed-rank sum of the paired differences. Tied
+pairs carry no sign to flip. When fewer than 6 pairs differ, a noise-band fallback applies: the
+percentage change between the two sides' medians must exceed the metric's noise band.
 
 A metric's noise band is 1.5 times the larger of the two sides' half-ranges, never less than 0.5%.
 A half-range is half the span from lowest to highest sample, taken as a percentage of that side's

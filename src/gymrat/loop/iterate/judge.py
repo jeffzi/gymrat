@@ -241,11 +241,12 @@ async def bench_and_judge(
 async def _measure(
     ctx: IterationContext, adapter: Adapter, bench: str
 ) -> tuple[TargetSamples, TargetSamples]:
-    """Bench both of the session's worktrees, baseline first.
+    """Bench both of the session's worktrees, rotating which one runs first each round.
 
-    The order is the one :func:`gymrat.compare.compare` samples in — old side
-    first — so a round of the loop perturbs the two sides in the same sequence a
-    plain comparison would.
+    The schedule is the one :func:`gymrat.compare.compare` samples in: round 1
+    runs the baseline then the experiment, round 2 the experiment then the
+    baseline, and so on, so a round of the loop perturbs the two sides in the
+    same sequence a plain comparison would and neither side always runs first.
 
     Args:
         ctx: The iteration context: the session whose baseline and experiment
