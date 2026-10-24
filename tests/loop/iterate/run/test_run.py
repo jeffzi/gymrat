@@ -322,6 +322,29 @@ async def test_iterate_session_when_metrics_judged_does_log_a_reason_only_on_a_w
     } == expected
 
 
+async def test_iterate_session_when_metrics_judged_does_log_a_detectable_change_only_beside_a_figure(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    stub_runs(
+        samples_mock,
+        open_repo,
+        [
+            PairedRun(
+                rounds(jittered(BASELINE_MS, 2, 1), scaled(BASELINE_BYTES, 0.8)), baseline_rounds()
+            )
+        ],
+    )
+    config = resolved_config(metrics={"alloc_bytes": MetricEntry(exact=True)})
+
+    await iterate_session(open_repo, config)
+
+    logged = logged_metric_verdicts(open_repo)
+    assert {name: "detectable_pct" in verdict for name, verdict in logged.items()} == {
+        "total_ms": True,
+        "alloc_bytes": False,
+    }
+
+
 @pytest.mark.parametrize("color", [False, True])
 async def test_iterate_session_when_color_given_does_emit_ansi_only_when_true(
     settled: str, samples_mock: CollectSamplesRecorder, *, color: bool

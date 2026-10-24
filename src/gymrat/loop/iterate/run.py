@@ -171,13 +171,14 @@ def recorded_verdicts(
     Returns:
         The per-metric verdicts keyed by metric name, each carrying only the
         fields the log serializes: ``p`` is omitted for non-permutation
-        verdicts, ``noise_pct`` for exact ones, and ``reason`` for exact ones
-        and verdicts that were not withheld, so a record handed to a caller
+        verdicts, ``noise_pct`` for exact ones, ``reason`` for exact ones and
+        verdicts that were not withheld, and ``detectable_pct`` for exact ones
+        and verdicts with no finite figure, so a record handed to a caller
         matches the one read back off the log.
     """
     recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
-        p, noise_pct, reason, _detectable_pct = verdict_stats(verdict)
+        p, noise_pct, reason, detectable_pct = verdict_stats(verdict)
         recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
@@ -186,6 +187,7 @@ def recorded_verdicts(
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
             p=p,
             noise_pct=noise_pct,
+            detectable_pct=detectable_pct,
             reason=reason,
         )
     return recorded
