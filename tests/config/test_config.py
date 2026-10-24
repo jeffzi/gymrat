@@ -366,15 +366,28 @@ def test_inspect_config_when_no_file_or_flags_does_settle_defaults(
             {
                 "unstable_noise_pct": 150.5,
                 **LOOP_CONFIG,
-                "metrics": {"decode/time": {"direction": "higher", "gating": False, "exact": True}},
-                "kinds": {"memory": {"gating": False}},
+                "metrics": {
+                    "decode/time": {
+                        "direction": "higher",
+                        "gating": False,
+                        "exact": True,
+                        "resolution": 0.001,
+                    },
+                    "decode/memory": {"direction": "lower"},
+                },
+                "kinds": {"memory": {"gating": False, "resolution": 1024}},
                 "supervise": {"model": "claude-sonnet", "effort": "high"},
             },
             benchless_config(
                 unstable_noise_pct=150.5,
                 **LOOP_FIELDS,
-                metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
-                kinds={"memory": KindEntry(gating=False)},
+                metrics={
+                    "decode/time": MetricEntry(
+                        direction="higher", gating=False, exact=True, resolution=0.001
+                    ),
+                    "decode/memory": MetricEntry(direction="lower", resolution=None),
+                },
+                kinds={"memory": KindEntry(gating=False, resolution=1024.0)},
                 supervise=SuperviseConfig(model="claude-sonnet", effort="high"),
             ),
             id="file-only-keys",
@@ -396,6 +409,29 @@ def test_inspect_config_when_valid_file_provides_values_does_settle_from_it(
     assert result.config == expected
     assert result.bench == "config-bench"
     assert result.config_path == str(tmp_path / "gymrat.toml")
+
+
+def test_inspect_config_when_resolution_is_an_integer_does_settle_it_as_a_float(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_config(
+        tmp_path,
+        {
+            "bench": "config-bench",
+            "metrics": {"decode/time": {"resolution": 42}},
+            "kinds": {"memory": {"resolution": 1024}},
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = inspect_config(CliFlags()).config
+
+    assert config is not None
+    settled = (
+        (config.metrics or {})["decode/time"].resolution,
+        (config.kinds or {})["memory"].resolution,
+    )
+    assert [(type(value), value) for value in settled] == [(float, 42.0), (float, 1024.0)]
 
 
 def test_inspect_config_when_flags_override_file_does_use_flag_values(

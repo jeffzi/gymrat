@@ -219,26 +219,51 @@ _Bool = Annotated[bool, Strict()]
 _FiniteFloat = Annotated[float, Strict(), Field(allow_inf_nan=False)]
 # TOML writes ``5.0`` for a whole number as readily as ``5``; fold it before the strict check.
 _PositiveInt = Annotated[int, BeforeValidator(coerce_integer), Strict(), Field(ge=1)]
+_PositiveFloat = Annotated[_FiniteFloat, Field(gt=0)]
 
 
 @dataclass(frozen=True, slots=True)
 class MetricEntry:
-    """Per-metric overrides declared under the ``metrics`` section."""
+    """Per-metric overrides declared under the ``metrics`` section.
+
+    A field left as ``None`` keeps the setting the metric would have without this
+    entry.
+
+    Attributes:
+        direction: Whether a lower or a higher value is better; ``None`` keeps the
+            adapter's default.
+        gating: Whether a regression on this metric fails the run; ``None`` defers
+            to the metric's kind entry.
+        exact: Whether the verdict comes from the plain median change instead of
+            the approximate, noise-aware comparison.
+        resolution: The smallest step the metric is measured in, in the metric's
+            own unit; a finite number above 0.
+    """
 
     __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
 
     direction: Direction | None = None
     gating: _Bool | None = None
     exact: _Bool | None = None
+    resolution: _PositiveFloat | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class KindEntry:
-    """Per-kind overrides declared under the ``kinds`` section."""
+    """Per-kind overrides declared under the ``kinds`` section.
+
+    Each field applies to every metric of the kind that does not set its own.
+
+    Attributes:
+        gating: Whether a regression on a metric of this kind fails the run.
+        resolution: The smallest step metrics of this kind are measured in, in
+            their own unit; a finite number above 0.
+    """
 
     __pydantic_config__: ClassVar[ConfigDict] = _FORBID_EXTRA
 
     gating: _Bool | None = None
+    resolution: _PositiveFloat | None = None
 
 
 @dataclass(frozen=True, slots=True)

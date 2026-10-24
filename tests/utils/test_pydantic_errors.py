@@ -46,6 +46,18 @@ def _first_error(annotation: Any, value: object) -> ErrorDetails:
         pytest.param(
             Annotated[int, Field(le=5)], 6, "a number at or below 5", id="less-than-equal"
         ),
+        pytest.param(
+            Annotated[int, Field(le=9007199254740991)],
+            9007199254740992,
+            "a number at or below 9007199254740991",
+            id="less-than-equal-large-bound",
+        ),
+        pytest.param(
+            Annotated[float, Field(gt=0)], -1.0, "a number above 0", id="greater-than-whole"
+        ),
+        pytest.param(
+            Annotated[float, Field(gt=0.5)], 0.5, "a number above 0.5", id="greater-than-fraction"
+        ),
         pytest.param(Literal["a", "b"], "c", "'a' or 'b'", id="literal"),
         pytest.param(
             Annotated[str, Field(min_length=1)], "", "a non-empty string", id="empty-string"
