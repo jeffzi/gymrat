@@ -141,6 +141,7 @@ writer, not a degenerate measurement.
 | `method` | `"permutation"` \| `"band"` \| `"exact"` | required | Statistical test used to judge the metric. |
 | `p` | number | optional | P-value from the statistical test. |
 | `noise_pct` | number | optional | Estimated noise as a percentage of the baseline median. |
+| `detectable_pct` | number | optional | The smallest change, as a percentage of the baseline median, the run could have detected for this metric, never below its measurement step. Absent for exact verdicts and when no finite figure applies. |
 | `reason` | `"non-finite-delta"` \| `"resolution"` \| `"noise"` \| `"direction-mismatch"` \| `"unconfirmed"` | optional | Why the verdict is no-signal although the medians differ: non-finite-delta (the delta has no finite percentage), resolution (it does not clear the measurement-step floor), noise (the noise band, the pair count, or the p-value rejects it), direction-mismatch (the paired differences move the other way from the medians), or unconfirmed (a confirmation rerun disowned the regression). |
 | `gating` | boolean | required | Whether this metric gates the iteration outcome. |
 | `confirmed` | boolean | required | Whether a confirmation rerun validated this verdict. |
@@ -273,7 +274,7 @@ A CLI command invocation: name, arguments, exit code, and optional reason.
 | `name` | string | required | CLI command name. |
 | `args` | object | required | Arguments the command was invoked with. |
 | `exit_code` | `0` \| `1` \| `2` | required | Process-style exit code: 0 success, 1 or 2 failure. |
-| `reason` | `"stop-condition"` \| `"budget-exceeded"` \| `"unsettled"` \| `"gating-block"` \| `"already-stopped"` \| `"no-session"` \| `"finalized"` \| `"nothing-measured"` \| `"gating-regression"` \| `"nothing-to-commit"` \| `"checks-failed"` \| `"not-improved"` \| `"nothing-to-discard"` \| `"stale-session"` \| `"nothing-kept"` \| `"dirty-worktree"` \| `"unkept-commits"` \| `"bad-branch"` \| `"branch-exists"` \| `"fail-on"` \| `"no-filter"` \| `"no-baseline"` \| `"supervised-use-tool"` \| `"error"` | optional | Why the command exited non-zero, when it did. |
+| `reason` | `"stop-condition"` \| `"budget-exceeded"` \| `"unsettled"` \| `"gating-block"` \| `"already-stopped"` \| `"no-session"` \| `"finalized"` \| `"nothing-measured"` \| `"gating-regression"` \| `"nothing-to-commit"` \| `"checks-failed"` \| `"not-improved"` \| `"nothing-to-discard"` \| `"stale-session"` \| `"nothing-kept"` \| `"dirty-worktree"` \| `"unkept-commits"` \| `"bad-branch"` \| `"branch-exists"` \| `"fail-on"` \| `"no-filter"` \| `"no-baseline"` \| `"supervised-use-tool"` \| `"unbalanced-samples"` \| `"error"` | optional | Why the command exited non-zero, when it did. |
 | `duration_ms` | integer | required | Wall-clock milliseconds the command took. |
 | `origin` | `"cli"` \| `"tool"` | optional | What invoked the command: 'tool' when the supervised agent ran it through the in-process tool host, 'cli' when it was run directly. |
 | `traceparent` | string | optional | W3C Trace Context traceparent header for distributed tracing. |

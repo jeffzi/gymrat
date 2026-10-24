@@ -50,7 +50,7 @@ def _options(
         else [TargetSpec(label=None, target=name) for name in candidate_targets]
     )
     return CompareOptions(
-        run=run_options(samples=4, warn=warn),
+        run=run_options(samples=6, warn=warn),
         baseline=resolved_baseline,
         candidates=resolved_candidates,
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
@@ -151,7 +151,7 @@ def _commit_bench(repo: str, value: int) -> None:
 
 def _e2e_options(baseline: str, candidate: str) -> CompareOptions:
     return CompareOptions(
-        run=run_options(samples=3, bench="sh bench.sh", prepare=None, timeout_seconds=30.0),
+        run=run_options(samples=4, bench="sh bench.sh", prepare=None, timeout_seconds=30.0),
         baseline=TargetSpec(label=None, target=baseline),
         candidates=[TargetSpec(label=None, target=candidate)],
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,

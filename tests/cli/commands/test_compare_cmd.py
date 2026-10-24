@@ -15,11 +15,11 @@ tight-budget warning is pinned there for compare.
 from __future__ import annotations
 
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 import pytest
 
@@ -36,6 +36,9 @@ from gymrat.report.types import (
 )
 from gymrat.sampling import RunOptions, SamplingOptions
 from tests._ansi import warning_lines
+from tests._exec_fixtures import expected_result, install_exec
+from tests._git import install_git_hook
+from tests._platform import needs_posix_shell
 from tests.cli._command_stubs import (
     stub_compare,
     stub_compare_command,
@@ -322,6 +325,56 @@ def test_compare_when_success_does_record_trace_with_only_the_args_given(
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 0, None)
     assert cmd.args == traced
+
+
+def test_compare_when_samples_cannot_balance_the_targets_does_record_the_refusal_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    open_session(repo)
+    recorder = install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC x=1"))
+
+    result = runner.invoke(
+        app, ["compare", "main", "main", "--bench", "sh bench.sh", "--samples", "3"]
+    )
+
+    assert result.exit_code == 2
+    assert "samples = 3 cannot balance 2 targets: use a multiple of 2 (2 or 4)" in result.stderr
+    assert recorder.calls == []
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 2, "unbalanced-samples")
+
+
+@needs_posix_shell
+def test_compare_when_samples_cannot_balance_the_targets_does_refuse_before_checking_out_a_worktree(
+    repo: str,
+):
+    checkouts = Path(repo) / ".git" / "checkouts"
+    install_git_hook(repo, "post-checkout", f'echo "$PWD" >> "{checkouts}"\n')
+
+    result = runner.invoke(
+        app, ["compare", "main", "main", "main", "--bench", "sh bench.sh", "--samples", "4"]
+    )
+
+    assert result.exit_code == 2
+    assert "samples = 4 cannot balance 3 targets: use a multiple of 6 (6)" in " ".join(
+        result.stderr.split()
+    )
+    assert not checkouts.exists()
+
+
+@pytest.mark.usefixtures("_in_non_repo")
+def test_compare_when_no_samples_configured_does_run_twelve_rounds(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("GYMRAT_SAMPLES", raising=False)
+    fake_compare = stub_compare(monkeypatch)
+
+    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
+
+    assert result.exit_code == 0
+    (options,) = fake_compare.call_args.args
+    assert options.run.sampling.samples == 12
 
 
 def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(

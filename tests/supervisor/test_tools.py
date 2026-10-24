@@ -649,7 +649,7 @@ async def test_iterate_when_real_cli_on_scratch_repo_does_return_json_document(
     create_scratch_repo: Callable[[], str],
 ) -> None:
     repo = create_scratch_repo()
-    commit_project(repo, samples=5)
+    commit_project(repo, samples=4)
     run_cli(["start", "--baseline", "main"], repo, timeout=60)
     host = ToolHost(root=repo, abort=asyncio.Event(), extra_env={})
 

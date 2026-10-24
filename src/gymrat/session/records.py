@@ -292,6 +292,14 @@ class IterationMetricVerdict(_DeltaPctSerializer):
     noise_pct: _OptNumber = Field(
         default=None, description="Estimated noise as a percentage of the baseline median."
     )
+    detectable_pct: _OptNumber = Field(
+        default=None,
+        description=(
+            "The smallest change, as a percentage of the baseline median, the run could have"
+            " detected for this metric, never below its measurement step. Absent for exact"
+            " verdicts and when no finite figure applies."
+        ),
+    )
     reason: Annotated[
         WithheldReason | SkipJsonSchema[None],
         _not_null(WithheldReason),

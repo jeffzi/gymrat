@@ -10,6 +10,7 @@ The budget time-left line comes from the shared ``emit_report`` path, pinned in
 pinned there for measure.
 """
 
+import json
 import re
 from unittest.mock import create_autospec
 
@@ -22,6 +23,7 @@ from gymrat.report.types import MeasurementResult
 from gymrat.sampling import TargetSpec
 from gymrat.session.records import BaselineRecord, CommandRecord
 from tests._clock import install_monotonic_clock
+from tests._exec_fixtures import expected_result, install_exec
 from tests.cli._command_stubs import (
     capture_measure,
     stub_measure,
@@ -56,6 +58,20 @@ def test_measure_when_no_target_given_does_measure_the_current_directory(
 
     assert result.exit_code == 0
     assert captured[0].target == TargetSpec(label=None, target=".")
+
+
+@pytest.mark.usefixtures("_in_non_repo")
+def test_measure_when_no_samples_configured_does_report_twelve_samples_in_json(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("GYMRAT_SAMPLES", raising=False)
+    recorder = install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC x=1"))
+
+    result = runner.invoke(app, ["measure", "--bench", "sh bench.sh", "--format", "json"])
+
+    assert result.exit_code == 0
+    assert len(recorder.calls) == 12
+    assert json.loads(result.stdout)["samples"] == 12
 
 
 # ---------------------------------------------------------------------------

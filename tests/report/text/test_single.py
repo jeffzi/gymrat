@@ -9,7 +9,9 @@ carrying square brackets print as written.
 
 They also pin the table's column alignment: the metric column sized in terminal
 cells for CJK names, the ``±`` offset shared across value cells, and the glyph,
-delta and band laid out across verdict cells, aggregate rows included. Alignment
+delta, band, pair count and detectable change laid out across verdict cells,
+aggregate rows included. A within-noise row states its detectable change last,
+and no other row moves to make room for it. Alignment
 is asserted *within* a parsed cell, since the box chrome is rich's rather than a
 hand-spliced grid.
 """
@@ -26,6 +28,7 @@ from rich.cells import cell_len
 from gymrat.model import Exclusion
 from gymrat.report.text.render import render_report
 from gymrat.report.text.single import scoped_geomean_label
+from gymrat.report.types import ReportOptions
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,13 +43,16 @@ from tests.report._assertions import (
     line_starting_with,
     offsets_of,
     rule_lines,
+    sgr_for,
     stripped_cells,
+    styles_at,
     table_region,
     table_rows,
 )
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
+    every_class_metrics,
     exact_metric,
     gating_kind,
     kind_metric,
@@ -133,6 +139,18 @@ def test_render_report_when_flat_body_has_groups_does_head_each_group_with_its_k
 # ---------------------------------------------------------------------------
 
 
+def _detecting(metric: MetricComparison, pct: float) -> MetricComparison:
+    """``metric`` with its sole candidate's verdict carrying a ``pct`` detectable change."""
+    candidate = metric.candidates[0]
+    if candidate.verdict is None or candidate.verdict.method == "exact":
+        msg = f"no approximate verdict to carry a detectable change on {metric!r}"
+        raise AssertionError(msg)
+    return replace(
+        metric,
+        candidates=(replace(candidate, verdict=replace(candidate.verdict, detectable_pct=pct)),),
+    )
+
+
 def _short_pairs(metric: MetricComparison, pairs: int) -> MetricComparison:
     """``metric`` with its sole candidate's verdict over ``pairs`` pairs."""
     candidate = metric.candidates[0]
@@ -162,6 +180,16 @@ def _unstable_beside_wide_delta_result() -> ComparisonResult:
     )
 
 
+def _detecting_beside_regression_result() -> ComparisonResult:
+    """A within-noise row carrying a detectable change beside a regression, both short a pair."""
+    return create_comparison_result(
+        metrics={
+            "flat/time": _detecting(permutation_metric(verdict="no-signal", delta=0.3, n=8), 2.1),
+            "slower/time": permutation_metric(verdict="regressed", delta=12.4, n=8),
+        },
+    )
+
+
 @pytest.mark.parametrize(
     ("make_result", "first_row", "second_row"),
     [
@@ -177,6 +205,12 @@ def _unstable_beside_wide_delta_result() -> ComparisonResult:
             "bloat#other",
             "flaky#other",
             id="delta-wider-than-word",
+        ),
+        pytest.param(
+            _detecting_beside_regression_result,
+            "flat/time",
+            "slower/time",
+            id="detectable-change-beside-regression",
         ),
     ],
 )
@@ -360,6 +394,117 @@ def test_render_report_when_aligning_the_verdict_column_does_lay_out_glyph_delta
     assert stripped_cells(line_starting_with(report, "regressed/time"))[-1] == "✗   +0.4%  ±  2.5%"
     assert stripped_cells(line_starting_with(report, "flat/time"))[-1] == "~    0.0%  ±100.0%"
     assert stripped_cells(line_starting_with(report, "improved/time"))[-1] == "✓  -12.4%  ± 30.0%"
+
+
+# ---------------------------------------------------------------------------
+# detectable change on within-noise rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metric", "expected"),
+    [
+        pytest.param(
+            permutation_metric(verdict="no-signal", delta=0.3),
+            "~  +0.3%  ±2.5%  detects ≥2.1%",
+            id="permutation",
+        ),
+        pytest.param(
+            band_metric(verdict="no-signal", delta=-1.0, n=10),
+            "~  -1.0%  ±2.5%  detects ≥2.1%",
+            id="band",
+        ),
+        pytest.param(
+            permutation_metric(verdict="no-signal", delta=0.3, n=8),
+            "~  +0.3%  ±2.5%  n=8  detects ≥2.1%",
+            id="with-pair-count",
+        ),
+    ],
+)
+def test_render_report_when_within_noise_row_carries_a_detectable_change_does_state_it_last(
+    metric: MetricComparison, expected: str
+):
+    result = create_comparison_result(metrics={"flat/time": _detecting(metric, 2.1)})
+
+    row = line_starting_with(render_report(result), "flat/time")
+
+    assert stripped_cells(row)[-1] == expected
+
+
+def _every_class_short_of_pairs() -> dict[str, MetricComparison]:
+    """One metric per display class, each showing a pair count."""
+    return {
+        name: metric if name == "single-pair/time" else _short_pairs(metric, 8)
+        for name, metric in every_class_metrics().items()
+    }
+
+
+def _verdict_cells(result: ComparisonResult) -> dict[str, str]:
+    """Each table row's verdict cell, padding stripped, keyed by its first cell."""
+    rows = [stripped_cells(row) for row in table_rows(render_report(result))]
+    return {cells[0]: cells[-1] for cells in rows}
+
+
+def test_render_report_when_one_row_carries_a_detectable_change_does_leave_every_other_row_as_before():
+    metrics = _every_class_short_of_pairs()
+    before = _verdict_cells(create_comparison_result(metrics=metrics))
+    detecting = {**metrics, "flat/time": _detecting(metrics["flat/time"], 2.1)}
+
+    after = _verdict_cells(create_comparison_result(metrics=detecting))
+
+    assert sum("n=" in cell for cell in before.values()) >= 5
+    del before["flat/time"], after["flat/time"]
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param(
+            _detecting(permutation_metric(verdict="no-signal", delta=0.3), 2.1),
+            _detecting(permutation_metric(verdict="no-signal", delta=-1.0), 12.5),
+            id="figures-differ-in-width",
+        ),
+        pytest.param(
+            _detecting(permutation_metric(verdict="no-signal", delta=0.3, n=8), 2.1),
+            _detecting(permutation_metric(verdict="no-signal", delta=-1.0), 2.1),
+            id="one-shows-a-pair-count",
+        ),
+    ],
+)
+def test_render_report_when_within_noise_rows_carry_detectable_changes_does_align_them(
+    first: MetricComparison, second: MetricComparison
+):
+    result = create_comparison_result(metrics={"first/time": first, "second/time": second})
+
+    report = strip_ansi(render_report(result))
+
+    first_line = line_starting_with(report, "first/time")
+    second_line = line_starting_with(report, "second/time")
+    first_offsets = offsets_of(first_line, "detects ≥")
+    assert first_offsets != []
+    assert first_offsets == offsets_of(second_line, "detects ≥")
+    assert first_line.rindex("%") == second_line.rindex("%")
+
+
+def test_render_report_when_every_class_carries_a_detectable_change_does_state_it_on_within_noise_rows_only():
+    metrics = {name: _detecting(metric, 2.1) for name, metric in every_class_metrics().items()}
+    result = create_comparison_result(metrics=metrics)
+
+    rows = [stripped_cells(row) for row in table_rows(render_report(result))]
+
+    assert [cells[0] for cells in rows if "detects" in cells[-1]] == ["flat/time"]
+
+
+def test_render_report_when_colored_does_dim_the_detectable_change():
+    result = create_comparison_result(
+        metrics={"flat/time": _detecting(permutation_metric(verdict="no-signal", delta=0.3), 2.1)}
+    )
+
+    row = line_containing(render_report(result, ReportOptions(color=True)), "flat/time")
+
+    assert strip_ansi(stripped_cells(row)[-1]) == "~  +0.3%  ±2.5%  detects ≥2.1%"
+    assert styles_at(row, "detects") == sgr_for("dim")
 
 
 # ---------------------------------------------------------------------------

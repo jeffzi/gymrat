@@ -33,6 +33,7 @@ from tests._cli import no_color_env as _env
 from tests._cli import run_cli
 from tests._git import (
     BENCH_ONCE_FLAGS,
+    COMPARE_BENCH_FLAGS,
     EMIT_ONE_BENCH,
     list_worktree_dirs,
     register_absent_worktree,
@@ -291,7 +292,7 @@ def test_compare_when_signalled_with_many_worktrees_does_sweep_all_of_them(
     repo = create_scratch_repo()
     _write_committed_bench(repo, _TRACKED_BENCH, branches=("candidate-one", "candidate-two"))
 
-    argv = ["compare", "main", "candidate-one", "candidate-two", *BENCH_ONCE_FLAGS]
+    argv = ["compare", "main", "candidate-one", "candidate-two", *COMPARE_BENCH_FLAGS]
 
     with spawned_gymrat(argv, repo) as proc:
         # Compare adds one worktree per ref before any bench runs, and only the
@@ -402,7 +403,7 @@ def test_compare_when_signalled_during_the_normal_sweep_does_remove_each_worktre
     # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
     # switch to ``Popen`` needs its own kill-and-reap.
     proc = run_cli(
-        ["compare", "main", "candidate", *BENCH_ONCE_FLAGS],
+        ["compare", "main", "candidate", *COMPARE_BENCH_FLAGS],
         repo,
         check=False,
         timeout=60,
@@ -430,7 +431,7 @@ def test_compare_when_signalled_after_the_normal_sweep_left_a_worktree_does_name
     # ``timeout=60`` is the hang guard: ``run`` kills and reaps the CLI on expiry, so a
     # switch to ``Popen`` needs its own kill-and-reap.
     proc = run_cli(
-        ["compare", "main", "candidate-one", "candidate-two", *BENCH_ONCE_FLAGS],
+        ["compare", "main", "candidate-one", "candidate-two", *COMPARE_BENCH_FLAGS],
         repo,
         check=False,
         timeout=60,
@@ -481,7 +482,7 @@ def test_compare_when_signalled_again_during_the_cleanup_sweep_does_stop_after_t
     absent = register_absent_worktree(repo)
     git_log = _install_signalling_git(tmp_path, _HOLDING_GIT)
     release = tmp_path / "removal-released"
-    argv = ["compare", "main", "candidate-one", "candidate-two", *BENCH_ONCE_FLAGS]
+    argv = ["compare", "main", "candidate-one", "candidate-two", *COMPARE_BENCH_FLAGS]
 
     try:
         with spawned_gymrat(argv, repo, env=_env_with_path(tmp_path)) as proc:

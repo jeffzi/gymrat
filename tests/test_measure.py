@@ -106,10 +106,10 @@ async def test_orchestrator_when_pipeline_completes_does_assemble_result_metadat
 ):
     install_pipeline(monkeypatch, orchestrator, [[{"x": 1.0}, {"x": 2.0}]] * targets, DIRTY_RESULT)
 
-    result = await orchestrate(run_options(samples=3))
+    result = await orchestrate(run_options(samples=4))
 
     assert result.cleanup == DIRTY_RESULT
-    assert result.samples == 3
+    assert result.samples == 4
     assert result.adapter == "metric-lines"
 
 

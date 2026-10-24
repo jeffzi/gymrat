@@ -26,6 +26,7 @@ from gymrat.report.types import (
     ComparisonResult,
     MetricComparison,
 )
+from gymrat.sample_balance import require_balanced_samples
 from gymrat.sampling import (
     CleanupResult,
     RunOptions,
@@ -298,14 +299,16 @@ async def compare(options: CompareOptions) -> ComparisonResult:
         against the shared baseline.
 
     Raises:
-        GymratError: When the adapter is unknown or a target is neither a
-            directory nor a resolvable ref.
+        GymratError: When the sample count cannot balance the targets' run order
+            (refused before any worktree is created), the adapter is unknown, or
+            a target is neither a directory nor a resolvable ref.
         CommandError: When a prepare or bench command times out or exits
             non-zero.
         AdapterError: When a bench run's output yields no usable metric or an
             unacceptable metric name.
     """
     run = options.run
+    require_balanced_samples(run.sampling.samples, 1 + len(options.candidates))
     return await run_with_worktrees(
         partial(_compare_phase, options),
         partial(

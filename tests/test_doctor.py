@@ -250,6 +250,7 @@ _UNSET_WORKFLOW_CHECKS = [
             "Without one, supervise has no instructions to follow."
         ),
     ),
+    Check(name="samples", status="ok", detail="samples: 12 — balances 2, 3, 4 or 6 targets"),
 ]
 
 
@@ -319,6 +320,58 @@ def test_build_workflow_section_when_config_unset_does_produce_the_exact_section
             "runbook",
             Check(name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"),
             id="runbook-set",
+        ),
+        pytest.param(
+            _config(samples=10),
+            "samples",
+            Check(name="samples", status="ok", detail="samples: 10 — balances 2 or 5 targets"),
+            id="samples-even-two-targets-counts",
+        ),
+        pytest.param(
+            _config(samples=2),
+            "samples",
+            Check(name="samples", status="ok", detail="samples: 2 — balances 2 targets"),
+            id="samples-even-one-target-count",
+        ),
+        pytest.param(
+            _config(samples=8),
+            "samples",
+            Check(name="samples", status="ok", detail="samples: 8 — balances 2, 4 or 8 targets"),
+            id="samples-even-up-to-eight-targets",
+        ),
+        pytest.param(
+            _config(samples=18),
+            "samples",
+            Check(name="samples", status="ok", detail="samples: 18 — balances 2, 3 or 6 targets"),
+            id="samples-even-no-further-than-eight-targets",
+        ),
+        pytest.param(
+            _config(samples=11),
+            "samples",
+            Check(
+                name="samples",
+                status="fail",
+                detail="samples: 11 — balances one target only",
+                hint=(
+                    "`iterate` and `compare` refuse an odd count; "
+                    "`measure` and `probe` still run — use 10 or 12"
+                ),
+            ),
+            id="samples-odd",
+        ),
+        pytest.param(
+            _config(samples=1),
+            "samples",
+            Check(
+                name="samples",
+                status="fail",
+                detail="samples: 1 — balances one target only",
+                hint=(
+                    "`iterate` and `compare` refuse an odd count; "
+                    "`measure` and `probe` still run — use 2"
+                ),
+            ),
+            id="samples-one",
         ),
     ],
 )
@@ -628,6 +681,42 @@ def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_
     assert _check(report, "Workflow", "runbook").hint == (
         'Add `runbook = "gymrat-runbook.md"` to gymrat.toml. '
         "Without one, supervise has no instructions to follow."
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag", "env", "detail"),
+    [
+        pytest.param(2, "10", "samples: 2 — balances 2 targets", id="flag-wins"),
+        pytest.param(None, "10", "samples: 10 — balances 2 or 5 targets", id="env-beats-file"),
+        pytest.param(None, None, "samples: 11 — balances one target only", id="file-alone"),
+    ],
+)
+def test_build_doctor_report_when_samples_set_at_several_levels_does_check_the_resolved_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: int | None,
+    env: str | None,
+    detail: str,
+):
+    write_raw(tmp_path, "samples = 11\n")
+    if env is not None:
+        monkeypatch.setenv("GYMRAT_SAMPLES", env)
+
+    report = build_doctor_report(CliFlags(samples=flag), str(tmp_path))
+
+    assert _check(report, "Workflow", "samples").detail == detail
+
+
+def test_build_doctor_report_when_samples_set_nowhere_does_check_the_default_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("GYMRAT_SAMPLES", raising=False)
+
+    report = build_doctor_report(CliFlags(), str(tmp_path))
+
+    assert _check(report, "Workflow", "samples").detail == (
+        "samples: 12 — balances 2, 3, 4 or 6 targets"
     )
 
 

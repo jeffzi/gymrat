@@ -61,7 +61,7 @@ def test_compare_when_stranded_worktree_dir_preexists_does_not_sweep_or_corrupt_
     env["TMPDIR"] = str(controlled_base)
 
     result = run_cli(
-        ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "1"],
+        ["compare", "main", "candidate", "--bench", "sh bench.sh", "--samples", "2"],
         repo,
         check=False,
         timeout=60,

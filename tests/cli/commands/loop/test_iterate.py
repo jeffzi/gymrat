@@ -38,6 +38,7 @@ from tests._ansi import (
     warning_lines,
 )
 from tests._clock import install_monotonic_clock
+from tests._exec_fixtures import expected_result, install_exec
 from tests._process_helpers import wait_for_pid_file_blocking
 from tests._rich import Clock, frame_text, sealed_console
 from tests.cli._command_stubs import (
@@ -100,6 +101,21 @@ def test_iterate_command_when_run_does_report_the_measured_iteration_with_its_tr
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.seq, cmd.exit_code, cmd.reason) == ("iterate", 1, 0, None)
     assert (cmd.args["bench"], cmd.args["samples"]) == ("npm run bench", 10)
+
+
+def test_iterate_command_when_samples_cannot_balance_the_targets_does_record_the_refusal_reason(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_iterate_session(repo)
+    recorder = install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC x=1"))
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench", "--samples", "5"])
+
+    assert result.exit_code == 2
+    assert "samples = 5 cannot balance 2 targets: use a multiple of 2 (4 or 6)" in result.stderr
+    assert recorder.calls == []
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("iterate", 2, "unbalanced-samples")
 
 
 def test_iterate_command_when_run_ends_does_remove_the_progress_sidecar(

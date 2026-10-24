@@ -433,7 +433,7 @@ FILTER_PLACEHOLDER = "{names}"
 
 CONFIG_DEFAULTS = BenchlessConfig(
     adapter="metric-lines",
-    samples=10,
+    samples=12,
     timeout_seconds=1800,
     unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     primary=GEOMEAN_PRIMARY,

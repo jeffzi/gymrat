@@ -87,6 +87,7 @@ from gymrat.report.loop import (
 from gymrat.report.style import render_lines
 from gymrat.report.text.render import render_report
 from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
+from gymrat.sample_balance import require_balanced_samples
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
 from gymrat.session.records import (
@@ -170,13 +171,14 @@ def recorded_verdicts(
     Returns:
         The per-metric verdicts keyed by metric name, each carrying only the
         fields the log serializes: ``p`` is omitted for non-permutation
-        verdicts, ``noise_pct`` for exact ones, and ``reason`` for exact ones
-        and verdicts that were not withheld, so a record handed to a caller
+        verdicts, ``noise_pct`` for exact ones, ``reason`` for exact ones and
+        verdicts that were not withheld, and ``detectable_pct`` for exact ones
+        and verdicts with no finite figure, so a record handed to a caller
         matches the one read back off the log.
     """
     recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
-        p, noise_pct, reason = verdict_stats(verdict)
+        p, noise_pct, reason, detectable_pct = verdict_stats(verdict)
         recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
@@ -185,6 +187,7 @@ def recorded_verdicts(
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
             p=p,
             noise_pct=noise_pct,
+            detectable_pct=detectable_pct,
             reason=reason,
         )
     return recorded
@@ -396,14 +399,17 @@ def _guard_ready(
     """Refuse another iteration before anything is measured, checking in a fixed order.
 
     Args:
-        config: The resolved run configuration, read for its stop conditions.
+        config: The resolved run configuration, read for its stop conditions
+            and sample count.
         state: The folded session state.
         root: Repository root whose budget and supervise lock are read.
         records: Session log records the iteration's duration is estimated from.
 
     Raises:
-        GymratError: First, when the last iteration is still unsettled; last,
-            when the supervise lock file cannot be opened.
+        GymratError: First, when the last iteration is still unsettled; then,
+            after the stop conditions, when the sample count cannot balance the
+            baseline and experiment; last, when the supervise lock file cannot
+            be opened.
         LoopStopError: When a configured stop condition is already met.
         BudgetExceededError: When the estimated iteration would outlast the
             time left on the budget.
@@ -412,6 +418,7 @@ def _guard_ready(
     stop = stop_condition(config, state)
     if stop is not None:
         raise stop
+    require_balanced_samples(config.samples, _budget.SIDES_PER_ITERATE)
     _guard_budget(root, records)
 
 
@@ -438,8 +445,9 @@ async def iterate_session(
 
     Raises:
         GymratError: When no session has been started, when the last iteration is
-            still unsettled, when the bench command fails, or when the adapter
-            cannot read the bench output.
+            still unsettled, when the sample count is odd (the
+            ``unbalanced-samples`` reason), when the bench command fails, or
+            when the adapter cannot read the bench output.
         LoopStopError: When a configured stop condition has already been met,
             or (as :class:`BudgetExceededError`) the session's time budget is
             spent, before anything is measured or recorded.

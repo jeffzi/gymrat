@@ -16,6 +16,8 @@ from pathlib import Path
 from gymrat import utils
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
+from gymrat.sample_balance import require_balanced_samples
+from gymrat.session.budget import SIDES_PER_ITERATE
 from gymrat.session.paths import archived_session_path, session_jsonl_path
 from gymrat.session.records import SessionConfig, SessionHooks, SessionRecord
 from gymrat.session.schema import SCHEMA_VERSION
@@ -83,9 +85,12 @@ def start_session(
         The session record, folded state, and whether the session was resumed.
 
     Raises:
-        GymratError: When ``ref`` names no commit or a directory, when the log is
-            corrupt, or when git refuses to create or recreate the workspace.
+        GymratError: When the sample count cannot balance the baseline and
+            experiment, before anything on disk changes; when ``ref`` names no
+            commit or a directory, when the log is corrupt, or when git refuses
+            to create or recreate the workspace.
     """
+    require_balanced_samples(config.samples, SIDES_PER_ITERATE)
     jsonl_path = session_jsonl_path(root)
     state = fold_session(read_records(jsonl_path))
     session = state.session

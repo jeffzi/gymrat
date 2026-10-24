@@ -28,7 +28,12 @@ from gymrat.report.text.render import (
     render_report,
     select_highlights,
 )
-from gymrat.report.types import GeomeanFailOn, RegressedFailOn, ReportOptions
+from gymrat.report.types import (
+    CandidateMetric,
+    GeomeanFailOn,
+    RegressedFailOn,
+    ReportOptions,
+)
 from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
@@ -53,11 +58,13 @@ from tests.report._comparisons import (
     n_way_metric,
     other_kind,
     permutation_metric,
+    shared_baseline_metric,
     time_kind,
     two_kind_result,
 )
 from tests.report._verdicts import (
     band_metric,
+    band_verdict,
     geomean_of,
     one_sided_metric,
 )
@@ -358,7 +365,9 @@ SAMPLE_SHORTAGE_HINT_PLAIN = (
 def _verbose_lines(metrics: MetricComparisons) -> list[str]:
     return [
         line
-        for line in footer_lines(metrics, verbose=True, command="compare", samples=4)
+        for line in footer_lines(
+            metrics, verbose=True, command="compare", samples=4, target_count=2
+        )
         if SAMPLE_SHORTAGE_HINT_PLAIN not in render_plain(line)
     ]
 
@@ -384,7 +393,7 @@ def test_footer_lines_when_colored_does_dim_the_descriptive_verdict_line():
 def test_footer_lines_when_verbose_does_close_on_the_sample_shortage_hint():
     metrics: MetricComparisons = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(metrics, verbose=True, command="compare", samples=4)
+    lines = footer_lines(metrics, verbose=True, command="compare", samples=4, target_count=2)
 
     assert lines[-1] == format_hint(SAMPLE_SHORTAGE_HINT)
 
@@ -502,9 +511,47 @@ _DROPPED_ROUNDS = (
 def test_footer_lines_when_not_verbose_does_pick_the_shortage_or_dropped_rounds_hint(
     metrics: MetricComparisons, samples: int, expected: list[str]
 ):
-    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples)
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples, target_count=2)
 
     assert [render_plain(line) for line in lines] == expected
+
+
+def _shortage_hint_plain(samples: int) -> str:
+    return f"re-run with gymrat compare --samples {samples} or more for statistical verdicts"
+
+
+@pytest.mark.parametrize(
+    ("target_count", "suggested"),
+    [
+        pytest.param(3, 6, id="three-targets"),
+        pytest.param(4, 8, id="four-targets"),
+        pytest.param(5, 10, id="five-targets"),
+        pytest.param(7, 14, id="seven-targets"),
+    ],
+)
+def test_footer_lines_when_run_too_short_does_suggest_the_smallest_balanced_count(
+    target_count: int, suggested: int
+):
+    metrics: MetricComparisons = {"a/time": band_metric(n=4)}
+
+    lines = footer_lines(
+        metrics, verbose=False, command="compare", samples=4, target_count=target_count
+    )
+
+    assert [render_plain(line) for line in lines] == [_shortage_hint_plain(suggested)]
+
+
+def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_four_targets_balance():
+    band_slice = CandidateMetric(median=101.0, spread=1.0, verdict=band_verdict(n=4, usable_n=4))
+    result = create_comparison_result(
+        samples=4,
+        candidates=[create_candidate(label=label) for label in ("one", "two", "three")],
+        metrics={"a/time": shared_baseline_metric([band_slice] * 3, name="a/time")},
+    )
+
+    output = render_report(result)
+
+    assert _shortage_hint_plain(8) in output.splitlines()
 
 
 def test_render_report_when_verbose_and_all_exact_does_end_on_the_highlights_without_a_footer():

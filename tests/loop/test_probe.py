@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 #: The sample count a probe requests and the count it should end up taking:
 #: unset falls back to the probe default, an explicit count always wins.
 SAMPLE_COUNTS = [
-    pytest.param(None, PROBE_DEFAULT_SAMPLES, id="unset-falls-back-to-the-probe-default"),
+    pytest.param(None, 6, id="unset-falls-back-to-the-probe-default"),
     pytest.param(3, 3, id="explicit-count-wins"),
 ]
 

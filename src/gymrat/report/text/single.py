@@ -273,7 +273,8 @@ def _verdict_fields(
         aggregate_parts: The verdict fields of the table's geomean rows.
 
     Returns:
-        The delta and band widths every verdict cell pads to.
+        The delta, band, pair-count and detectable-change widths every verdict
+        cell pads to.
     """
     metric_parts = [v.parts for row in rows if (v := _side(row).verdict) is not None]
     fields = verdict_widths([*metric_parts, *aggregate_parts])

@@ -40,6 +40,7 @@ __all__ = [
     "combine_geomean",
     "compute_half_range",
     "count_nonzero_pairs",
+    "detectable_shift",
     "normalize_ratio",
     "percent_delta",
     "sign_flip_permutation_test",
@@ -262,3 +263,121 @@ def sign_flip_permutation_test(x: Sequence[float], y: Sequence[float]) -> SignFl
         rng=np.random.default_rng(PERMUTATION_SEED),
     )
     return SignFlipResult(p=float(result.pvalue), statistic=float(result.statistic))
+
+
+# ---------------------------------------------------------------------------
+# Detectable shift
+# ---------------------------------------------------------------------------
+
+_DETECTION_ALPHA = 0.05
+
+# With every pair differing and sharing one sign, exact enumeration gives
+# p = 2 / 2**n, the smallest it can reach; it first drops below 0.05 at n = 6.
+_MIN_DETECTABLE_PAIRS = 6
+
+# Each check runs the permutation test twice, and above 13 pairs each run draws
+# RESAMPLE_BUDGET resamples, so the search stops after this many checks and falls
+# back to the shift that gives every centered difference one sign.
+_MAX_SHIFT_CHECKS = 3
+
+
+def _walsh_averages(values: Sequence[float]) -> list[float]:
+    return [(values[i] + values[j]) / 2 for i in range(len(values)) for j in range(i, len(values))]
+
+
+def _critical_rank_sum(pairs: int) -> int:
+    """The smallest positive rank sum whose two-sided exact p is below ``_DETECTION_ALPHA``.
+
+    The null distribution is the tie-free Wilcoxon signed-rank one: each rank
+    ``1..pairs`` joins the positive sum with probability one half.
+
+    Args:
+        pairs: How many paired differences the test ranks.
+
+    Returns:
+        The critical positive rank sum.
+    """
+    import numpy as np  # noqa: PLC0415 -- deferred: import-latency guard
+
+    total = pairs * (pairs + 1) // 2
+    probabilities = np.zeros(total + 1)
+    probabilities[0] = 1.0
+    for rank in range(1, pairs + 1):
+        with_rank = np.zeros_like(probabilities)
+        with_rank[rank:] = probabilities[:-rank]
+        probabilities = (probabilities + with_rank) / 2
+    upper_tails = np.cumsum(probabilities[::-1])[::-1]
+    return int(np.argmax(2 * upper_tails < _DETECTION_ALPHA))
+
+
+def _detected_both_ways(centered: Sequence[float], shift: float) -> bool:
+    zeros = [0.0] * len(centered)
+    raised = sign_flip_permutation_test(zeros, [c + shift for c in centered])
+    lowered = sign_flip_permutation_test(zeros, [c - shift for c in centered])
+    return raised.p < _DETECTION_ALPHA and lowered.p < _DETECTION_ALPHA
+
+
+def detectable_shift(x: Sequence[float], y: Sequence[float]) -> float:
+    """Return a shift of the paired differences the sign-flip test detects either way.
+
+    The paired differences ``y[i] - x[i]``, tied pairs included, are centered on
+    their Hodges-Lehmann estimate: the median of their pairwise (Walsh)
+    averages. The detectable shift is an ``s >= 0`` for which
+    :func:`sign_flip_permutation_test` reaches ``p < 0.05`` on both the
+    centered differences plus ``s`` and the centered differences minus ``s``,
+    so a change of that size in either direction would register. It is the
+    smallest such ``s`` for tie-free differences with at most 13 differing
+    pairs, where the test enumerates every sign flip; with ties or more pairs
+    it is the first candidate the upward search below confirms.
+
+    Significance can only change where a shifted difference meets zero or the
+    negation of another, that is at the magnitude of one of the centered
+    differences' pairwise averages, and at such a point the tie it creates can
+    keep the test short of significance. The shift returned therefore sits a
+    few units in the last place above that point. The Hodges-Lehmann interval
+    over the pairwise averages names the first candidate point; it matches the
+    test exactly only for tie-free differences under exact enumeration, so each
+    candidate is checked with the real test and the search moves up to the next
+    point when the check fails. After a few failed checks it settles on the
+    shift that gives every centered difference one sign, which always
+    registers.
+
+    Args:
+        x: The baseline sample.
+        y: The candidate sample, paired positionally with ``x`` over the shorter
+            of the two.
+
+    Returns:
+        The detectable shift, in the units of the samples. ``math.inf`` when
+        there are too few pairs for any shift to reach significance (fewer than
+        six), and ``math.nan`` when a paired difference is not finite.
+    """
+    differences = [yi - xi for xi, yi in zip(x, y, strict=False)]
+    if not all(math.isfinite(d) for d in differences):
+        return math.nan
+    if len(differences) < _MIN_DETECTABLE_PAIRS:
+        return math.inf
+
+    center = statistics.median(_walsh_averages(differences))
+    centered = [d - center for d in differences]
+    averages = sorted(_walsh_averages(centered))
+    widest = max(abs(c) for c in centered)
+
+    # Raising by s makes the positive rank sum count the averages above -s;
+    # lowering makes the negative one count those below s. Both must reach the
+    # critical count.
+    critical = _critical_rank_sum(len(centered))
+    start = max(-averages[len(averages) - critical], averages[critical - 1], 0.0)
+    points = sorted({abs(a) for a in averages if abs(a) > start})
+    for point in [start, *points][:_MAX_SHIFT_CHECKS]:
+        shift = _just_above(point, widest)
+        if _detected_both_ways(centered, shift):
+            return shift
+    return _just_above(widest, widest)
+
+
+def _just_above(point: float, widest: float) -> float:
+    # A shifted difference is at most `widest + point` in magnitude, so a few
+    # units in its last place keep every sum `c + shift` from rounding back
+    # onto the tie at `point`.
+    return point + 4 * math.ulp(widest + point)

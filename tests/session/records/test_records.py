@@ -79,6 +79,10 @@ from tests.session.records._wire import (
             id="iteration-metric-with-withheld-reason",
         ),
         pytest.param(
+            verdict_with(verdict="no-signal", reason="noise", detectable_pct=2.1),
+            id="iteration-metric-with-detectable-change",
+        ),
+        pytest.param(
             patching(ITERATION_RECORD, {"confirm": CONFIRM}),
             id="iteration-reran-to-confirm",
         ),

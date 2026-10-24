@@ -33,11 +33,11 @@ run with wall-clock and spend caps.
 gymrat compare main perf/faster-decode --bench "npm run bench"
 ```
 
-gymrat checks out each revision into a temporary worktree, runs the bench command ten times per
+gymrat checks out each revision into a temporary worktree, runs the bench command 12 times per
 side, and prints a verdict per metric plus a geometric-mean (geomean) summary:
 
 ```text
-gymrat compare · baseline main ↔ perf/faster-decode · 10 paired samples · adapter: metric-lines
+gymrat compare · baseline main ↔ perf/faster-decode · 12 paired samples · adapter: metric-lines
 metric                    │ main         │ perf/faster-decode │ vs main
 ──────────────────────────┼──────────────┼────────────────────┼────────────────
 decode#time               │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
@@ -124,7 +124,7 @@ keys:
 bench = "npm run bench" # required: the command whose stdout carries metrics
 prepare = "npm ci && npm run build" # run once per revision before sampling
 adapter = "metric-lines" # or "mitata"
-samples = 10 # paired samples per target
+samples = 12 # paired samples per target; see How verdicts work for valid counts
 timeout_seconds = 1800 # default; per bench invocation; flag --timeout, variable GYMRAT_TIMEOUT
 filter = "npm run bench -- --filter {names}" # scopes confirmation reruns and `gymrat probe`
 primary = "geomean" # default; or a metric name
@@ -168,7 +168,7 @@ Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`,
 
 `gymrat probe` is the one exception. Its sample count comes from `--samples` or its own 6-sample
 default; it ignores `GYMRAT_SAMPLES` and the configured `samples`. A probe is a spot check, so a
-session tuned for 10-sample measurements should not make every spot check cost a full measurement.
+session tuned for 12-sample measurements should not make every spot check cost a full measurement.
 
 The optional `[supervise]` table pins settings for `gymrat supervise` runs:
 
@@ -374,12 +374,17 @@ gymrat export --endpoint http://localhost:4318              # override the colle
 ## How verdicts work
 
 Each candidate is sampled in rounds with its baseline: every round runs each side once, so machine
-drift hits both sides equally. The order rotates every round, so neither side always runs first.
-When the sample count is not a multiple of the number of targets, some targets run first one more
-time than others: with one candidate, that means an odd sample count. A metric's verdict
-comes from a sign-flip permutation test on the signed-rank sum of the paired differences. Tied
-pairs carry no sign to flip. When fewer than 6 pairs differ, a noise-band fallback applies: the
-percentage change between the two sides' medians must exceed the metric's noise band.
+drift hits both sides equally. The run order changes from round to round so each target runs in
+every position, and after every other target, equally often. The sample count must be a multiple of
+the order's cycle: an even count for two targets, a multiple of `N` for an even number `N` of
+targets, and a multiple of `2N` for an odd number. The default of 12 balances 1, 2, 3, 4, 6
+and 12 targets. gymrat refuses any other count before a bench or hook runs, and names the nearest valid
+counts. `gymrat doctor` lists the target counts from 2 through 8 the configured `samples` balances.
+
+A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of the paired
+differences. Tied pairs carry no sign to flip. When fewer than 6 pairs differ, a noise-band
+fallback applies: the percentage change between the two sides' medians must exceed the metric's
+noise band.
 
 A metric's noise band is 1.5 times the larger of the two sides' half-ranges, never less than 0.5%.
 A half-range is half the span from lowest to highest sample, taken as a percentage of that side's
@@ -398,6 +403,11 @@ Each metric lands in one class:
   noise, falls within 1.25 measurement steps, or has no finite percentage. Or it runs against the
   pairs: the medians do not move the way the pairs do.
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
+
+When a metric lands within noise, gymrat also states the smallest change the run could have
+detected for it, as a percentage of the baseline median. The text table prints it as
+`detects ≥X%` after the noise band; the JSON output and the session log carry it as
+`detectable_pct`. A real change smaller than that figure can go unseen at this sample count.
 
 JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
 value the noise band gave it (`improved`, `regressed`, `unstable`, or `no-signal`), with fewer than

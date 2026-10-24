@@ -6,6 +6,7 @@ API only.
 """
 
 import math
+import statistics
 from collections.abc import Callable
 
 import pytest
@@ -17,8 +18,11 @@ from gymrat.model import (
     MetricVerdict,
     PermutationVerdict,
 )
+from gymrat.stats import detectable_shift
 from gymrat.verdict import compute_verdicts
 from tests.verdict._engine import (
+    BYTE_ONE_MOVE_A,
+    BYTE_ONE_MOVE_B,
     DIRECTION_MISMATCH_A,
     DIRECTION_MISMATCH_B,
     FLAT_PERMUTATION_ROUNDS,
@@ -740,3 +744,223 @@ def test_compute_verdicts_when_cleanly_paired_does_not_warn():
     run(samples(100.0, 90.0), samples(95.0, 85.0), METRIC_EXACT_LOWER, warn=collected.append)
 
     assert collected == []
+
+
+# ---------------------------------------------------------------------------
+# Detectable change
+# ---------------------------------------------------------------------------
+
+
+def _values(rounds: list[dict[str, float]]) -> list[float]:
+    return [window["metric"] for window in rounds]
+
+
+@pytest.mark.parametrize(
+    ("samples_a", "samples_b"),
+    [
+        pytest.param(NOISY_PERMUTATION_A, NOISY_PERMUTATION_B, id="decrease"),
+        pytest.param(SEPARATED_LOW, SEPARATED_HIGH, id="increase"),
+        pytest.param(
+            samples(-60.0, -55.0, -50.0, -50.0, -45.0, -40.0),
+            samples(-62.0, -54.0, -53.0, -49.0, -47.0, -38.0),
+            id="negative-median",
+        ),
+    ],
+)
+def test_compute_verdicts_when_permutation_does_carry_detectable_shift_over_baseline_median(
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
+):
+    baseline = _values(samples_a)
+    shift = detectable_shift(baseline, _values(samples_b))
+
+    result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
+
+    verdict = get_permutation(result)
+    assert verdict.detectable_pct == pytest.approx(
+        shift / abs(statistics.median(baseline)) * 100, abs=1e-9
+    )
+
+
+@pytest.mark.parametrize(
+    ("meta", "samples_a", "samples_b", "expected_pct"),
+    [
+        pytest.param(
+            METRIC_APPROX_LOWER, samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="spread"
+        ),
+        pytest.param(
+            METRIC_APPROX_LOWER,
+            create_samples(2, 100.0),
+            samples(60.0, 160.0),
+            150 * 50 / 110,
+            id="candidate-spread",
+        ),
+        pytest.param(
+            METRIC_APPROX_LOWER,
+            samples(-60.0, -40.0),
+            samples(-50.0, -50.0),
+            30.0,
+            id="negative-median",
+        ),
+        pytest.param(
+            METRIC_APPROX_LOWER,
+            create_samples(2, 100.0),
+            samples(100.1, 99.9),
+            0.5,
+            id="noise-floor",
+        ),
+        pytest.param(
+            METRIC_APPROX_LOWER,
+            create_samples(3, 100.0),
+            samples(100.0, 95.0, 90.0),
+            150 * 5 / 95,
+            id="two-of-three-differ",
+        ),
+        pytest.param(
+            METRIC_BYTES_LOWER, create_samples(2, 4.0), create_samples(2, 3.0), 31.25, id="step"
+        ),
+    ],
+)
+def test_compute_verdicts_when_band_does_carry_band_its_delta_had_to_clear(
+    meta: dict[str, MetricMeta],
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
+    expected_pct: float,
+):
+    result = run(samples_a, samples_b, meta)
+
+    verdict = get_band(result)
+    assert verdict.detectable_pct == pytest.approx(expected_pct, abs=1e-5)
+
+
+# The baseline median is 4 bytes and every pair moves by exactly one byte, so the
+# centered differences are all zero and the shift alone would be near zero.
+def test_compute_verdicts_when_permutation_shift_below_step_floor_does_carry_step_floor():
+    result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_BYTES_LOWER)
+
+    verdict = get_permutation(result)
+    assert verdict.detectable_pct == pytest.approx(31.25, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("narrow", "meta", "samples_a", "samples_b"),
+    [
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            samples(100.0, 100.0),
+            samples(100.0, 210.0),
+            id="band-one-pair-differs",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            create_samples(2, 0.0),
+            create_samples(2, 0.0),
+            id="band-no-pair-differs",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            samples(-5.0, 5.0),
+            samples(10.0, 10.0),
+            id="band-zero-baseline-median",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            samples(0.0, 0.0),
+            samples(1.0, 3.0),
+            id="band-zero-baseline-median-without-spread",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_APPROX_LOWER,
+            create_samples(3, 10.0),
+            samples(-5.0, _OVERFLOWING_MEDIAN, 5.0),
+            id="band-overflowing-band",
+        ),
+        pytest.param(
+            get_permutation,
+            METRIC_APPROX_LOWER,
+            samples(-5.0, -3.0, -1.0, 1.0, 3.0, 5.0),
+            create_samples(6, 10.0),
+            id="permutation-zero-baseline-median",
+        ),
+        pytest.param(
+            get_permutation,
+            METRIC_APPROX_LOWER,
+            samples(-5.0, -3.0, 0.0, 4e-310, 3.0, 5.0),
+            samples(-6.0, -4.0, 1e-310, 3e-310, 4.0, 6.0),
+            id="permutation-overflowing-shift",
+        ),
+        pytest.param(
+            get_permutation,
+            METRIC_BYTES_LOWER,
+            create_samples(FLAT_PERMUTATION_ROUNDS, _OVERFLOWING_MEDIAN),
+            create_samples(FLAT_PERMUTATION_ROUNDS, 1e-300),
+            id="permutation-overflowing-step-floor",
+        ),
+    ],
+)
+def test_compute_verdicts_when_no_finite_detectable_pct_does_carry_none(
+    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
+    meta: dict[str, MetricMeta],
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
+):
+    result = run(samples_a, samples_b, meta)
+
+    verdict = narrow(result)
+    assert verdict.detectable_pct is None
+
+
+@pytest.mark.parametrize(
+    ("narrow", "meta", "samples_a", "samples_b", "unstable_noise_pct", "expected_pct"),
+    [
+        pytest.param(
+            get_permutation,
+            METRIC_APPROX_LOWER,
+            NOISY_PERMUTATION_A,
+            NOISY_PERMUTATION_B,
+            20.0,
+            10.0,
+            id="permutation-noisy",
+        ),
+        pytest.param(
+            get_band, METRIC_APPROX_LOWER, NOISY_BAND_A, NOISY_BAND_B, 20.0, 30.0, id="band-noisy"
+        ),
+        pytest.param(
+            get_permutation,
+            METRIC_BYTES_LOWER,
+            create_samples(FLAT_PERMUTATION_ROUNDS, 0.6),
+            create_samples(FLAT_PERMUTATION_ROUNDS, 0.7),
+            200.0,
+            1.25 / 0.6 * 100,
+            id="permutation-step-floor",
+        ),
+        pytest.param(
+            get_band,
+            METRIC_BYTES_LOWER,
+            create_samples(2, 0.6),
+            create_samples(2, 0.7),
+            200.0,
+            1.25 / 0.6 * 100,
+            id="band-step-floor",
+        ),
+    ],
+)
+def test_compute_verdicts_when_unstable_does_keep_detectable_pct(
+    *,
+    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
+    meta: dict[str, MetricMeta],
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
+    unstable_noise_pct: float,
+    expected_pct: float,
+):
+    result = run(samples_a, samples_b, meta, unstable_noise_pct=unstable_noise_pct)
+
+    verdict = narrow(result)
+    assert verdict.verdict == "unstable"
+    assert verdict.detectable_pct == pytest.approx(expected_pct, abs=1e-5)

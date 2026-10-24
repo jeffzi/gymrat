@@ -9,7 +9,10 @@ they were captured by running the statistic through
 """
 
 import math
+import statistics
+from itertools import combinations_with_replacement
 from typing import cast
+from unittest.mock import create_autospec
 
 import pytest
 from hypothesis import example, given, settings
@@ -17,9 +20,11 @@ from hypothesis import strategies as st
 
 from gymrat.model import Direction
 from gymrat.stats import (
+    SignFlipResult,
     combine_geomean,
     compute_half_range,
     count_nonzero_pairs,
+    detectable_shift,
     normalize_ratio,
     percent_delta,
     sign_flip_permutation_test,
@@ -522,3 +527,139 @@ def test_sign_flip_permutation_test_when_any_finite_pairs_does_return_p_in_unit_
     p = sign_flip_permutation_test(x, y).p
 
     assert 0.0 < p <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# detectable_shift
+# ---------------------------------------------------------------------------
+
+_SIGNIFICANCE = 0.05
+_BASELINE = 100.0
+
+
+def _centered(differences: list[int]) -> list[float]:
+    walsh_averages = [(a + b) / 2 for a, b in combinations_with_replacement(differences, 2)]
+    center = statistics.median(walsh_averages)
+    return [d - center for d in differences]
+
+
+def _both_directions_significant(centered: list[float], shift: float) -> bool:
+    zeros = [0.0] * len(centered)
+    raised = sign_flip_permutation_test(zeros, [c + shift for c in centered]).p
+    lowered = sign_flip_permutation_test(zeros, [c - shift for c in centered]).p
+    return raised < _SIGNIFICANCE and lowered < _SIGNIFICANCE
+
+
+def _detectable_shift_of(differences: list[int]) -> float:
+    return detectable_shift(
+        [_BASELINE] * len(differences),
+        [_BASELINE + d for d in differences],
+    )
+
+
+# Small integer differences make tied magnitudes and zero differences common.
+# Six pairs is the fewest whose all-same-sign pattern reaches p < 0.05 under
+# exact enumeration; above 13 pairs the test switches to its seeded Monte Carlo
+# resample.
+_integer_differences = st.lists(st.integers(min_value=-6, max_value=6), min_size=6, max_size=20)
+
+# Distinct non-zero magnitudes keep the differences tie-free. At most 13 pairs
+# keeps the test on exact enumeration.
+_tie_free_differences = st.lists(
+    st.tuples(st.integers(min_value=1, max_value=30), st.booleans()),
+    min_size=6,
+    max_size=13,
+    unique_by=lambda pair: pair[0],
+).map(lambda pairs: [magnitude if positive else -magnitude for magnitude, positive in pairs])
+
+_slow_permutations = settings(deadline=None, max_examples=30)
+
+
+@_slow_permutations
+@given(differences=_integer_differences)
+@example(differences=[2] * 8)
+@example(differences=[0, 0, 0, 1, 0, 0, 0, 0])
+@example(differences=[1, -1, 1, -1, 2, -2, 1, 1, 0, 3, -1, 2, 1, -2, 0, 1])
+@example(differences=[3] * 18)
+def test_detectable_shift_when_integer_differences_does_make_both_directions_significant(
+    differences: list[int],
+):
+    shift = _detectable_shift_of(differences)
+
+    assert _both_directions_significant(_centered(differences), shift)
+
+
+# Integer differences put the Hodges-Lehmann estimate on a 1/4 grid, so every
+# shift where a direction's significance can change (a pairwise average of the
+# centered differences) sits on a 1/8 grid. Between two such points the
+# significance is constant, so probing 1/16 below the returned shift covers
+# every smaller shift down to the previous grid point.
+_HALF_GRID_STEP = 1 / 16
+
+
+@_slow_permutations
+@given(differences=_tie_free_differences)
+@example(differences=[1, 2, 3, 4, 5, 6])
+@example(differences=[-7, 3, 1, 12, -2, 5, 9, -4, 6, 11, 8, -10, 13])
+def test_detectable_shift_when_tie_free_exact_regime_does_leave_smaller_shifts_insignificant(
+    differences: list[int],
+):
+    shift = _detectable_shift_of(differences)
+
+    assert math.isfinite(shift)
+    assert not _both_directions_significant(
+        _centered(differences),
+        max(shift - _HALF_GRID_STEP, 0.0),
+    )
+
+
+@_slow_permutations
+@given(differences=_integer_differences)
+@example(differences=[2] * 8)
+@example(differences=[1, 2, 3, 4, 5, 6])
+def test_detectable_shift_when_integer_differences_does_not_exceed_shift_where_all_share_sign(
+    differences: list[int],
+):
+    sign_sharing_shift = max(abs(c) for c in _centered(differences))
+
+    shift = _detectable_shift_of(differences)
+
+    assert shift <= sign_sharing_shift or math.isclose(shift, sign_sharing_shift, abs_tol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "expected"),
+    [
+        pytest.param([], [], math.inf, id="no-pairs"),
+        pytest.param([10.0] * 5, [11.0, 12.0, 13.0, 14.0, 15.0], math.inf, id="five-pairs"),
+        pytest.param([10.0] * 5, [10.0] * 5, math.inf, id="five-tied-pairs"),
+        pytest.param(
+            [10.0] * 8,
+            [11.0, math.nan, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0],
+            math.nan,
+            id="nan-in-candidate",
+        ),
+    ],
+)
+def test_detectable_shift_when_no_shift_can_reach_significance_does_return_inf_or_nan(
+    x: list[float],
+    y: list[float],
+    expected: float,
+):
+    assert detectable_shift(x, y) == pytest.approx(expected, nan_ok=True)
+
+
+def test_detectable_shift_when_no_candidate_registers_does_run_the_test_at_most_six_times(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    never_significant = create_autospec(
+        sign_flip_permutation_test, return_value=SignFlipResult(p=1.0, statistic=0.0)
+    )
+    monkeypatch.setattr("gymrat.stats.sign_flip_permutation_test", never_significant)
+    differences = [-7, 3, 1, 12, -2, 5, 9, -4]
+
+    shift = detectable_shift([0.0] * len(differences), differences)
+
+    assert never_significant.call_count <= 6
+    centered = _centered(differences)
+    assert shift >= max(abs(value) for value in centered)

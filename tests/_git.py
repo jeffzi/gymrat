@@ -18,6 +18,10 @@ FAILING_BENCH = "#!/bin/sh\nexit 1\n"
 #: The flags that run the bench ``write_committed_bench`` commits, once.
 BENCH_ONCE_FLAGS = ("--bench", "sh bench.sh", "--samples", "1")
 
+#: The flags that run the bench ``write_committed_bench`` commits the fewest times
+#: that balance a compare of two or three targets.
+COMPARE_BENCH_FLAGS = ("--bench", "sh bench.sh", "--samples", "6")
+
 
 def emit_bench(value: int) -> str:
     """A bench script that reports the metric ``x`` as ``value`` and exits cleanly."""

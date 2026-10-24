@@ -5,6 +5,7 @@ samples.
 """
 
 import asyncio
+import itertools
 import time
 from collections.abc import Callable
 from unittest.mock import create_autospec
@@ -80,11 +81,11 @@ def one_in_place_target() -> list[TargetContext]:
     ]
 
 
-def three_in_place_targets() -> list[TargetContext]:
-    """Three in-place targets labelled a/b/c, rooted at /a, /b and /c."""
+def lettered_in_place_targets(count: int) -> list[TargetContext]:
+    """``count`` in-place targets labelled a, b, c, ..., each rooted at ``/<label>``."""
     return [
         TargetContext(target=InPlaceTarget(dir=f"/{name}"), dir=f"/{name}", label=name)
-        for name in ("a", "b", "c")
+        for name in "abcdefgh"[:count]
     ]
 
 
@@ -175,22 +176,22 @@ async def test_collect_samples_when_targets_succeed_does_collect_each_targets_sa
             id="one-target",
         ),
         pytest.param(
+            one_in_place_target(),
+            1,
+            ["/a"],
+            [[1.0]],
+            id="one-target-single-round",
+        ),
+        pytest.param(
             two_in_place_targets(),
             4,
             ["/a", "/b", "/b", "/a", "/a", "/b", "/b", "/a"],
             [[1.0, 4.0, 5.0, 8.0], [2.0, 3.0, 6.0, 7.0]],
             id="two-targets",
         ),
-        pytest.param(
-            three_in_place_targets(),
-            4,
-            ["/a", "/b", "/c", "/b", "/c", "/a", "/c", "/a", "/b", "/a", "/b", "/c"],
-            [[1.0, 6.0, 8.0, 10.0], [2.0, 4.0, 9.0, 11.0], [3.0, 5.0, 7.0, 12.0]],
-            id="three-targets",
-        ),
     ],
 )
-async def test_collect_samples_when_rounds_repeat_does_rotate_which_target_runs_first(
+async def test_collect_samples_when_one_or_two_targets_does_alternate_which_target_runs_first(
     monkeypatch: pytest.MonkeyPatch,
     targets: list[TargetContext],
     rounds: int,
@@ -205,6 +206,109 @@ async def test_collect_samples_when_rounds_repeat_does_rotate_which_target_runs_
     assert [exec_options.cwd for _, exec_options in calls] == expected_dirs
     assert [ts.ctx for ts in result] == targets
     assert [[sample["x"] for sample in ts.samples] for ts in result] == expected_samples
+
+
+#: Target counts of three or more with the shortest sample count that balances each.
+_BALANCING_CYCLES = [
+    pytest.param(3, 6, id="three-targets"),
+    pytest.param(4, 4, id="four-targets"),
+    pytest.param(5, 10, id="five-targets"),
+    pytest.param(6, 6, id="six-targets"),
+]
+
+
+async def _collect_run_orders(
+    monkeypatch: pytest.MonkeyPatch, target_count: int, samples: int
+) -> tuple[list[list[str]], list[str]]:
+    """Sample ``target_count`` lettered targets, returning each round's run order and the dirs."""
+    calls = install_numbered_exec(monkeypatch, numbered_sample)
+    targets = lettered_in_place_targets(target_count)
+    options = SamplingOptions(bench="run", prepare=None, samples=samples, timeout_seconds=1.0)
+
+    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    ran = [exec_options.cwd for _, exec_options in calls]
+    rounds = [ran[start : start + target_count] for start in range(0, len(ran), target_count)]
+    return rounds, [ctx.dir for ctx in targets]
+
+
+@pytest.mark.parametrize(("target_count", "cycle"), _BALANCING_CYCLES)
+async def test_collect_samples_when_three_or_more_targets_does_give_each_target_every_position_equally_often(
+    monkeypatch: pytest.MonkeyPatch, target_count: int, cycle: int
+):
+    rounds, dirs = await _collect_run_orders(monkeypatch, target_count, cycle)
+
+    assert len(rounds) == cycle
+    assert all(sorted(run_order) == dirs for run_order in rounds)
+    slots = list(itertools.product(range(target_count), dirs))
+    assert {
+        (position, target): sum(run_order[position] == target for run_order in rounds)
+        for position, target in slots
+    } == dict.fromkeys(slots, cycle // target_count)
+
+
+@pytest.mark.parametrize(("target_count", "cycle"), _BALANCING_CYCLES)
+async def test_collect_samples_when_three_or_more_targets_does_run_each_target_after_every_other_equally_often(
+    monkeypatch: pytest.MonkeyPatch, target_count: int, cycle: int
+):
+    rounds, dirs = await _collect_run_orders(monkeypatch, target_count, cycle)
+
+    followings = [pair for run_order in rounds for pair in itertools.pairwise(run_order)]
+    ordered_pairs = list(itertools.permutations(dirs, 2))
+    assert {pair: followings.count(pair) for pair in ordered_pairs} == dict.fromkeys(
+        ordered_pairs, cycle // target_count
+    )
+
+
+@pytest.mark.parametrize(("target_count", "cycle"), _BALANCING_CYCLES)
+async def test_collect_samples_when_samples_span_two_cycles_does_repeat_the_cycle(
+    monkeypatch: pytest.MonkeyPatch, target_count: int, cycle: int
+):
+    rounds, _ = await _collect_run_orders(monkeypatch, target_count, 2 * cycle)
+
+    assert rounds[cycle:] == rounds[:cycle]
+
+
+async def test_collect_samples_when_run_order_varies_does_keep_each_targets_samples_in_round_order(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = install_numbered_exec(monkeypatch, numbered_sample)
+    targets = lettered_in_place_targets(3)
+    options = SamplingOptions(bench="run", prepare=None, samples=12, timeout_seconds=1.0)
+
+    result = await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
+
+    assert [ts.ctx for ts in result] == targets
+    assert [[(int(sample["x"]) - 1) // 3 for sample in ts.samples] for ts in result] == [
+        list(range(12))
+    ] * 3
+    assert [[int(sample["x"]) for sample in ts.samples] for ts in result] == [
+        [call for call, (_, ran) in enumerate(calls, start=1) if ran.cwd == ctx.dir]
+        for ctx in targets
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target_count", "samples"),
+    [
+        pytest.param(2, 3, id="two-targets-odd-count"),
+        pytest.param(3, 9, id="three-targets-multiple-of-n-but-not-2n"),
+        pytest.param(4, 6, id="four-targets-not-a-multiple"),
+    ],
+)
+async def test_collect_samples_when_count_cannot_balance_the_targets_does_refuse_before_any_command_runs(
+    monkeypatch: pytest.MonkeyPatch, target_count: int, samples: int
+):
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    options = SamplingOptions(bench="run", prepare="prep", samples=samples, timeout_seconds=1.0)
+
+    with pytest.raises(GymratError) as caught:
+        await collect_samples(
+            metric_lines_adapter, lettered_in_place_targets(target_count), options, asyncio.Event()
+        )
+
+    assert caught.value.reason == "unbalanced-samples"
+    assert recorder.calls == []
 
 
 async def test_collect_samples_when_progress_given_does_emit_every_event_stamped_from_the_clock(
@@ -222,7 +326,7 @@ async def test_collect_samples_when_progress_given_does_emit_every_event_stamped
     options = SamplingOptions(
         bench="run",
         prepare="prep",
-        samples=3,
+        samples=2,
         timeout_seconds=1.0,
         on_progress=events.append,
         clock=tick,
@@ -235,44 +339,40 @@ async def test_collect_samples_when_progress_given_does_emit_every_event_stamped
         PrepareFinished("old", 200.0),
         PrepareStarted("new", 300.0),
         PrepareFinished("new", 400.0),
-        PassStarted(1, 3, 2, "old", 500.0, phase="measure"),
-        PassFinished(1, 3, 2, "old", 600.0, phase="measure"),
-        PassStarted(1, 3, 2, "new", 700.0, phase="measure"),
-        PassFinished(1, 3, 2, "new", 800.0, phase="measure"),
-        PassStarted(2, 3, 2, "new", 900.0, phase="measure"),
-        PassFinished(2, 3, 2, "new", 1000.0, phase="measure"),
-        PassStarted(2, 3, 2, "old", 1100.0, phase="measure"),
-        PassFinished(2, 3, 2, "old", 1200.0, phase="measure"),
-        PassStarted(3, 3, 2, "old", 1300.0, phase="measure"),
-        PassFinished(3, 3, 2, "old", 1400.0, phase="measure"),
-        PassStarted(3, 3, 2, "new", 1500.0, phase="measure"),
-        PassFinished(3, 3, 2, "new", 1600.0, phase="measure"),
+        PassStarted(1, 2, 2, "old", 500.0, phase="measure"),
+        PassFinished(1, 2, 2, "old", 600.0, phase="measure"),
+        PassStarted(1, 2, 2, "new", 700.0, phase="measure"),
+        PassFinished(1, 2, 2, "new", 800.0, phase="measure"),
+        PassStarted(2, 2, 2, "new", 900.0, phase="measure"),
+        PassFinished(2, 2, 2, "new", 1000.0, phase="measure"),
+        PassStarted(2, 2, 2, "old", 1100.0, phase="measure"),
+        PassFinished(2, 2, 2, "old", 1200.0, phase="measure"),
     ]
 
 
-async def test_collect_samples_when_three_targets_rotate_does_label_each_pass_with_its_target(
+async def test_collect_samples_when_three_targets_reorder_does_label_each_pass_with_the_target_it_ran(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    calls = install_numbered_exec(monkeypatch, numbered_sample)
+    targets = lettered_in_place_targets(3)
+    label_of = {ctx.dir: ctx.label for ctx in targets}
     events: list[ProgressEvent] = []
     options = SamplingOptions(
         bench="run",
         prepare=None,
-        samples=3,
+        samples=6,
         timeout_seconds=1.0,
         on_progress=events.append,
         clock=lambda: 0.0,
     )
 
-    await collect_samples(metric_lines_adapter, three_in_place_targets(), options, asyncio.Event())
+    await collect_samples(metric_lines_adapter, targets, options, asyncio.Event())
 
     passes = [event for event in events if isinstance(event, PassStarted | PassFinished)]
-
     assert len(passes) == len(events)
     assert [(type(event), event.round, event.label) for event in passes] == [
-        (kind, round_number, label)
-        for round_number, labels in ((1, "abc"), (2, "bca"), (3, "cab"))
-        for label in labels
+        (kind, index // 3 + 1, label_of[exec_options.cwd])
+        for index, (_, exec_options) in enumerate(calls)
         for kind in (PassStarted, PassFinished)
     ]
 

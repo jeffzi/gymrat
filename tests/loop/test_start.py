@@ -286,6 +286,52 @@ def test_start_session_when_started_does_warn_through_the_sink_only_if_a_ref_mee
 
 
 # ---------------------------------------------------------------------------
+# when the sample count cannot balance the two sides
+# ---------------------------------------------------------------------------
+
+
+def _open_a_session_missing_its_experiment_worktree(repo: str) -> None:
+    """Open a session, then delete its experiment worktree so a resume would put it back."""
+    start_session(repo, "main", CONFIG)
+    shutil.rmtree(experiment_worktree_dir(repo))
+
+
+def _footprint(repo: str) -> tuple[list[tuple[str, bytes]], list[str], list[str]]:
+    """The session directory's files and bytes, git's worktrees, and the session branches."""
+    state_dir = Path(session_jsonl_path(repo)).parent
+    files = sorted(
+        (str(path.relative_to(state_dir)), path.read_bytes())
+        for path in state_dir.rglob("*")
+        if path.is_file()
+    )
+    return files, list_worktree_dirs(repo), session_branches(repo)
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_leave_repo_empty, id="new-session"),
+        pytest.param(_open_a_session_missing_its_experiment_worktree, id="resumed-session"),
+        pytest.param(_open_and_finalize_a_session, id="closed-session"),
+    ],
+)
+def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(
+    repo: str, arrange: Callable[[str], None]
+):
+    arrange(repo)
+    before = _footprint(repo)
+
+    with pytest.raises(GymratError) as excinfo:
+        start_session(repo, "main", replace(CONFIG, samples=5))
+
+    assert (str(excinfo.value), excinfo.value.reason) == (
+        "samples = 5 cannot balance 2 targets: use a multiple of 2 (4 or 6)",
+        "unbalanced-samples",
+    )
+    assert _footprint(repo) == before
+
+
+# ---------------------------------------------------------------------------
 # when the session on disk was finalized
 # ---------------------------------------------------------------------------
 

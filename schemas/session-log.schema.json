@@ -150,6 +150,7 @@
             "no-filter",
             "no-baseline",
             "supervised-use-tool",
+            "unbalanced-samples",
             "error"
           ],
           "title": "Reason",
@@ -397,6 +398,12 @@
           ],
           "description": "Percentage change from baseline, or null when undefined.",
           "title": "Delta Pct"
+        },
+        "detectable_pct": {
+          "default": null,
+          "description": "The smallest change, as a percentage of the baseline median, the run could have detected for this metric, never below its measurement step. Absent for exact verdicts and when no finite figure applies.",
+          "title": "Detectable Pct",
+          "type": "number"
         },
         "gating": {
           "description": "Whether this metric gates the iteration outcome.",

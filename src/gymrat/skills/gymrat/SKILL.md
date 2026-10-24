@@ -23,7 +23,9 @@ Every command runs from the repository root. Never `cd` into a worktree. Reach a
 
 `bench` must be resolvable — from `gymrat.toml` or `--bench`. `gymrat.toml` is where `checks`,
 `filter`, `primary`, `runbook`, `stop`, and `hooks` live. `adapter` defaults to `metric-lines`;
-`samples` defaults to `10`. Without `checks`, `keep` commits with the gate off and only warns.
+`samples` defaults to `12`, and `start`, `iterate` and `compare` refuse an odd count before any
+bench or hook runs; a `compare` with more candidates needs a multiple of its cycle (6 for three
+targets). Without `checks`, `keep` commits with the gate off and only warns.
 
 Load the per-repo runbook before your first edit. `gymrat start` prints the path. No runbook line
 → ask which metrics gate and what to optimize.
@@ -229,6 +231,9 @@ Levers, in order of leverage:
   metrics) use more and read the method with `--verbose`. On `measure`, below 6 one slow run swings
   the spread past most real effects. When raising the count on `measure` or `compare`, pass
   `--samples`; never edit `samples` in `gymrat.toml` mid-session.
+- **Read `detectable_pct` before buying more samples.** A NO-SIGNAL metric's verdict carries
+  `detectable_pct`: the smallest change, in percent of the baseline median, that run could have
+  detected. Weigh it against the change the edit is meant to make.
 - **`filter` in `gymrat.toml`** is a bench command template carrying a `{names}` placeholder. It
   scopes **confirmation reruns and `gymrat probe`**: the rerun benches just the regressed metric
   names substituted into `{names}`, and a named `probe` benches just those names. Without it, the

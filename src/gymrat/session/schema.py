@@ -101,6 +101,7 @@ CommandReason = Literal[
     "no-filter",
     "no-baseline",
     "supervised-use-tool",
+    "unbalanced-samples",
     "error",
 ]
 """Why a command exited non-zero.
@@ -130,5 +131,7 @@ Each value is produced by the command named after the dash-prefix:
 - ``no-filter``         — probe (names given with no filter template configured)
 - ``no-baseline``       — probe (the session has no baseline record)
 - ``supervised-use-tool`` — any command typed outside the supervisor during a live supervised run
+- ``unbalanced-samples`` — any command that benches several targets (the sample count cannot
+  balance their run order)
 - ``error``             — any command (an unexpected error)
 """

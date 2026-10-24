@@ -201,7 +201,7 @@ _COMMAND_REASONS = (
     "'no-session', 'finalized', 'nothing-measured', 'gating-regression', 'nothing-to-commit', "
     "'checks-failed', 'not-improved', 'nothing-to-discard', 'stale-session', 'nothing-kept', "
     "'dirty-worktree', 'unkept-commits', 'bad-branch', 'branch-exists', 'fail-on', 'no-filter', "
-    "'no-baseline', 'supervised-use-tool' or 'error'"
+    "'no-baseline', 'supervised-use-tool', 'unbalanced-samples' or 'error'"
 )
 
 
