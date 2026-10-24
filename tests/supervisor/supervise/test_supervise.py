@@ -573,7 +573,7 @@ async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_sessi
     create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    commit_project(repo, samples=5)
+    commit_project(repo, samples=4)
     log_path = Path(repo) / "supervisor-events.jsonl"
 
     async def start() -> None:

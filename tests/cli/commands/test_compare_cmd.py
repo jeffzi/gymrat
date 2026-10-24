@@ -36,6 +36,7 @@ from gymrat.report.types import (
 )
 from gymrat.sampling import RunOptions, SamplingOptions
 from tests._ansi import warning_lines
+from tests._exec_fixtures import expected_result, install_exec
 from tests.cli._command_stubs import (
     stub_compare,
     stub_compare_command,
@@ -322,6 +323,24 @@ def test_compare_when_success_does_record_trace_with_only_the_args_given(
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 0, None)
     assert cmd.args == traced
+
+
+def test_compare_when_samples_cannot_balance_the_targets_does_record_the_refusal_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: str,
+):
+    open_session(repo)
+    recorder = install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC x=1"))
+
+    result = runner.invoke(
+        app, ["compare", "main", "main", "--bench", "sh bench.sh", "--samples", "3"]
+    )
+
+    assert result.exit_code == 2
+    assert "samples = 3 cannot balance 2 targets: use a multiple of 2 (2 or 4)" in result.stderr
+    assert recorder.calls == []
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 2, "unbalanced-samples")
 
 
 def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(

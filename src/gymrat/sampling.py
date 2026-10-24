@@ -4,10 +4,14 @@ Runs a bench command a fixed number of times against each target, parsing every
 run's output into a metric record. Runs are strictly sequential and interleaved
 by round: every target is sampled once before any target is sampled again, so a
 transient slowdown on the machine spreads across both sides rather than skewing
-one. Each round starts one target further along than the round before, wrapping
-around, so no target always runs first: over every full cycle of as many rounds
-as there are targets, each target runs once in each position. An optional
-prepare command runs once per target, in target order, before sampling begins.
+one. The rounds follow a Williams order, so no target always runs first and no
+target always runs after the same one: over one cycle (one round for a single
+target, two for two, ``N`` for an even count ``N`` of three or more, ``2N`` for
+an odd one) each target holds each run position equally often, and runs directly
+after each other target equally often. Two targets alternate, baseline first. A
+sample count that is not a multiple of the cycle is refused before any command
+runs. An optional prepare command runs once per target, in target order, before
+sampling begins.
 
 A single policy site turns a failed command (non-zero exit or timeout) into a
 :class:`~gymrat.errors.CommandError`, so a failure anywhere stops the schedule
@@ -34,7 +38,6 @@ import itertools
 import statistics
 import tempfile
 import uuid
-from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,12 +66,14 @@ from gymrat.progress_events import (
 )
 from gymrat.report.format import format_value
 from gymrat.report.text.render import format_cleanup_failures
+from gymrat.sample_balance import require_balanced_samples
 from gymrat.signals import install_termination_cleanup, write_on_exit
 from gymrat.stats import compute_half_range
 from gymrat.targets import RefTarget, Target
 from gymrat.utils import (
     MS_PER_SECOND,
     WarnSink,
+    balancing_cycle,
     fraction_of_median,
     own_values,
     stderr_text_of,
@@ -483,13 +488,15 @@ async def collect_samples(
 ) -> list[TargetSamples]:
     """Run the prepare and bench schedule and collect each target's samples.
 
-    Prepare (when set) runs once per target before any bench run. Then for each
-    round, bench runs once per target, so round ``n+1`` never starts before
-    round ``n`` has run every target. Round ``r`` (1-based) starts at target
-    index ``(r - 1) mod N`` for ``N`` targets and continues cyclically, so no
-    target always runs first. Each successful bench run contributes one parsed
-    metric record to its target, so a target's samples stay in round order
-    whatever the run order.
+    The sample count is checked first, so a count that cannot balance the
+    targets is refused before any prepare or bench command runs. Prepare (when
+    set) then runs once per target before any bench run. Then for each round,
+    bench runs once per target, so round ``n+1`` never starts before round
+    ``n`` has run every target. The rounds follow the Williams order of
+    :func:`_williams_order`, cycling through it, so each target holds each run
+    position and runs directly after each other target equally often. Each
+    successful bench run contributes one parsed metric record to its target, so
+    a target's samples stay in round order whatever the run order.
 
     Args:
         adapter: Parses a bench run's stdout into a metric record.
@@ -502,10 +509,14 @@ async def collect_samples(
         One :class:`TargetSamples` per target, in target order.
 
     Raises:
+        GymratError: ``options.samples`` is not a multiple of the balancing
+            cycle for the target count; the error carries the
+            ``unbalanced-samples`` reason.
         CommandError: A prepare or bench command timed out or exited non-zero.
         AdapterError: A bench run's output yielded no usable metric or an
             unacceptable metric name.
     """
+    require_balanced_samples(options.samples, len(targets))
     timeout_ms = int(options.timeout_seconds * MS_PER_SECOND)
     collected = [TargetSamples(ctx=ctx, samples=[]) for ctx in targets]
 
@@ -533,18 +544,43 @@ async def collect_samples(
                 options.on_progress, PrepareFinished(label=ctx.label, at_ms=options.clock())
             )
 
-    run_order = deque(collected)
+    run_orders = _williams_order(len(targets))
     for round_number in range(1, options.samples + 1):
-        for target in run_order:
+        for index in run_orders[(round_number - 1) % len(run_orders)]:
+            target = collected[index]
             emit_pass(PassStarted, round_number, target.ctx)
             stdout = await _run_command(
                 "bench", round_number, options.bench, target.ctx, timeout_ms, abort
             )
             emit_pass(PassFinished, round_number, target.ctx)
             target.samples.append(adapter.parse(stdout, options.warn))
-        run_order.rotate(-1)
 
     return collected
+
+
+def _williams_order(count: int) -> list[list[int]]:
+    """Build one balancing cycle of run orders over ``count`` target indexes.
+
+    The first row interleaves the low and high ends (0, 1, n-1, 2, n-2, ...)
+    and every later row shifts it by one, so each index sits in each position
+    once and follows each other index once. An odd count cannot balance
+    followers with one square, so the reversed rows are appended.
+
+    Args:
+        count: How many targets each round benches; at least 1.
+
+    Returns:
+        One run order per round of the cycle, :func:`~gymrat.utils.balancing_cycle`
+        rows in all, each listing every target index once.
+    """
+    first = [
+        (column + 1) // 2 if column % 2 else (count - column // 2) % count
+        for column in range(count)
+    ]
+    rows = [[(index + shift) % count for index in first] for shift in range(count)]
+    if balancing_cycle(count) > count:
+        rows += [row[::-1] for row in rows]
+    return rows
 
 
 async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-execution axis

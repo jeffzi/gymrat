@@ -72,7 +72,7 @@ from tests.session.records._fixtures import (
 pytestmark = needs_posix_worktrees
 
 #: Paired samples per iteration — a real measurement, but few enough to stay quick.
-SAMPLES = 5
+SAMPLES = 4
 
 #: The latency the first edit tunes to, and the one the keep commits.
 KEPT_LATENCY = 90
