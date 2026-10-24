@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-24
+
 ### Added
 
 - Add a `resolution` key to `[metrics]` and `[kinds]` entries in `gymrat.toml` that declares a
-  metric's measurement step, so a one-step change no longer signals, and warn when a time metric's
-  readings look quantized and declare none.
+  metric's measurement step, so a one-step change no longer signals, and warn when a time metric
+  with no declared step has readings that look quantized.
 - Add a `reason` field to JSON and session-log verdicts that says why a metric whose medians differ
   was reported `no-signal`.
 
@@ -19,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Rotate which target runs first in each sampling round, so neither side of a comparison always
   runs first.
-- Judge a byte metric's step against its baseline median alone, so a small heap that halves now
-  reports an improvement.
+- Treat a one-byte move in a `#heap` metric as noise, since heap metrics now carry a built-in
+  one-byte step.
 - **Breaking:** Rename the `turn_end` trace attribute `gymrat.turn.cost_usd` to
   `gymrat.turn.session_cost_usd`, which names the cumulative session cost it always carried; update
   any query or dashboard that reads it.
@@ -51,12 +53,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still running, and accept its `iterate` tool call with no arguments.
 - End a supervised run when a turn's follow-up fails instead of at the wall-clock cap, and let a
   `--force` run outlast its first turn end when a stop condition already holds.
-- Exit non-zero from `gymrat export` when the collector is unreachable or rejects a batch, replay
-  spans with the numbering live tracing used, and skip unreadable supervisor logs.
+- Exit non-zero from `gymrat export` when the collector is unreachable or rejects a batch, give
+  replayed spans the span IDs live tracing gave them, and skip unreadable supervisor logs.
 - Name the git command that removes each worktree or branch a cleanup leaves behind.
 - Accept and reject the same `--samples` and `--timeout` values whether they come from the flag or
   from `GYMRAT_SAMPLES` and `GYMRAT_TIMEOUT`.
 - Time durations with a monotonic clock, so a wall-clock jump no longer skews them.
+
+### Security
+
+- Require filelock 4.2.1 or later, which stops another local user from making a lock delete,
+  overwrite, or hard-link the lock owner's files (CVE-2026-112906, CVE-2026-112907, CVE-2026-112913,
+  CVE-2026-112914, CVE-2026-112937, CVE-2026-112940).
 
 ## [0.21.0] - 2026-09-24
 
@@ -407,7 +415,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add structured error reporting for every gymrat failure: a clear message and, where applicable, an
   actionable hint.
 
-[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/jeffzi/gymrat/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/jeffzi/gymrat/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/jeffzi/gymrat/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/jeffzi/gymrat/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/jeffzi/gymrat/compare/v0.18.0...v0.19.0

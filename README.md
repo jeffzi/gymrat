@@ -71,11 +71,14 @@ The principles behind these choices, and what gymrat deliberately is not, are in
 
 ## Installation
 
+gymrat is not on the Python Package Index (PyPI) yet, so install it from the GitHub repository:
+
 ```console
-uv tool install gymrat
+uv tool install git+https://github.com/jeffzi/gymrat
 ```
 
-or `pipx install gymrat`, or `pip install gymrat`. Requires Python 3.12+ and git on your `PATH`.
+From the first PyPI release, `uv tool install gymrat`, `pipx install gymrat`, or
+`pip install gymrat` work too. Requires Python 3.12+ and git on your `PATH`.
 
 ## Feeding it metrics
 
@@ -100,7 +103,7 @@ Select one with `--adapter` or in the config file.
 | `gymrat start [--baseline <ref>]`           | Pin the baseline and open a session                                        |
 | `gymrat probe [names…]`                     | Spot-check the experiment worktree against the recorded baseline           |
 | `gymrat iterate`                            | Measure the experiment worktree against the baseline                       |
-| `gymrat keep -m "<message>"`                | Commit an improved iteration whose checks pass                             |
+| `gymrat keep [-m "<message>"]`              | Commit an improved iteration whose checks pass                             |
 | `gymrat discard`                            | Revert the experiment worktree to its last commit                          |
 | `gymrat status`                             | Print the session history                                                  |
 | `gymrat sync`                               | Copy uncommitted main-tree edits into the experiment worktree              |
@@ -133,16 +136,17 @@ max_iterations = 20 # the loop stops after this many iterations
 
 [metrics."decode#time"]
 direction = "lower" # per-metric overrides: direction, gating, exact, resolution
-resolution = 41.67 # one measurement step, in ns: a timer that ticks at 24 MHz
+resolution = 41.67 # one measurement step, in nanoseconds (ns): a timer that ticks at 24 MHz
 
 [kinds.time]
 resolution = 41.67 # every time metric that sets no step of its own
 ```
 
 The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` overrides of
-`gating` and `resolution`. Kinds are `time` (`#time` metrics), `memory` (`#heap` metrics), and
-`other` (every other metric). gymrat names any unknown key or invalid value when it reads the file;
-it ignores a `[kinds]` entry that matches no kind.
+`gating` and `resolution`, and a `[hooks]` table of shell commands that run around each
+`gymrat iterate` (see [Hooks](#hooks)). Kinds are `time` (`#time` metrics), `memory` (`#heap`
+metrics), and `other` (every other metric). gymrat names any unknown key or invalid value when it
+reads the file; it ignores a `[kinds]` entry that matches no kind.
 
 - `gating`, per metric or per kind, decides whether a regression on that metric fails
   `--fail-on regressed` and blocks `keep`.
@@ -196,6 +200,9 @@ gymrat finalize            # squash kept iterations into one commit and close
 A committed `keep` advances the recorded baseline to the kept iteration's samples, so the next
 iteration measures against what was just kept.
 
+`finalize` points a new branch at the squash commit: `gymrat/<session_id>-final` by default, or the
+name you pass with `--branch <name>`. Your current branch and the session branch stay as they are.
+
 While a session is open, `start`, `iterate`, `keep`, `discard`, `status`, `stop`, `sync`,
 `finalize`, `probe`, `compare`, `measure`, and `supervise` each append a `command` record to
 `.gymrat/session.jsonl`. The record holds the command's arguments, exit code, the reason for a
@@ -205,10 +212,10 @@ to record itself.
 ### Supervised runs
 
 `gymrat supervise "optimize the decoder" --max-minutes 30 --max-usd 5` runs the loop under an AI
-agent. The agent is Claude Code, driven through the Claude Agent SDK that gymrat installs as a
-dependency. Claude Code must be able to authenticate: signed in, or with `ANTHROPIC_API_KEY` set.
-`--max-usd` caps the spend Claude Code reports for the run. The runbook scaffolded by `init`
-describes the goal and constraints.
+agent. The agent is Claude Code, driven through the Claude Agent software development kit
+(SDK) that gymrat installs as a dependency. Claude Code must be able to authenticate: signed in,
+or with `ANTHROPIC_API_KEY` set. `--max-usd` caps the spend Claude Code reports for the run. The
+runbook scaffolded by `init` describes the goal and constraints.
 
 `supervise` opens the session and records the baseline itself before handing control to the agent.
 `--baseline <ref>` pins the session to a specific ref; it defaults to HEAD and is ignored when
@@ -236,7 +243,7 @@ Both the agent backend and the supervisor enforce `--max-usd`.
 When the run ends, `supervise` settles the session before it prints the summary. It keeps an
 improved iteration whose checks pass and discards one that did not improve. When the last gymrat
 command has finished, nothing needs a person's decision, and at least one iteration was kept, the
-run ends with a settled session and a squash branch.
+run ends with a settled session and the `-final` branch that `finalize` creates.
 
 Some iterations stay in the worktree for you: those whose checks failed, whose worktree changed
 after measuring, or whose hook failed. Unmeasured edits stay too, and the summary names each one.
@@ -262,9 +269,9 @@ background. Each refusal names its rule. gymrat does not inspect shell commands 
 
 A manual session has none of these refusals.
 
-`compare`, `measure`, `probe`, and every session command (`start`, `iterate`, `keep`, `discard`,
-`status`, `stop`, `sync`, `finalize`) print a time-left line while a supervised run's wall-clock cap
-is active, so the agent can plan around it.
+While a supervised run's wall-clock cap is active, `compare`, `measure`, `probe`, and every session
+command print a time-left line, so the agent can plan around it. The session commands are `start`,
+`iterate`, `keep`, `discard`, `status`, `stop`, `sync`, and `finalize`.
 
 ### Hooks
 
@@ -307,10 +314,12 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 
 ## Machine-readable output
 
-`compare`, `measure`, `probe`, `doctor`, and the session commands (`start`, `iterate`, `keep`,
-`discard`, `status`, `stop`, `sync`, `finalize`) accept `--format json` for structured output.
+`compare`, `measure`, `probe`, `doctor`, and every session command accept `--format json` for
+structured output. The session commands are `start`, `iterate`, `keep`, `discard`, `status`,
+`stop`, `sync`, and `finalize`.
 `init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases; the log schema is additive-only from the first release published to PyPI.
+releases. From the first release published to PyPI, the log schema and the `--format json`
+documents are additive-only. Each JSON document starts with a `schema_version` field.
 
 The [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md) documents
 the session log and supervisor event log formats, with JSON Schema and AsyncAPI files in
@@ -329,7 +338,8 @@ it at any collector that accepts OpenTelemetry Protocol (OTLP) over Hypertext Tr
 (HTTP), such as Jaeger, Grafana Tempo, or your own:
 
 ```console
-uv tool install 'gymrat[otel]'   # or: pipx install 'gymrat[otel]' / pip install 'gymrat[otel]'
+uv tool install 'gymrat[otel] @ git+https://github.com/jeffzi/gymrat'
+# from the first PyPI release: uv tool install 'gymrat[otel]' (or pipx / pip)
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
