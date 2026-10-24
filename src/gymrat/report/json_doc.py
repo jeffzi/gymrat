@@ -14,12 +14,12 @@ The contract is a JSON ``null`` for any non-finite float (matching JavaScript's
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING
 
 from pydantic_core import to_json
 
 from gymrat.metric_name import parse as parse_metric_name
-from gymrat.model import BandVerdict, ExactVerdict, PermutationVerdict
+from gymrat.model import BandVerdict, verdict_stats
 from gymrat.report.tally import count_verdicts
 from gymrat.report.types import CandidateMetric, candidate_at
 
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     )
     from gymrat.sampling import CleanupResult
     from gymrat.session.records import IterationRecord
+    from gymrat.session.schema import WithheldReason
     from gymrat.verdict import KindAggregate
 
 _SCHEMA_VERSION = 1
@@ -184,39 +185,41 @@ def _candidate_row(label: str, candidate: CandidateMetric) -> dict[str, object]:
 def _verdict_fields(verdict: MetricVerdict | None) -> dict[str, object]:
     """The verdict-derived fields, padded per method.
 
-    Permutation carries a p-value and no band; band carries a noise figure in
-    both ``noise_pct`` and ``band``; exact carries none. A candidate with no
-    verdict leaves every field null while its measurements survive on the row.
+    A candidate with no verdict keeps its measurements on the row.
 
     Args:
         verdict: The candidate's verdict, or ``None`` when it has none.
 
     Returns:
-        The verdict fields as a flat dict suitable for merging into a row.
+        The verdict fields as a flat dict suitable for merging into a row. Every
+        field is null when ``verdict`` is ``None``. Otherwise ``noise_pct`` is
+        null for an exact verdict, ``p`` is set only for a permutation verdict,
+        ``band_pct`` repeats ``noise_pct`` for a band verdict and is null for the
+        other methods, and ``reason``, why a no-signal verdict was withheld, is
+        null for an exact verdict and when none was withheld.
     """
-    if verdict is None:
-        return dict.fromkeys(("verdict", "method", "delta_pct", "noise_pct", "p", "band_pct"))
-    noise_pct: float | None = None
+    name: str | None = None
+    method: str | None = None
+    delta: float | None = None
     p: float | None = None
-    band: float | None = None
-    match verdict:
-        case PermutationVerdict():
-            noise_pct = verdict.noise_pct
-            p = verdict.p
-        case BandVerdict():
-            noise_pct = verdict.noise_pct
-            band = verdict.noise_pct
-        case ExactVerdict():
-            pass
-        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
-            assert_never(unreachable)
+    noise_pct: float | None = None
+    band_pct: float | None = None
+    reason: WithheldReason | None = None
+    if verdict is not None:
+        name = verdict.verdict
+        method = verdict.method
+        delta = verdict.delta
+        p, noise_pct, reason = verdict_stats(verdict)
+        if isinstance(verdict, BandVerdict):
+            band_pct = noise_pct
     return {
-        "verdict": verdict.verdict,
-        "method": verdict.method,
-        "delta_pct": verdict.delta,
+        "verdict": name,
+        "method": method,
+        "delta_pct": delta,
         "noise_pct": noise_pct,
         "p": p,
-        "band_pct": band,
+        "band_pct": band_pct,
+        "reason": reason,
     }
 
 
@@ -457,6 +460,7 @@ def _serialize_iteration(record: IterationRecord) -> dict[str, object]:
             "method": verdict.method,
             "p": verdict.p,
             "noise_pct": verdict.noise_pct,
+            "reason": verdict.reason,
             "gating": verdict.gating,
             "confirmed": verdict.confirmed,
         }

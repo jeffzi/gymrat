@@ -4,7 +4,9 @@ The sampling pipeline (target resolution, worktree lifecycle, exec) is a system
 boundary; these stubs replace it in memory so the compare and measure
 orchestrator tests pin result assembly without spawning processes or creating
 worktrees. :func:`run_options` builds the run settings those tests hand the
-orchestrators.
+orchestrators. :func:`quantized_warning` builds the text sampling warns with
+when time readings look quantized, and :func:`one_step_up` builds readings that
+trigger it.
 """
 
 import asyncio
@@ -39,6 +41,44 @@ DIRTY_RESULT = CleanupResult(
     prune_error="could not prune",
 )
 """A sweep that removed one worktree, left another behind, and could not prune."""
+
+QUANTIZED_STEP_NS = 42.0
+"""The step, in nanoseconds, that :func:`one_step_up` readings climb and the warning names."""
+
+
+def quantized_warning(name: str, gap: str | None) -> str:
+    """The warning sampling sends when ``name``'s time readings look quantized.
+
+    Args:
+        name: The time metric the warning is about.
+        gap: The step the warning names, such as ``"42ns"``, or ``None`` for the
+            wording that names no step.
+
+    Returns:
+        The warning text.
+    """
+    step = "" if gap is None else f"; its step is at most {gap}"
+    return (
+        f"{name}: readings repeat as a quantized timer's would{step}. "
+        "Set `resolution` to the timer's tick, or time more iterations per reading"
+    )
+
+
+QUANTIZED_TIME_WARNING = quantized_warning("bench#time", f"{QUANTIZED_STEP_NS:g}ns")
+"""The warning for ``bench#time`` readings that repeat and differ by one 42ns step."""
+
+
+def one_step_up(start: float, *names: str) -> list[dict[str, float]]:
+    """Six rounds of quantized readings: five at ``start``, then one a step above.
+
+    Args:
+        start: The value the first five rounds report for every metric.
+        *names: The metrics each round reports.
+
+    Returns:
+        The rounds, the last of which reads :data:`QUANTIZED_STEP_NS` above ``start``.
+    """
+    return [dict.fromkeys(names, start)] * 5 + [dict.fromkeys(names, start + QUANTIZED_STEP_NS)]
 
 
 def run_options(

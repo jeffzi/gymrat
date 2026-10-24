@@ -1,7 +1,7 @@
 """Tests for the telemetry attribute namespace.
 
 Enumerates every attribute name the telemetry layer can emit, checks that the
-README's attribute table documents exactly that set, and that every attribute a
+telemetry reference's attribute table documents exactly that set, and that every attribute a
 record or command span emits is in it and follows the naming rule.
 """
 
@@ -164,22 +164,22 @@ def all_attribute_names() -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------
-# README attribute table — the documented names match the emitted ones
+# Telemetry reference table — the documented names match the emitted ones
 # ---------------------------------------------------------------------------
 
-_README = Path(__file__).resolve().parents[2] / "README.md"
-_HEADING = "### Attribute reference"
+_REFERENCE = Path(__file__).resolve().parents[2] / "docs" / "telemetry-reference.md"
+_HEADING = "## Attributes"
 _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _PLACEHOLDER_SUFFIX_RE = re.compile(r"\.<[^>]+>$")
 
 
-def _parse_readme_attribute_names() -> frozenset[str]:
-    """Extract attribute names from the first column of the README table.
+def _parse_reference_attribute_names() -> frozenset[str]:
+    """Extract attribute names from the first column of the telemetry reference table.
 
     Returns:
-        Attribute names found under the ``### Attribute reference`` heading.
+        Attribute names found under the ``## Attributes`` heading.
     """
-    lines = _README.read_text().splitlines()
+    lines = _REFERENCE.read_text().splitlines()
 
     in_section = False
     header_seen = False
@@ -222,13 +222,11 @@ def _parse_readme_attribute_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def test_readme_attribute_reference_when_parsed_does_list_exactly_the_emitted_attribute_names() -> (
-    None
-):
-    readme_names = _parse_readme_attribute_names()
+def test_telemetry_reference_when_parsed_does_list_exactly_the_emitted_attribute_names() -> None:
+    documented_names = _parse_reference_attribute_names()
     code_names = all_attribute_names()
 
-    assert readme_names == code_names
+    assert documented_names == code_names
 
 
 # ---------------------------------------------------------------------------

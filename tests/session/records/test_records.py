@@ -72,6 +72,13 @@ from tests.session.records._wire import (
             id="iteration-nulled-deltas",
         ),
         pytest.param(
+            patching(
+                verdict_with(delta_pct=0.4, verdict="no-signal", reason="direction-mismatch"),
+                {"outcome": "no-signal"},
+            ),
+            id="iteration-metric-with-withheld-reason",
+        ),
+        pytest.param(
             patching(ITERATION_RECORD, {"confirm": CONFIRM}),
             id="iteration-reran-to-confirm",
         ),

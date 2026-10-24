@@ -864,6 +864,7 @@ _TYPE_PHRASES: dict[str, str] = {
 
 # Templates filled from the error ``ctx``, which carries the constraint's own value.
 _CONSTRAINT_PHRASES: dict[str, str] = {
+    "greater_than": "a number above {gt}",
     "greater_than_equal": "a number at or above {ge}",
     "less_than_equal": "a number at or below {le}",
     "literal_error": "{expected}",
@@ -952,5 +953,9 @@ def phrase_for_error(error: ErrorDetails) -> str:
     if _rejects_blank(error_type, ctx):
         return "a non-empty string"
     if error_type in _CONSTRAINT_PHRASES:
-        return _CONSTRAINT_PHRASES[error_type].format_map(ctx)
+        # Pydantic reports a bound on a float field as a float, so ``gt=0`` arrives as
+        # ``0.0``; print a whole bound as its integer. Never reach for ``:g`` here: it
+        # turns an integer cap like 2**53 - 1 into exponent notation.
+        bounds = {key: coerce_integer(value) for key, value in ctx.items()}
+        return _CONSTRAINT_PHRASES[error_type].format_map(bounds)
     return _TYPE_PHRASES.get(error_type, "a valid value")

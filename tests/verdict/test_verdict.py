@@ -11,91 +11,40 @@ from collections.abc import Callable
 import pytest
 
 from gymrat.model import (
-    DEFAULT_UNSTABLE_NOISE_PCT,
     BandVerdict,
     ExactVerdict,
     MetricMeta,
     MetricVerdict,
     PermutationVerdict,
 )
-from gymrat.utils import WarnSink
 from gymrat.verdict import compute_verdicts
-
-# ---------------------------------------------------------------------------
-# Metric-meta fixtures shared across the verdict-engine cases
-# ---------------------------------------------------------------------------
-
-METRIC_EXACT_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=True, unit=None)}
-METRIC_EXACT_HIGHER = {"metric": MetricMeta(direction="higher", gating=True, exact=True, unit=None)}
-METRIC_APPROX_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=False, unit=None)}
-METRIC_APPROX_HIGHER = {
-    "metric": MetricMeta(direction="higher", gating=True, exact=False, unit=None)
-}
-METRIC_BYTES_LOWER = {
-    "metric": MetricMeta(direction="lower", gating=True, exact=False, unit="bytes")
-}
-METRIC_BYTES_HIGHER = {
-    "metric": MetricMeta(direction="higher", gating=True, exact=False, unit="bytes")
-}
-METRIC_NS_LOWER = {"metric": MetricMeta(direction="lower", gating=True, exact=False, unit="ns")}
-
-
-def noop_warn(_message: str) -> None:
-    """Swallow divergence warnings so these cases stay silent on stderr."""
-
-
-def samples(*values: float) -> list[dict[str, float]]:
-    """Build round dicts keying each value under the default ``"metric"`` name."""
-    return [{"metric": value} for value in values]
-
-
-def create_samples(n: int, value: float) -> list[dict[str, float]]:
-    """Build *n* single-metric sample rounds, each recording *value* under ``"metric"``."""
-    return samples(*[value] * n)
-
-
-def run(
-    samples_a: list[dict[str, float]],
-    samples_b: list[dict[str, float]],
-    meta: dict[str, MetricMeta],
-    *,
-    unstable_noise_pct: float = DEFAULT_UNSTABLE_NOISE_PCT,
-    warn: WarnSink | None = None,
-) -> dict[str, MetricVerdict]:
-    """Pair two round lists and compute verdicts, discarding warnings unless a sink is given."""
-    sink = noop_warn if warn is None else warn
-    return compute_verdicts(
-        samples_a, samples_b, meta, unstable_noise_pct=unstable_noise_pct, warn=sink
-    )
-
-
-def get_permutation(result: dict[str, MetricVerdict], key: str = "metric") -> PermutationVerdict:
-    """Narrow the verdict at *key* to ``PermutationVerdict``, failing if the method differs."""
-    verdict = result[key]
-    assert isinstance(verdict, PermutationVerdict), f"expected permutation, got {verdict.method}"
-    return verdict
-
-
-def get_band(result: dict[str, MetricVerdict], key: str = "metric") -> BandVerdict:
-    """Narrow the verdict at *key* to ``BandVerdict``, failing if the method differs."""
-    verdict = result[key]
-    assert isinstance(verdict, BandVerdict), f"expected band, got {verdict.method}"
-    return verdict
-
-
-# Six paired windows noisy enough to reach noise_pct = 30 while staying on the
-# permutation path: all six diffs are non-zero and negative, so every pair shows
-# the decrease and the sign-flip null makes it significant (p = 2 / 2**6).
-NOISY_PERMUTATION_A = samples(80.0, 90.0, 100.0, 100.0, 110.0, 120.0)
-NOISY_PERMUTATION_B = samples(40.0, 45.0, 50.0, 50.0, 55.0, 60.0)
-
-# Enough identical rounds to stay on the permutation path with p well below 0.05.
-FLAT_PERMUTATION_ROUNDS = 10
-
-# Two paired windows noisy enough to reach noise_pct = 30 on the band path.
-NOISY_BAND_A = samples(80.0, 120.0)
-NOISY_BAND_B = samples(8.0, 12.0)
-
+from tests.verdict._engine import (
+    DIRECTION_MISMATCH_A,
+    DIRECTION_MISMATCH_B,
+    FLAT_PERMUTATION_ROUNDS,
+    METRIC_APPROX_HIGHER,
+    METRIC_APPROX_LOWER,
+    METRIC_BYTES_LOWER,
+    METRIC_EXACT_BYTES_LOWER,
+    METRIC_EXACT_HIGHER,
+    METRIC_EXACT_LOWER,
+    METRIC_EXACT_TIMER_LOWER,
+    METRIC_NS_LOWER,
+    NOISY_BAND_A,
+    NOISY_BAND_B,
+    NOISY_PERMUTATION_A,
+    NOISY_PERMUTATION_B,
+    SEPARATED_HIGH,
+    SEPARATED_LOW,
+    SUBNORMAL_BASELINE,
+    create_samples,
+    get_band,
+    get_permutation,
+    meta_of,
+    noop_warn,
+    run,
+    samples,
+)
 
 # ---------------------------------------------------------------------------
 # Delta computation
@@ -126,6 +75,12 @@ def test_compute_verdicts_when_multiple_rounds_does_compute_delta_from_medians()
         pytest.param(METRIC_EXACT_LOWER, samples(100.01), 0.01, "regressed", id="tiny-difference"),
         pytest.param(METRIC_EXACT_LOWER, samples(95.0), -5.0, "improved", id="lower-improved"),
         pytest.param(METRIC_EXACT_LOWER, samples(100.0), 0.0, "no-signal", id="unchanged"),
+        pytest.param(
+            METRIC_EXACT_BYTES_LOWER, samples(101.0), 1.0, "regressed", id="ignores-byte-step"
+        ),
+        pytest.param(
+            METRIC_EXACT_TIMER_LOWER, samples(105.0), 5.0, "regressed", id="ignores-declared-step"
+        ),
     ],
 )
 def test_compute_verdicts_when_exact_does_classify_by_direction(
@@ -151,8 +106,8 @@ def test_compute_verdicts_when_metrics_differ_in_exactness_does_respect_per_metr
         [{"exactMetric": 100.0, "otherMetric": 50.0}],
         [{"exactMetric": 100.001, "otherMetric": 45.0}],
         {
-            "exactMetric": MetricMeta(direction="lower", gating=True, exact=True, unit=None),
-            "otherMetric": MetricMeta(direction="lower", gating=True, exact=False, unit=None),
+            "exactMetric": meta_of("lower", exact=True),
+            "otherMetric": meta_of("lower"),
         },
     )
 
@@ -199,28 +154,23 @@ def test_compute_verdicts_when_permutation_delta_zero_does_report_no_signal(
     verdict = get_permutation(result)
     assert verdict.delta == 0.0
     assert verdict.p < 0.05
-    assert verdict.verdict == "no-signal"
+    assert (verdict.verdict, verdict.reason) == ("no-signal", None)
 
 
 def test_compute_verdicts_when_paired_direction_opposes_delta_does_report_no_signal():
-    # Nine of ten pairs rise, so the signed ranks favor an increase, yet the
-    # candidate median sits 2% below the baseline median.
-    samples_a = create_samples(4, 0.0) + create_samples(6, 10.0)
-    samples_b = create_samples(4, 9.0) + samples(9.5) + create_samples(5, 10.1)
-
-    result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
+    result = run(DIRECTION_MISMATCH_A, DIRECTION_MISMATCH_B, METRIC_APPROX_LOWER)
 
     verdict = get_permutation(result)
     assert verdict.p < 0.05
     assert verdict.delta == pytest.approx(-2.0, abs=1e-5)
-    assert verdict.verdict == "no-signal"
+    assert (verdict.verdict, verdict.reason) == ("no-signal", "direction-mismatch")
 
 
 @pytest.mark.parametrize(
     ("baseline", "candidate"),
     [
-        pytest.param(5e-324, 100.0, id="overflow-positive"),
-        pytest.param(5e-324, -100.0, id="overflow-negative"),
+        pytest.param(SUBNORMAL_BASELINE, 100.0, id="overflow-positive"),
+        pytest.param(SUBNORMAL_BASELINE, -100.0, id="overflow-negative"),
         pytest.param(0.0, 100.0, id="zero-baseline"),
     ],
 )
@@ -236,31 +186,55 @@ def test_compute_verdicts_when_permutation_delta_not_finite_does_report_no_signa
 
     verdict = get_permutation(result)
     assert not math.isfinite(verdict.delta)
-    assert verdict.verdict == "no-signal"
+    assert (verdict.verdict, verdict.reason) == ("no-signal", "non-finite-delta")
 
 
-# Two six-window groups where every pair moves the same way: the sign-flip null
-# makes the shift significant (p = 0.03125) in either pairing direction.
-_SEPARATED_HIGH = samples(180.0, 190.0, 200.0, 200.0, 210.0, 220.0)
-_SEPARATED_LOW = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)
+@pytest.mark.parametrize(
+    ("meta", "values_b", "expected_usable_n", "expected_noise_pct"),
+    [
+        pytest.param(METRIC_APPROX_LOWER, [100.0, 100.0], 2, 0.5, id="lower-overflow-positive"),
+        pytest.param(METRIC_APPROX_LOWER, [-100.0, -100.0], 2, 0.5, id="lower-overflow-negative"),
+        pytest.param(METRIC_APPROX_HIGHER, [100.0, 100.0], 2, 0.5, id="higher-overflow-positive"),
+        # One pair differs, too few for the band, and the delta still has no size.
+        pytest.param(
+            METRIC_APPROX_LOWER, [SUBNORMAL_BASELINE, 100.0], 1, 150.0, id="too-few-differ"
+        ),
+    ],
+)
+def test_compute_verdicts_when_band_delta_not_finite_does_report_no_signal(
+    meta: dict[str, MetricMeta],
+    values_b: list[float],
+    expected_usable_n: int,
+    expected_noise_pct: float,
+):
+    result = run(create_samples(2, SUBNORMAL_BASELINE), samples(*values_b), meta)
+
+    verdict = get_band(result)
+    assert not math.isfinite(verdict.delta)
+    assert (verdict.verdict, verdict.reason, verdict.usable_n) == (
+        "no-signal",
+        "non-finite-delta",
+        expected_usable_n,
+    )
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct)
 
 
 @pytest.mark.parametrize(
     ("meta", "samples_a", "samples_b", "expected_verdict"),
     [
         pytest.param(
-            METRIC_APPROX_LOWER, _SEPARATED_HIGH, _SEPARATED_LOW, "improved", id="lower-improved"
+            METRIC_APPROX_LOWER, SEPARATED_HIGH, SEPARATED_LOW, "improved", id="lower-improved"
         ),
         pytest.param(
-            METRIC_APPROX_LOWER, _SEPARATED_LOW, _SEPARATED_HIGH, "regressed", id="lower-regressed"
+            METRIC_APPROX_LOWER, SEPARATED_LOW, SEPARATED_HIGH, "regressed", id="lower-regressed"
         ),
         pytest.param(
-            METRIC_APPROX_HIGHER, _SEPARATED_LOW, _SEPARATED_HIGH, "improved", id="higher-improved"
+            METRIC_APPROX_HIGHER, SEPARATED_LOW, SEPARATED_HIGH, "improved", id="higher-improved"
         ),
         pytest.param(
             METRIC_APPROX_HIGHER,
-            _SEPARATED_HIGH,
-            _SEPARATED_LOW,
+            SEPARATED_HIGH,
+            SEPARATED_LOW,
             "regressed",
             id="higher-regressed",
         ),
@@ -289,7 +263,8 @@ def test_compute_verdicts_when_permutation_direction_varies_does_classify(
 ):
     result = run(samples_a, samples_b, meta)
 
-    assert get_permutation(result).verdict == expected_verdict
+    verdict = get_permutation(result)
+    assert (verdict.verdict, verdict.reason) == (expected_verdict, None)
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +309,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             samples(100.0, 110.0),
             samples(30.0, 50.0),
             (40 - 105) / 105 * 100,
-            "improved",
+            ("improved", None),
             id="exceeds-band",
         ),
         pytest.param(
@@ -342,7 +317,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             create_samples(2, 100.0),
             samples(99.8, 99.6),
             -0.3,
-            "no-signal",
+            ("no-signal", "noise"),
             id="within-band",
         ),
         # Candidate median 110 with half-range 50: a +10% delta inside a
@@ -352,7 +327,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             create_samples(2, 100.0),
             samples(60.0, 160.0),
             10.0,
-            "no-signal",
+            ("no-signal", "noise"),
             id="within-spread-band",
         ),
         pytest.param(
@@ -360,7 +335,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             create_samples(2, 50.0),
             create_samples(2, 100.0),
             100.0,
-            "improved",
+            ("improved", None),
             id="higher-improved",
         ),
         pytest.param(
@@ -368,7 +343,7 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n(
             create_samples(2, 100.0),
             create_samples(2, 50.0),
             -50.0,
-            "regressed",
+            ("regressed", None),
             id="higher-regressed",
         ),
     ],
@@ -378,14 +353,13 @@ def test_compute_verdicts_when_band_does_classify(
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
     expected_delta: float,
-    expected: str,
+    expected: tuple[str, str | None],
 ):
     result = run(samples_a, samples_b, meta)
 
-    verdict = result["metric"]
-    assert verdict.method == "band"
+    verdict = get_band(result)
     assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
-    assert verdict.verdict == expected
+    assert (verdict.verdict, verdict.reason) == expected
 
 
 def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_signal():
@@ -394,7 +368,7 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
     verdict = get_band(result)
     assert verdict.n == 2
     assert verdict.usable_n == 1
-    assert verdict.verdict == "no-signal"
+    assert (verdict.verdict, verdict.reason) == ("no-signal", "noise")
 
 
 # ---------------------------------------------------------------------------
@@ -446,8 +420,8 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
         ),
         pytest.param(
             get_permutation,
-            _SEPARATED_HIGH,
-            _SEPARATED_LOW,
+            SEPARATED_HIGH,
+            SEPARATED_LOW,
             15.0,
             30.0,
             id="permutation-abs-from-larger-half-range",
@@ -468,165 +442,6 @@ def test_compute_verdicts_when_non_exact_inputs_vary_does_report_noise_pct_and_a
         pytest.approx(expected_noise_pct, abs=1e-5),
         pytest.approx(expected_noise_abs, abs=1e-5),
     )
-
-
-# ---------------------------------------------------------------------------
-# Whole-byte resolution floor
-# ---------------------------------------------------------------------------
-
-# Six windows whose medians are 4 vs 3 bytes — a one-byte move (delta -25%) —
-# that every pair shows, so the sign-flip null makes it significant
-# (p = 0.03125). The whole-byte floor, not the p-value, is what withholds the
-# signal on a byte metric.
-_BYTE_ONE_MOVE_A = samples(3.4, 3.7, 4.0, 4.0, 4.3, 4.6)
-_BYTE_ONE_MOVE_B = samples(2.4, 2.7, 3.0, 3.0, 3.3, 3.6)
-
-# Six windows whose medians are 100 vs 75 bytes — a 25-byte move that clears the
-# whole-byte floor — again shown by every pair, which keeps p significant.
-_BYTE_CLEARS_A = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)
-_BYTE_CLEARS_B = samples(67.0, 71.0, 75.0, 75.0, 79.0, 83.0)
-
-
-def test_compute_verdicts_when_byte_move_is_one_byte_does_report_no_signal_on_band():
-    result = run(create_samples(2, 4.0), create_samples(2, 3.0), METRIC_BYTES_LOWER)
-
-    verdict = get_band(result)
-    assert verdict.delta == pytest.approx(-25.0, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(100 / 3, abs=1e-5)
-    assert verdict.verdict == "no-signal"
-
-
-@pytest.mark.parametrize(
-    ("meta", "samples_a", "samples_b", "expected_noise_pct", "expected_delta", "expected_verdict"),
-    [
-        pytest.param(
-            METRIC_BYTES_LOWER,
-            _BYTE_ONE_MOVE_A,
-            _BYTE_ONE_MOVE_B,
-            100 / 3,
-            -25.0,
-            "no-signal",
-            id="one-byte-lower",
-        ),
-        pytest.param(
-            METRIC_BYTES_HIGHER,
-            _BYTE_ONE_MOVE_A,
-            _BYTE_ONE_MOVE_B,
-            100 / 3,
-            -25.0,
-            "no-signal",
-            id="one-byte-higher",
-        ),
-        pytest.param(
-            METRIC_BYTES_LOWER,
-            _BYTE_CLEARS_A,
-            _BYTE_CLEARS_B,
-            16.0,
-            -25.0,
-            "improved",
-            id="clears-lower",
-        ),
-        pytest.param(
-            METRIC_BYTES_HIGHER,
-            _BYTE_CLEARS_A,
-            _BYTE_CLEARS_B,
-            16.0,
-            -25.0,
-            "regressed",
-            id="clears-higher",
-        ),
-        pytest.param(
-            METRIC_BYTES_LOWER,
-            create_samples(FLAT_PERMUTATION_ROUNDS, 4.0),
-            create_samples(FLAT_PERMUTATION_ROUNDS, 5.0),
-            25.0,
-            25.0,
-            "no-signal",
-            id="one-byte-increase-at-floor",
-        ),
-        # The floor is the larger side's one-byte step, so a 4 -> 2 move (50%)
-        # sits on the candidate's 50% step, not above the baseline's 25%.
-        pytest.param(
-            METRIC_BYTES_LOWER,
-            create_samples(FLAT_PERMUTATION_ROUNDS, 4.0),
-            create_samples(FLAT_PERMUTATION_ROUNDS, 2.0),
-            50.0,
-            -50.0,
-            "no-signal",
-            id="two-byte-decrease-at-floor",
-        ),
-    ],
-)
-def test_compute_verdicts_when_byte_permutation_does_give_signal_only_beyond_byte_floor(
-    meta: dict[str, MetricMeta],
-    samples_a: list[dict[str, float]],
-    samples_b: list[dict[str, float]],
-    *,
-    expected_noise_pct: float,
-    expected_delta: float,
-    expected_verdict: str,
-):
-    result = run(samples_a, samples_b, meta)
-
-    verdict = get_permutation(result)
-    assert verdict.p < 0.05
-    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
-    assert verdict.verdict == expected_verdict
-
-
-@pytest.mark.parametrize(
-    "meta",
-    [
-        pytest.param(METRIC_NS_LOWER, id="ns"),
-        pytest.param(METRIC_APPROX_LOWER, id="none"),
-    ],
-)
-@pytest.mark.parametrize(
-    ("narrow", "samples_a", "samples_b", "expected_noise_pct"),
-    [
-        # The -25% delta sits inside the 30% band, so this row also pins that the
-        # permutation path never compares the delta to the noise band.
-        pytest.param(get_permutation, _BYTE_ONE_MOVE_A, _BYTE_ONE_MOVE_B, 30.0, id="permutation"),
-        pytest.param(get_band, create_samples(2, 4.0), create_samples(2, 3.0), 0.5, id="band"),
-    ],
-)
-def test_compute_verdicts_when_unit_not_bytes_does_ignore_byte_floor(
-    meta: dict[str, MetricMeta],
-    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
-    samples_a: list[dict[str, float]],
-    samples_b: list[dict[str, float]],
-    expected_noise_pct: float,
-):
-    result = run(samples_a, samples_b, meta)
-
-    verdict = narrow(result)
-    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
-    assert verdict.verdict == "improved"
-
-
-def test_compute_verdicts_when_byte_floor_side_median_zero_does_exclude_that_side():
-    result = run(create_samples(2, 4.0), create_samples(2, 0.0), METRIC_BYTES_LOWER)
-
-    verdict = get_band(result)
-    assert verdict.noise_pct == pytest.approx(25.0, abs=1e-5)
-    assert verdict.verdict == "improved"
-
-
-@pytest.mark.parametrize(
-    ("values_b", "expected_band"),
-    [
-        pytest.param([1_000_000.0, 1_000_100.0], 0.5, id="stable"),
-        pytest.param([800_000.0, 1_200_000.0], 30.0, id="wide"),
-    ],
-)
-def test_compute_verdicts_when_byte_metric_is_megabyte_scale_does_keep_band(
-    values_b: list[float],
-    expected_band: float,
-):
-    result = run(create_samples(2, 1_000_000.0), samples(*values_b), METRIC_BYTES_LOWER)
-
-    assert get_band(result).noise_pct == pytest.approx(expected_band, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +525,55 @@ def test_compute_verdicts_when_exact_metric_is_noisy_does_never_mark_unstable():
     assert verdict.verdict == "improved"
 
 
+# A subnormal median: any spread (or the one-byte floor) divided by it overflows
+# to infinity.
+_OVERFLOWING_MEDIAN = 1e-310
+
+
+# Below 0.625 bytes the baseline's 1.25-byte step floor exceeds the default 200%
+# unstable band, on both paths, even when the floor is too large to express as a
+# percentage; the candidate's median plays no part in the floor.
+@pytest.mark.parametrize(
+    ("narrow", "rounds", "baseline", "candidate", "expected"),
+    [
+        pytest.param(get_band, 2, 0.6, 0.7, "unstable", id="small-baseline-band"),
+        pytest.param(
+            get_permutation,
+            FLAT_PERMUTATION_ROUNDS,
+            0.6,
+            0.7,
+            "unstable",
+            id="small-baseline-permutation",
+        ),
+        pytest.param(
+            get_band, 2, _OVERFLOWING_MEDIAN, 1e-300, "unstable", id="overflowing-baseline-band"
+        ),
+        pytest.param(
+            get_permutation,
+            FLAT_PERMUTATION_ROUNDS,
+            _OVERFLOWING_MEDIAN,
+            1e-300,
+            "unstable",
+            id="overflowing-baseline-permutation",
+        ),
+        pytest.param(get_band, 2, 4.0, 0.4, "improved", id="small-candidate"),
+    ],
+)
+def test_compute_verdicts_when_byte_median_is_small_does_mark_unstable_only_from_baseline(
+    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
+    rounds: int,
+    baseline: float,
+    candidate: float,
+    expected: str,
+):
+    result = run(
+        create_samples(rounds, baseline), create_samples(rounds, candidate), METRIC_BYTES_LOWER
+    )
+
+    verdict = narrow(result)
+    assert (verdict.verdict, verdict.reason) == (expected, None)
+
+
 # ---------------------------------------------------------------------------
 # Zero-median non-exact reports unstable
 # ---------------------------------------------------------------------------
@@ -753,21 +617,16 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
     result = run(samples(*values_a), samples(*values_b), METRIC_APPROX_LOWER)
 
     verdict = narrow(result)
-    assert verdict.verdict == "unstable"
+    assert (verdict.verdict, verdict.reason) == ("unstable", None)
     assert verdict.noise_pct == pytest.approx(0.5, abs=1e-5)
 
 
-# A subnormal median: any spread (or the one-byte floor) divided by it overflows
-# to infinity.
-_OVERFLOWING_MEDIAN = 1e-310
-
 # When the noise ratio overflows, noise_pct stays finite and the noise band falls
-# back to the floor or byte floor. Where a side has a non-zero half-range the
+# back to the floor or step floor. Where a side has a non-zero half-range the
 # verdict is forced unstable with the floor as its noise_pct; the byte-floor row
-# has no spread, so the tiny side only loses its byte-floor term and the other
-# side's one-byte floor (25%) remains. The permutation case keeps both sides'
-# medians equal and tiny, so the delta stays finite (zero) and only the noise
-# ratio overflows.
+# has no spread and a tiny candidate, so the baseline's 1.25-byte step floor
+# (31.25%) remains. The permutation case keeps both sides' medians equal and
+# tiny, so the delta stays finite (zero) and only the noise ratio overflows.
 
 
 @pytest.mark.parametrize(
@@ -797,7 +656,7 @@ _OVERFLOWING_MEDIAN = 1e-310
             METRIC_BYTES_LOWER,
             (create_samples(2, 4.0), create_samples(2, _OVERFLOWING_MEDIAN)),
             "improved",
-            25.0,
+            31.25,
             id="byte-floor",
         ),
     ],
@@ -865,8 +724,8 @@ def test_compute_verdicts_when_metric_fully_one_sided_does_not_warn():
         [{"metricA": 100.0}],
         [{"metricB": 95.0}],
         {
-            "metricA": MetricMeta(direction="lower", gating=True, exact=True, unit=None),
-            "metricB": MetricMeta(direction="lower", gating=True, exact=True, unit=None),
+            "metricA": meta_of("lower", exact=True),
+            "metricB": meta_of("lower", exact=True),
         },
         warn=collected.append,
     )

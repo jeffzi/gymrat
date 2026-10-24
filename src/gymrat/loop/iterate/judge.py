@@ -26,6 +26,7 @@ from gymrat import utils
 from gymrat.adapters import get_adapter
 from gymrat.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.loop.gating import is_gating_regression
+from gymrat.model import ExactVerdict
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -216,6 +217,7 @@ async def bench_and_judge(
             ctx.config.metrics,
             adapter,
             ctx.config.kinds,
+            warn=ctx.options.warn,
         )
     )
     verdicts = compute_verdicts(
@@ -223,6 +225,7 @@ async def bench_and_judge(
         experiment.samples,
         resolved_meta,
         unstable_noise_pct=ctx.config.unstable_noise_pct,
+        warn=ctx.options.warn,
     )
     return BenchRunOutputs(
         baseline=baseline,
@@ -513,10 +516,11 @@ def apply_confirmation(
     deliberate: a false alarm costs the agent an edit it did not need, while a
     missed regression is caught by the next iteration's baseline.
 
-    Only the verdict word moves; the delta, noise, and p-value stay the first
-    run's, because they describe the first run's samples — the ones the record
-    stores and the table draws its medians from. The rerun's own rounds are kept
-    separately under ``confirm``.
+    The verdict word moves to ``no-signal`` and the reason is set to
+    ``unconfirmed``; the delta, noise, and p-value stay the first run's, because
+    they describe the first run's samples — the ones the record stores and the
+    table draws its medians from. The rerun's own rounds are kept separately
+    under ``confirm``.
 
     Args:
         verdicts: The first run's per-metric verdicts, by name.
@@ -532,9 +536,13 @@ def apply_confirmation(
     settled: dict[str, MetricVerdict] = {}
     for name, verdict in verdicts.items():
         disagreed = (
-            name in confirmation.filtered and rerun_answer(confirmation, name) == "disagreed"
+            not isinstance(verdict, ExactVerdict)
+            and name in confirmation.filtered
+            and rerun_answer(confirmation, name) == "disagreed"
         )
-        settled[name] = replace(verdict, verdict="no-signal") if disagreed else verdict
+        settled[name] = (
+            replace(verdict, verdict="no-signal", reason="unconfirmed") if disagreed else verdict
+        )
     return settled
 
 

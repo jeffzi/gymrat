@@ -31,7 +31,13 @@ from tests._git import (
     list_worktree_dirs,
     write_committed_bench,
 )
-from tests._pipeline import DIRTY_RESULT, install_pipeline, run_options
+from tests._pipeline import (
+    DIRTY_RESULT,
+    QUANTIZED_TIME_WARNING,
+    install_pipeline,
+    one_step_up,
+    run_options,
+)
 from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
@@ -128,6 +134,21 @@ async def test_orchestrator_when_sampling_callbacks_given_does_deliver_what_the_
     await orchestrate(run_options(samples=2, on_progress=steps.append, warn=warnings.append))
 
     assert (steps, warnings) == ([event], ["banana"])
+
+
+@pytest.mark.parametrize(("orchestrator", "orchestrate", "targets"), _ORCHESTRATORS)
+async def test_orchestrator_when_time_readings_look_quantized_does_warn_the_sink_once(
+    monkeypatch: pytest.MonkeyPatch,
+    orchestrator: ModuleType,
+    orchestrate: Orchestrate,
+    targets: int,
+):
+    install_pipeline(monkeypatch, orchestrator, [one_step_up(333.0, "bench#time")] * targets)
+    warnings: list[str] = []
+
+    await orchestrate(run_options(samples=6, warn=warnings.append))
+
+    assert warnings == [QUANTIZED_TIME_WARNING]
 
 
 @pytest.mark.parametrize(("orchestrator", "orchestrate", "targets"), _ORCHESTRATORS)

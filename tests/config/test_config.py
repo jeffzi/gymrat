@@ -366,15 +366,28 @@ def test_inspect_config_when_no_file_or_flags_does_settle_defaults(
             {
                 "unstable_noise_pct": 150.5,
                 **LOOP_CONFIG,
-                "metrics": {"decode/time": {"direction": "higher", "gating": False, "exact": True}},
-                "kinds": {"memory": {"gating": False}},
+                "metrics": {
+                    "decode/time": {
+                        "direction": "higher",
+                        "gating": False,
+                        "exact": True,
+                        "resolution": 0.001,
+                    },
+                    "decode/memory": {"direction": "lower"},
+                },
+                "kinds": {"memory": {"gating": False, "resolution": 1024}},
                 "supervise": {"model": "claude-sonnet", "effort": "high"},
             },
             benchless_config(
                 unstable_noise_pct=150.5,
                 **LOOP_FIELDS,
-                metrics={"decode/time": MetricEntry(direction="higher", gating=False, exact=True)},
-                kinds={"memory": KindEntry(gating=False)},
+                metrics={
+                    "decode/time": MetricEntry(
+                        direction="higher", gating=False, exact=True, resolution=0.001
+                    ),
+                    "decode/memory": MetricEntry(direction="lower", resolution=None),
+                },
+                kinds={"memory": KindEntry(gating=False, resolution=1024.0)},
                 supervise=SuperviseConfig(model="claude-sonnet", effort="high"),
             ),
             id="file-only-keys",

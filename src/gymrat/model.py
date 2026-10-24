@@ -9,7 +9,7 @@ either side is missing that metric.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, assert_never
 
 from gymrat.session import schema
 
@@ -36,6 +36,7 @@ __all__ = [
     "Verdict",
     "is_improvement",
     "pair_metric",
+    "verdict_stats",
 ]
 
 # ---------------------------------------------------------------------------
@@ -80,12 +81,15 @@ class MetricMeta:
         gating: Whether the metric can gate (fail) a comparison.
         exact: Whether the metric is compared exactly rather than statistically.
         unit: The metric's physical unit, or ``None`` when unitless.
+        resolution: The smallest step a reading can move by, in the metric's
+            unit, or ``None`` when the step is unknown.
     """
 
     direction: Direction
     gating: bool
     exact: bool
     unit: MetricUnit | None
+    resolution: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +152,8 @@ class PermutationVerdict:
         noise_abs: Estimated noise in absolute units.
         delta: The percentage delta between the paired medians.
         n: Number of paired samples.
+        reason: Why a ``"no-signal"`` verdict with a non-zero delta was
+            withheld; ``None`` for every other verdict.
     """
 
     method: Literal["permutation"]
@@ -157,6 +163,7 @@ class PermutationVerdict:
     noise_abs: float
     delta: float
     n: int
+    reason: schema.WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +178,8 @@ class BandVerdict:
         noise_abs: Estimated noise in absolute units.
         delta: The percentage delta between the paired medians.
         n: Number of paired samples.
+        reason: Why a ``"no-signal"`` verdict with a non-zero delta was
+            withheld; ``None`` for every other verdict.
     """
 
     method: Literal["band"]
@@ -180,6 +189,7 @@ class BandVerdict:
     noise_abs: float
     delta: float
     n: int
+    reason: schema.WithheldReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +211,35 @@ class ExactVerdict:
 
 MetricVerdict = PermutationVerdict | BandVerdict | ExactVerdict
 """Union of per-method verdict records, discriminated on ``method``."""
+
+
+def verdict_stats(
+    verdict: MetricVerdict,
+) -> tuple[float | None, float | None, schema.WithheldReason | None]:
+    """The method-specific fields of a verdict, ``None`` where its method carries none.
+
+    This is the single place the rule for which fields each method carries lives:
+    only a permutation verdict has a p-value, and every non-exact verdict has a
+    noise figure and a withheld reason.
+
+    Args:
+        verdict: The verdict to read.
+
+    Returns:
+        The ``(p, noise_pct, reason)`` triple. ``p`` is ``None`` unless the
+        verdict is a permutation one; ``noise_pct`` and ``reason`` are ``None``
+        for an exact verdict, and ``reason`` is also ``None`` for a verdict that
+        was not withheld.
+    """
+    match verdict:
+        case PermutationVerdict():
+            return verdict.p, verdict.noise_pct, verdict.reason
+        case BandVerdict():
+            return None, verdict.noise_pct, verdict.reason
+        case ExactVerdict():
+            return None, None, None
+        case _ as unreachable:  # pragma: no cover — exhaustive match over MetricVerdict
+            assert_never(unreachable)
 
 
 # ---------------------------------------------------------------------------

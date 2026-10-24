@@ -61,6 +61,7 @@ from gymrat.session.schema import (
     Outcome,
     PrimaryKind,
     SchemaVersion,
+    WithheldReason,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
 from gymrat.utils import (
@@ -290,6 +291,19 @@ class IterationMetricVerdict(_DeltaPctSerializer):
     p: _OptNumber = Field(default=None, description="P-value from the statistical test.")
     noise_pct: _OptNumber = Field(
         default=None, description="Estimated noise as a percentage of the baseline median."
+    )
+    reason: Annotated[
+        WithheldReason | SkipJsonSchema[None],
+        _not_null(WithheldReason),
+    ] = Field(
+        default=None,
+        description=(
+            "Why the verdict is no-signal although the medians differ: non-finite-delta (the"
+            " delta has no finite percentage), resolution (it does not clear the measurement-step"
+            " floor), noise (the noise band, the pair count, or the p-value rejects it),"
+            " direction-mismatch (the paired differences move the other way from the medians),"
+            " or unconfirmed (a confirmation rerun disowned the regression)."
+        ),
     )
     gating: bool = Field(description="Whether this metric gates the iteration outcome.")
     confirmed: bool = Field(description="Whether a confirmation rerun validated this verdict.")

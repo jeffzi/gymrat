@@ -64,11 +64,10 @@ from gymrat.loop.iterate.judge import (
 from gymrat.loop.stop_condition import BudgetExceededError, stop_condition
 from gymrat.model import (
     GEOMEAN_DIRECTION,
-    ExactVerdict,
     MetricVerdict,
-    PermutationVerdict,
     ResolvedMetricMeta,
     is_improvement,
+    verdict_stats,
 )
 from gymrat.progress_events import (
     HookFinished,
@@ -171,19 +170,22 @@ def recorded_verdicts(
     Returns:
         The per-metric verdicts keyed by metric name, each carrying only the
         fields the log serializes: ``p`` is omitted for non-permutation
-        verdicts, ``noise_pct`` for exact ones, so a record handed to a
-        caller matches the one read back off the log.
+        verdicts, ``noise_pct`` for exact ones, and ``reason`` for exact ones
+        and verdicts that were not withheld, so a record handed to a caller
+        matches the one read back off the log.
     """
     recorded: dict[str, IterationMetricVerdict] = {}
     for name, verdict in verdicts.items():
+        p, noise_pct, reason = verdict_stats(verdict)
         recorded[name] = IterationMetricVerdict(
             delta_pct=finite_or_none(verdict.delta),
             verdict=verdict.verdict,
             method=verdict.method,
             gating=metric_meta[name].gating,
             confirmed=name in confirmation.confirmed if confirmation is not None else False,
-            p=verdict.p if isinstance(verdict, PermutationVerdict) else None,
-            noise_pct=None if isinstance(verdict, ExactVerdict) else verdict.noise_pct,
+            p=p,
+            noise_pct=noise_pct,
+            reason=reason,
         )
     return recorded
 

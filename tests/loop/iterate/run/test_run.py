@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import HooksConfig, StopConfig
+from gymrat.config import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import IterateOptions, iterate_session
 from gymrat.loop.stop_condition import BudgetExceededError, LoopStopError
@@ -47,20 +47,28 @@ from gymrat.session.store import settle_first_hint
 from gymrat.targets import InPlaceTarget
 from tests._clock import install_monotonic_clock
 from tests._config import resolved_config
+from tests._pipeline import QUANTIZED_TIME_WARNING
 from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
+    BASELINE_BYTES,
+    BASELINE_MS,
     FILTER,
     MALFORMED_LINE_WARNING,
+    PairedRun,
     as_logged,
     assert_permutation,
     baseline_rounds,
     bench_malformed_once,
     improved_rounds,
     iterate_session_header,
+    jittered,
     last_iteration_of,
+    logged_metric_verdicts,
     regressed_run,
     report_a_pass_per_call,
+    rounds,
     run_before_each_call,
+    scaled,
     stub_improved_samples,
     stub_runs,
     trimmed_report_lines,
@@ -110,6 +118,9 @@ _STAGE_EVENTS = (
 
 #: The hint every stop-condition refusal closes on.
 _STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
+
+#: Stands in for the ``reason`` a logged verdict leaves out when nothing was withheld.
+_NO_REASON = "<absent>"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +276,50 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert record.primary.delta_pct == pytest.approx(-15.1472, abs=1e-3)
     assert record.outcome == "improved"
     assert record.target_reached is False
+
+
+@pytest.mark.parametrize(
+    ("run", "config", "expected"),
+    [
+        pytest.param(
+            PairedRun(
+                rounds(jittered(BASELINE_MS, 2, 1), scaled(BASELINE_BYTES, 0.8)), baseline_rounds()
+            ),
+            resolved_config(),
+            {
+                "total_ms": ("permutation", "no-signal", "noise"),
+                "alloc_bytes": ("permutation", "improved", _NO_REASON),
+            },
+            id="withheld-noise-vs-signaled",
+        ),
+        pytest.param(
+            PairedRun(baseline_rounds(), baseline_rounds()),
+            resolved_config(metrics={"alloc_bytes": MetricEntry(exact=True)}),
+            {"alloc_bytes": ("exact", "no-signal", _NO_REASON)},
+            id="exact-no-signal",
+        ),
+    ],
+)
+async def test_iterate_session_when_metrics_judged_does_log_a_reason_only_on_a_withheld_verdict(
+    open_repo: str,
+    samples_mock: CollectSamplesRecorder,
+    run: PairedRun,
+    config: ResolvedConfig,
+    expected: dict[str, tuple[str, str, str]],
+):
+    stub_runs(samples_mock, open_repo, [run])
+
+    await iterate_session(open_repo, config)
+
+    logged = logged_metric_verdicts(open_repo)
+    assert {
+        name: (
+            logged[name]["method"],
+            logged[name]["verdict"],
+            logged[name].get("reason", _NO_REASON),
+        )
+        for name in expected
+    } == expected
 
 
 @pytest.mark.parametrize("color", [False, True])
@@ -662,6 +717,10 @@ async def test_iterate_session_when_stop_condition_met_does_report_stop_before_b
 # ---------------------------------------------------------------------------
 
 
+def _warnings_about(warnings: list[str], metric: str) -> list[str]:
+    return [warning for warning in warnings if warning.startswith(f"{metric}: ")]
+
+
 async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_to_it(
     open_repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -674,3 +733,38 @@ async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_
 
     assert MALFORMED_LINE_WARNING in warnings
     assert MALFORMED_LINE_WARNING not in capsys.readouterr().err
+
+
+async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_sink_once_across_the_confirmation(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    quantized_slower = PairedRun(
+        experiment=[{"bench#time": 375.0}] * 9 + [{"bench#time": 417.0}],
+        baseline=[{"bench#time": 333.0}] * 9 + [{"bench#time": 375.0}],
+    )
+    stub_runs(samples_mock, open_repo, [quantized_slower, quantized_slower])
+    warnings: list[str] = []
+
+    await iterate_session(
+        open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
+    )
+
+    metric_warnings = _warnings_about(warnings, "bench#time")
+    assert (samples_mock.call_count, metric_warnings) == (2, [QUANTIZED_TIME_WARNING])
+
+
+async def test_iterate_session_when_a_round_is_one_sided_does_send_the_dropped_window_warning_to_the_sink(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    baseline = baseline_rounds()
+    del baseline[0]["total_ms"]
+    stub_runs(samples_mock, open_repo, [PairedRun(improved_rounds(), baseline)])
+    warnings: list[str] = []
+
+    await iterate_session(
+        open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
+    )
+
+    about_total_ms = _warnings_about(warnings, "total_ms")
+    assert len(about_total_ms) == 1
+    assert about_total_ms[0].startswith("total_ms: dropped ")

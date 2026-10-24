@@ -98,12 +98,16 @@ class MetricDefaults:
         short_name: The benchmark's name with the kind suffix stripped, or
             ``None`` when the adapter cannot tell, leaving the full metric name
             as the only thing the report can show.
+        resolution: The smallest step by which the metric's raw value can
+            change (``1.0`` for a byte count), or ``None`` when the adapter
+            cannot tell.
     """
 
     direction: Direction
     unit: MetricUnit | None = None
     kind: str | None = None
     short_name: str | None = None
+    resolution: float | None = None
 
 
 class Adapter(Protocol):
@@ -148,11 +152,18 @@ class Adapter(Protocol):
 # ---------------------------------------------------------------------------
 
 
-_METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str], ...]] = (
-    ("#time", "ns", "time"),
-    ("#heap", "bytes", "memory"),
+_METRIC_SUFFIXES: Final[tuple[tuple[str, MetricUnit, str, float | None], ...]] = (
+    ("#time", "ns", "time", None),
+    ("#heap", "bytes", "memory", 1.0),
 )
-"""Suffix→(unit, kind) table walked by :func:`defaults_from_suffixes`; first match wins."""
+"""Metric name suffixes and the defaults each one implies.
+
+Each entry is ``(suffix, unit, kind, resolution)``, with ``unit``, ``kind`` and
+``resolution`` as described on :class:`MetricDefaults`. A heap metric counts
+whole bytes, so its resolution is one byte; a time metric has none, because a
+timer's step depends on the machine. :func:`defaults_from_suffixes` walks the
+entries in order, and the first matching suffix wins.
+"""
 
 
 def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
@@ -165,16 +176,18 @@ def defaults_from_suffixes(metric_name: str) -> MetricDefaults:
             follows the metric name grammar, so a path precedes the suffix.
 
     Returns:
-        Defaults for the first matching suffix, or direction-only defaults when
-        no suffix matches.
+        Defaults carrying the unit, kind and resolution of the first matching
+        suffix and the name with that suffix stripped, or direction-only
+        defaults when no suffix matches.
     """
-    for suffix, unit, kind in _METRIC_SUFFIXES:
+    for suffix, unit, kind, resolution in _METRIC_SUFFIXES:
         if metric_name.endswith(suffix):
             return MetricDefaults(
                 direction="lower",
                 unit=unit,
                 kind=kind,
                 short_name=metric_name.removesuffix(suffix),
+                resolution=resolution,
             )
     return MetricDefaults(direction="lower")
 

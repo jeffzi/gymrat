@@ -22,6 +22,23 @@ SCHEMA_VERSION: SchemaVersion = 1
 MetricOutcome = Literal["improved", "regressed", "no-signal", "unstable"]
 """How a single metric moved, once its samples were judged."""
 
+WithheldReason = Literal[
+    "non-finite-delta",
+    "resolution",
+    "noise",
+    "direction-mismatch",
+    "unconfirmed",
+]
+"""Why an approximate metric whose medians differ was reported ``"no-signal"``.
+
+- ``non-finite-delta`` — the delta has no finite percentage
+- ``resolution`` — the delta does not clear the metric's measurement-step floor
+- ``noise`` — the noise band rejects the delta, too few pairs differ, or the
+  permutation p-value is not significant
+- ``direction-mismatch`` — the paired differences move the other way from the medians
+- ``unconfirmed`` — a confirmation rerun disowned the regression
+"""
+
 Method = Literal["permutation", "band", "exact"]
 """The statistical test that produced a metric's verdict.
 

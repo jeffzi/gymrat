@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a `resolution` key to `[metrics]` and `[kinds]` entries in `gymrat.toml` that declares a
+  metric's measurement step, so a one-step change no longer signals, and warn when a time metric's
+  readings look quantized and declare none.
+- Add a `reason` field to JSON and session-log verdicts that says why a metric whose medians differ
+  was reported `no-signal`.
+
 ### Changed
 
+- Judge a byte metric's step against its baseline median alone, so a small heap that halves now
+  reports an improvement.
 - **Breaking:** Rename the `turn_end` trace attribute `gymrat.turn.cost_usd` to
   `gymrat.turn.session_cost_usd`, which names the cumulative session cost it always carried; update
   any query or dashboard that reads it.
@@ -75,8 +85,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Refresh the dashboard's session rows after every tool end, so a gymrat command run inside a
-  subagent shows at once.
 - Tear down a bench's whole process tree on Windows when gymrat stops or is cancelled.
 
 ## [0.19.0] - 2026-09-14
@@ -114,7 +122,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Find the session when a command runs from inside a session worktree.
-- Keep the supervise dashboard's session result visible after a tool finishes.
 - Report the supervised run span's duration to match the run summary.
 
 ## [0.17.0] - 2026-09-11
@@ -139,10 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Keep the supervise dashboard's timers running for the whole run.
 - Report the action the supervisor took on a cap instead of always saying "interrupting".
 - Stop sending a follow-up to a session a cap is ending.
-- Reject a second span processor once tracing is configured.
 
 ## [0.16.0] - 2026-09-07
 
@@ -270,7 +275,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pass metric names containing spaces, parentheses, or quotes intact to the bench command when
   substituted into a `filter` template.
 - Accept `--debug` whether written before or after the subcommand.
-- End the run quietly on a closed output pipe instead of printing a bug-report footer.
 - Read the mitata adapter's report correctly when the bench command prints extra output around the
   JSON, and warn about unusable mitata entries instead of skipping them silently.
 - Keep the session log readable and complete after a crash mid-write.

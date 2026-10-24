@@ -4,7 +4,6 @@ from gymrat.adapters import (
     Adapter,
     AdapterError,
     MetricDefaults,
-    defaults_from_suffixes,
     get_adapter,
     metric_lines_adapter,
     mitata_adapter,
@@ -57,10 +56,17 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
 
 
 # ---------------------------------------------------------------------------
-# defaults_from_suffixes
+# Adapter.defaults
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "adapter",
+    [
+        pytest.param(metric_lines_adapter, id="metric-lines"),
+        pytest.param(mitata_adapter, id="mitata"),
+    ],
+)
 @pytest.mark.parametrize(
     ("metric_name", "expected"),
     [
@@ -76,17 +82,20 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
         ),
         pytest.param(
             "bench#heap",
-            MetricDefaults(direction="lower", unit="bytes", kind="memory", short_name="bench"),
+            MetricDefaults(
+                direction="lower", unit="bytes", kind="memory", short_name="bench", resolution=1.0
+            ),
             id="heap-suffix",
         ),
         pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
     ],
 )
-def test_defaults_from_suffixes_when_kind_suffix_varies_does_derive_defaults_from_it(
+def test_defaults_when_kind_suffix_varies_does_derive_defaults_from_it(
+    adapter: Adapter,
     metric_name: str,
     expected: MetricDefaults,
 ):
-    assert defaults_from_suffixes(metric_name) == expected
+    assert adapter.defaults(metric_name) == expected
 
 
 # ---------------------------------------------------------------------------

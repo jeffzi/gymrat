@@ -338,6 +338,23 @@ _EFFORT_LEVELS = "'low', 'medium', 'high', 'xhigh' or 'max'"
         _wrong_type(
             {"unstable_noise_pct": 0.25}, "unstable_noise_pct", "a number at or above 0.5", "0.25"
         ),
+        # measurement step sizes
+        *(
+            _wrong_type(
+                {section: {name: {"resolution": value}}},
+                f"{section}.{name}.resolution",
+                expected,
+                got,
+            )
+            for section, name in (("metrics", "latency"), ("kinds", "memory"))
+            for value, expected, got in (
+                (0, "a number above 0", "0"),
+                ("fine", "a number", '"fine"'),
+                (math.nan, "a number", "NaN"),
+                (math.inf, "a number", "Infinity"),
+                (True, "a number", "true"),
+            )
+        ),
         *(
             _wrong_type(
                 {"metrics": {"latency": {"direction": value}}},
@@ -406,6 +423,14 @@ def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_ev
 # ---------------------------------------------------------------------------
 
 
+def _metric_resolution(config: ConfigFile) -> float | None:
+    return (config.metrics or {})["latency"].resolution
+
+
+def _kind_resolution(config: ConfigFile) -> float | None:
+    return (config.kinds or {})["memory"].resolution
+
+
 @pytest.mark.parametrize(
     ("text", "read", "expected"),
     [
@@ -417,6 +442,18 @@ def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_ev
             attrgetter("stop.target_value"),
             -2.0,
             id="stop-target-value",
+        ),
+        pytest.param(
+            "[metrics.latency]\nresolution = 42",
+            _metric_resolution,
+            42.0,
+            id="metric-resolution",
+        ),
+        pytest.param(
+            "[kinds.memory]\nresolution = 1024",
+            _kind_resolution,
+            1024.0,
+            id="kind-resolution",
         ),
     ],
 )

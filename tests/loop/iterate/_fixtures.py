@@ -77,6 +77,24 @@ def scaled(values: list[float], factor: float) -> list[float]:
     return [value * factor for value in values]
 
 
+def jittered(values: list[float], up: float, down: float) -> list[float]:
+    """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
+
+    The mixed signs leave the permutation test nothing to call, while the larger
+    upward nudge still drags the median above the baseline's — a run that moved
+    the wrong way without saying anything, which is what ``no-signal`` means.
+
+    Args:
+        values: The rounds to nudge.
+        up: How far the even-indexed rounds move up.
+        down: How far the odd-indexed rounds move down.
+
+    Returns:
+        The nudged rounds, in their original order.
+    """
+    return [value + up if index % 2 == 0 else value - down for index, value in enumerate(values)]
+
+
 def rounds(total_ms: list[float], alloc_bytes: list[float]) -> list[dict[str, float]]:
     """One round per entry, pairing each metric with the value it reported that round."""
     return [
@@ -418,6 +436,15 @@ def last_iteration_of(root: str) -> IterationRecord:
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
     )
     return last
+
+
+def logged_metric_verdicts(root: str) -> dict[str, dict[str, object]]:
+    """The per-metric verdicts on the last line of ``root``'s session log, exactly as written."""
+    log_path = session_jsonl_path(root)
+    last_line = Path(log_path).read_text(encoding="utf-8").splitlines()[-1]
+    metrics = json.loads(last_line).get("metrics")
+    assert isinstance(metrics, dict), f"expected an iteration record at the end of {log_path}"
+    return metrics
 
 
 #: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.

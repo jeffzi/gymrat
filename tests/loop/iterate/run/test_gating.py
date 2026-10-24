@@ -44,7 +44,9 @@ from tests.loop.iterate._fixtures import (
     assert_permutation,
     baseline_rounds,
     improved_rounds,
+    jittered,
     last_iteration_of,
+    logged_metric_verdicts,
     regressed_rounds,
     regressed_run,
     report_a_pass_per_call,
@@ -69,27 +71,9 @@ if TYPE_CHECKING:
 _JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
 
 
-def _jittered(values: list[float], up: float, down: float) -> list[float]:
-    """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
-
-    The mixed signs leave the permutation test nothing to call, while the larger
-    upward nudge still drags the median above the baseline's — a run that moved
-    the wrong way without saying anything, which is what ``no-signal`` means.
-
-    Args:
-        values: The rounds to nudge.
-        up: How far the even-indexed rounds move up.
-        down: How far the odd-indexed rounds move down.
-
-    Returns:
-        The nudged rounds, in their original order.
-    """
-    return [value + up if index % 2 == 0 else value - down for index, value in enumerate(values)]
-
-
 def _noisy_rounds() -> list[dict[str, float]]:
     """Ten rounds that drift half a percent the wrong way without ever settling."""
-    return rounds(_jittered(BASELINE_MS, 2, 1), _jittered(BASELINE_BYTES, 20, 10))
+    return rounds(jittered(BASELINE_MS, 2, 1), jittered(BASELINE_BYTES, 20, 10))
 
 
 def _filtered_rounds(name: str, values: list[float]) -> list[dict[str, float]]:
@@ -170,11 +154,23 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     assert "total_ms: regression confirmed on rerun" in trimmed_report_lines(result.report)
 
 
+#: The first run's ``total_ms`` regression once a rerun disowns it: withheld as
+#: unconfirmed, still carrying the first run's 10% delta, its 3% noise band (1.5
+#: times a 2% half-range) and the p-value of ten pairs that all moved one way.
+_FIRST_RUN_DISOWNED: dict[str, object] = {
+    "verdict": "no-signal",
+    "reason": "unconfirmed",
+    "delta_pct": pytest.approx(10, abs=1e-6),
+    "noise_pct": pytest.approx(3.0),
+    "p": pytest.approx(2 / 2**10),
+}
+
+
 @pytest.mark.parametrize(
     "experiment",
     [
         pytest.param(scaled(BASELINE_MS, 0.9), id="improved"),
-        pytest.param(_jittered(BASELINE_MS, 2, 1), id="no-signal"),
+        pytest.param(jittered(BASELINE_MS, 2, 1), id="no-signal"),
     ],
 )
 async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
@@ -198,6 +194,8 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
+    logged = logged_metric_verdicts(open_repo)["total_ms"]
+    assert {key: logged.get(key) for key in _FIRST_RUN_DISOWNED} == _FIRST_RUN_DISOWNED
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
     assert "total_ms: regression not confirmed on rerun" in trimmed_report_lines(result.report)
