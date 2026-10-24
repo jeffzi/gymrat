@@ -1,14 +1,15 @@
 # gymrat
 
-A CLI that tells you whether a code change made your benchmarks faster, judged by a statistical
-test on paired samples.
+A command-line interface (CLI) that tells you whether a code change made your benchmarks faster,
+judged by a statistical test on paired samples.
 
 ## What it does
 
 Benchmark numbers jitter from run to run, so "it got 3% faster" is often noise. gymrat runs your
 existing bench command against two or more revisions, pairs the samples, and judges every metric
 with a statistical test before calling anything improved or regressed. It also drives a keep/discard
-optimization loop, either by hand or under an AI agent in a supervised run with time and spend caps.
+optimization loop, either by hand or under an artificial intelligence (AI) agent in a supervised
+run with wall-clock and spend caps.
 
 ## Contents
 
@@ -74,7 +75,7 @@ The principles behind these choices, and what gymrat deliberately is not, are in
 uv tool install gymrat
 ```
 
-or `pipx install gymrat`, or `pip install gymrat`. Requires Python 3.12+.
+or `pipx install gymrat`, or `pip install gymrat`. Requires Python 3.12+ and git on your `PATH`.
 
 ## Feeding it metrics
 
@@ -121,9 +122,9 @@ bench = "npm run bench" # required: the command whose stdout carries metrics
 prepare = "npm ci && npm run build" # run once per revision before sampling
 adapter = "metric-lines" # or "mitata"
 samples = 10 # paired samples per target
-timeout_seconds = 1800 # per bench invocation; flag --timeout, variable GYMRAT_TIMEOUT
+timeout_seconds = 1800 # default; per bench invocation; flag --timeout, variable GYMRAT_TIMEOUT
 filter = "npm run bench -- --filter {names}" # scopes confirmation reruns and `gymrat probe`
-primary = "geomean" # or a metric name
+primary = "geomean" # default; or a metric name
 checks = "npm test" # must pass before `gymrat keep` commits an iteration
 
 [stop]
@@ -139,15 +140,24 @@ resolution = 41.67 # every time metric that sets no step of its own
 ```
 
 The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` overrides of
-`gating` and `resolution`. gymrat names any unknown key or invalid value when it reads the file.
+`gating` and `resolution`. Kinds are `time` (`#time` metrics), `memory` (`#heap` metrics), and
+`other` (every other metric). gymrat names any unknown key or invalid value when it reads the file;
+it ignores a `[kinds]` entry that matches no kind.
+
+- `gating`, per metric or per kind, decides whether a regression on that metric fails
+  `--fail-on regressed` and blocks `keep`.
+- `unstable_noise_pct` (default 200, minimum 0.5) is the noise-band width, in percent, above which
+  a metric is reported unstable.
+- `runbook` names the runbook file, relative to the directory holding `gymrat.toml`. The file must
+  exist.
 
 `resolution` is the size of one measurement step, in the metric's unit: 41.67 for a timer that
-ticks at 24 MHz and is read in nanoseconds. One byte is built in for `#heap` metrics. A change of
-one step never signals, because the true change behind it can be anything from nothing to two
-steps. Where the bench allows it, timing more iterations per reading is the better cure, since it
-shrinks the step against the reading. gymrat warns when a time metric's readings look quantized and
-no step is declared. The gap the warning names is the largest the step can be, so declare the
-timer's tick rather than the gap.
+ticks at 24 MHz and is read in nanoseconds. gymrat gives `#heap` metrics a built-in step of one
+byte. A change of one step never signals, because the true change behind it can be anything from
+nothing to two steps. Where the bench allows it, time more iterations per reading instead of
+declaring a step: the step then shrinks relative to each reading, so smaller changes can signal.
+gymrat warns when a time metric's readings look quantized and no step is declared. The gap the
+warning names is the largest the step can be, so declare the timer's tick rather than the gap.
 
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
@@ -206,8 +216,8 @@ resuming an open session. The wall-clock cap starts once the baseline is recorde
 the cap plus the baseline's duration.
 
 `--force` launches even when the cap cannot fit one iteration or a stop condition is already met.
-`--allow-dirty` allows a launch with uncommitted changes, and `--log <path>` sets where the JSON
-Lines (JSONL) event log goes.
+`--allow-dirty` allows a launch with uncommitted changes, and `--log <path>` sets where the
+supervisor event log, in JSON Lines (JSONL) format, goes.
 
 #### Guards and caps
 
@@ -246,14 +256,15 @@ While a supervised run is live, gymrat refuses `iterate` and `probe` typed in a 
 must use the tools. It refuses `init` outright.
 
 gymrat also fences the agent's tool calls. An edit made through a file-editing tool (Edit, Write,
-MultiEdit, NotebookEdit) must land in the experiment worktree or in a system temp directory outside
-the repository; gymrat refuses any other path. It also refuses a gymrat command run in the
+MultiEdit, NotebookEdit) must land in the experiment worktree or a system temp directory outside the
+repository. gymrat refuses any other path. It also refuses a gymrat command run in the
 background. Each refusal names its rule. gymrat does not inspect shell commands for file writes.
 
 A manual session has none of these refusals.
 
-`iterate`, `keep`, `discard`, `status`, `stop`, `sync`, `compare`, `measure`, and `probe` print a
-time-left line while a supervised run's wall-clock cap is active, so the agent can plan around it.
+`compare`, `measure`, `probe`, and every session command (`start`, `iterate`, `keep`, `discard`,
+`status`, `stop`, `sync`, `finalize`) print a time-left line while a supervised run's wall-clock cap
+is active, so the agent can plan around it.
 
 ### Hooks
 
@@ -299,24 +310,23 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 `compare`, `measure`, `probe`, `doctor`, and the session commands (`start`, `iterate`, `keep`,
 `discard`, `status`, `stop`, `sync`, `finalize`) accept `--format json` for structured output.
 `init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases; the log schema is additive-only from the first published release.
+releases; the log schema is additive-only from the first release published to PyPI.
 
-The session and supervisor log formats are documented in the
-[event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md), with JSON
-Schema and AsyncAPI files in
+The [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md) documents
+the session log and supervisor event log formats, with JSON Schema and AsyncAPI files in
 [`schemas/`](https://github.com/jeffzi/gymrat/tree/main/schemas).
 
 ## Color control
 
-`--color` / `--no-color` can be placed before or after any subcommand. A subcommand flag beats the
+Place `--color` or `--no-color` before or after any subcommand. A subcommand flag beats the
 root flag. Without either, `FORCE_COLOR` forces styling, `NO_COLOR` suppresses it, and otherwise
 gymrat styles output only when the stream is a terminal (TTY).
 
 ## Monitoring
 
-Install the optional OpenTelemetry extra with the same tool you installed gymrat with, then point it
-at any collector that accepts OpenTelemetry Protocol (OTLP) over HTTP (Jaeger, Grafana Tempo, or
-your own):
+Install the optional OpenTelemetry extra with the same tool you installed gymrat with. Then point
+it at any collector that accepts OpenTelemetry Protocol (OTLP) over Hypertext Transfer Protocol
+(HTTP), such as Jaeger, Grafana Tempo, or your own:
 
 ```console
 uv tool install 'gymrat[otel]'   # or: pipx install 'gymrat[otel]' / pip install 'gymrat[otel]'
@@ -333,6 +343,9 @@ record and for every supervised run. One trace covers the whole session:
   run span when the supervised agent runs the command, under the session span otherwise. The
   outcome records that the command appended to the session log appear as events on this span.
 
+The [telemetry reference](https://github.com/jeffzi/gymrat/blob/main/docs/telemetry-reference.md)
+lists every span and event attribute.
+
 A command span also links to the trace context in its environment. For a command the supervised
 agent runs, the link always targets the run span, which gymrat passes as `GYMRAT_TRACEPARENT`. For
 any other command, `supervise` itself included, it targets whatever the `TRACEPARENT` environment
@@ -348,72 +361,21 @@ gymrat export --endpoint http://localhost:4318              # override the colle
 
 `gymrat start` archives the previous session's log as `.gymrat/session-<session_id>.jsonl`.
 
-### Attribute reference
-
-"`<name>` event" below means a span event named after the corresponding session-log or
-supervisor-event-log record; see the [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md)
-for those record types.
-
-| Attribute                      | Type   | Appears on                       | Description                                                                                                               |
-| ------------------------------ | ------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `gymrat.session.id`            | string | session, run, command            | Unique identifier for the session.                                                                                        |
-| `gymrat.session.branch`        | string | session                          | Git branch created for the session.                                                                                       |
-| `gymrat.run.head_sha`          | string | run                              | Git HEAD commit hash (SHA) at launch time.                                                                                |
-| `gymrat.run.max_minutes`       | float  | run                              | Wall-clock timeout in minutes.                                                                                            |
-| `gymrat.run.max_usd`           | float  | run (when set)                   | Spend cap in US dollars, if configured.                                                                                   |
-| `gymrat.run.effort`            | string | run (when set)                   | Effort level, if specified.                                                                                               |
-| `gymrat.run.cost_usd`          | float  | run (at end)                     | Cumulative cost of the run in US dollars.                                                                                 |
-| `gymrat.run.ended_by`          | string | run (at end, live export only)   | How the run ended: `session`, `wall-clock`, `spend-cap`, `guard`, `stop-condition`, or `hook-failure`.                    |
-| `gymrat.run.end_reason`        | string | run (when set, live export only) | For `guard`, the guard reason; for a cap, the cap name; for `stop-condition` and `hook-failure`, the condition's summary. |
-| `gymrat.run.duration_ms`       | float  | run (at end, live export only)   | Wall-clock milliseconds the run took.                                                                                     |
-| `gen_ai.request.model`         | string | run (when set)                   | Model requested for the run, if specified.                                                                                |
-| `gen_ai.provider.name`         | string | run                              | Model provider (currently always `anthropic`).                                                                            |
-| `gymrat.command.name`          | string | command                          | Name of the CLI command that ran.                                                                                         |
-| `gymrat.command.exit_code`     | int    | command                          | Process-style exit code: 0 success, 1 or 2 failure.                                                                       |
-| `gymrat.command.reason`        | string | command (when set)               | Why the command exited non-zero, when it did.                                                                             |
-| `gymrat.command.duration_ms`   | int    | command                          | Wall-clock milliseconds the command took.                                                                                 |
-| `gymrat.command.args.<key>`    | scalar | command (per arg)                | One attribute per argument the command was invoked with.                                                                  |
-| `gymrat.iteration.seq`         | int    | command, events                  | Iteration sequence number the record belongs to.                                                                          |
-| `gymrat.iteration.outcome`     | string | iteration event                  | Overall iteration outcome: improved, regressed, or no-signal.                                                             |
-| `gymrat.iteration.delta_pct`   | float  | iteration event                  | Percentage change from baseline for the primary metric.                                                                   |
-| `gymrat.turn.session_cost_usd` | float  | turn_end event                   | Cumulative session cost in US dollars when the turn ended.                                                                |
-| `gymrat.turn.origin`           | string | turn_end event                   | Whether the turn was agent-generated or injected by the supervisor.                                                       |
-| `gymrat.turn.budget_exhausted` | bool   | turn_end event                   | Whether the turn exhausted the remaining budget.                                                                          |
-| `gymrat.follow_up.action`      | string | follow_up event                  | Supervisor action taken after the turn.                                                                                   |
-| `gymrat.follow_up.reason`      | string | follow_up event                  | Reason for the action, if applicable.                                                                                     |
-| `gymrat.cap.name`              | string | cap event                        | Which supervision cap fired.                                                                                              |
-| `gymrat.keep.status`           | string | keep event                       | Whether the iteration was committed or blocked.                                                                           |
-| `gymrat.keep.reason`           | string | keep event (when set)            | Why the keep was blocked, when status is blocked.                                                                         |
-| `gymrat.keep.commit`           | string | keep event (when set)            | Git commit SHA when status is committed.                                                                                  |
-| `gymrat.keep.message`          | string | keep event (when set)            | Commit message when status is committed.                                                                                  |
-| `gymrat.hook.stage`            | string | hook event                       | Whether the hook ran before or after the iteration.                                                                       |
-| `gymrat.hook.exit_code`        | int    | hook event                       | Process exit code of the hook command.                                                                                    |
-| `gymrat.hook.duration_ms`      | float  | hook event                       | Wall-clock milliseconds the hook command ran.                                                                             |
-| `gymrat.hook.stdout_bytes`     | int    | hook event                       | Bytes the hook command wrote to stdout.                                                                                   |
-| `gymrat.hook.stderr_bytes`     | int    | hook event (when set)            | Bytes the hook command wrote to stderr.                                                                                   |
-| `gymrat.hook.timed_out`        | bool   | hook event                       | Whether the hook command exceeded its timeout.                                                                            |
-| `gymrat.baseline.label`        | string | baseline event                   | Human-readable label for the baseline measurement.                                                                        |
-| `gymrat.baseline.duration_ms`  | float  | baseline event (when set)        | Wall-clock milliseconds the baseline measurement took.                                                                    |
-| `gymrat.finalize.branch`       | string | finalize event                   | Git branch the finalize squash landed on.                                                                                 |
-| `gymrat.finalize.commit`       | string | finalize event                   | Git commit SHA of the squash commit.                                                                                      |
-| `gymrat.finalize.message`      | string | finalize event                   | Commit message of the squash commit.                                                                                      |
-| `gymrat.stop.message`          | string | stop event                       | Reason the stop was requested.                                                                                            |
-
 ## How verdicts work
 
 Each candidate is sampled in strict alternation with its baseline, so machine drift hits both
 sides equally. A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of
-the paired differences. Tied pairs carry no sign to flip, so when fewer than 6 pairs differ, a
-noise-band fallback applies instead: the percentage change between the two sides' medians must
-exceed the metric's noise band.
+the paired differences. Tied pairs carry no sign to flip. When fewer than 6 pairs differ, a
+noise-band fallback applies: the percentage change between the two sides' medians must exceed the
+metric's noise band.
 
-A metric's noise band is 1.5 times the larger of the two sides' half-ranges (half the span from
-lowest to highest sample), each taken as a percentage of that side's median, and never less than
-0.5%. A metric measured in whole steps must also move by more than 1.25 steps: one byte for a
-`#heap` metric, the declared `resolution` otherwise. Its band therefore never sits below 1.25 steps
-as a share of the baseline median, and a change within those 1.25 steps counts as noise whatever
-the pairs say. Setting `exact = true` on a metric skips the statistical test and the noise band: any
-difference between its medians is a change.
+A metric's noise band is 1.5 times the larger of the two sides' half-ranges, never less than 0.5%.
+A half-range is half the span from lowest to highest sample, taken as a percentage of that side's
+median. A metric measured in whole steps must also move by more than 1.25 steps: its declared
+`resolution`, or one byte for a `#heap` metric that declares none. Its band therefore never sits
+below 1.25 steps as a share of the baseline median, and a change within those 1.25 steps counts as
+noise whatever the pairs say. Setting `exact = true` on a metric skips the statistical test and the
+noise band: any difference between its medians is a change.
 
 Each metric lands in one class:
 
@@ -421,14 +383,14 @@ Each metric lands in one class:
 - **≈ unstable** — the samples are too erratic to judge.
 - **= identical** — every pair tied (an `exact` metric shows within noise instead).
 - **~ within noise** — gymrat could not confirm a change. The change is indistinguishable from
-  noise, falls within 1.25 of the metric's measurement steps (one byte for a `#heap` metric, the
-  declared `resolution` otherwise), has no finite percentage, or runs against the pairs (the
-  medians do not move the way the pairs do).
+  noise, falls within 1.25 measurement steps, or has no finite percentage. Or it runs against the
+  pairs: the medians do not move the way the pairs do.
 - **? inconclusive** — fewer than 6 pairs, too few for a statistical verdict.
 
 JSON output stores identical and within-noise as `no-signal`. An inconclusive verdict keeps the
 value the noise band gave it (`improved`, `regressed`, `unstable`, or `no-signal`), with fewer than
-6 pairs behind it. A `no-signal` verdict whose medians differ carries a `reason`:
+6 pairs behind it. A `no-signal` verdict whose medians differ carries a `reason`, the first of these
+that applies:
 
 - `non-finite-delta` — the change has no finite percentage.
 - `resolution` — the change falls within 1.25 measurement steps.
