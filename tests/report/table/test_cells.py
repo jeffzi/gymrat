@@ -56,6 +56,14 @@ if TYPE_CHECKING:
             id="band-absent-with-pairs-reserves-band-slot",
         ),
         pytest.param(
+            VerdictParts(glyph="✓", delta="-10.0%", word="", band="2.5%", pairs="n=8"),
+            VerdictWidths(delta=7, band=4, detects=4),
+            "red",
+            "dim",
+            ("✓   -10.0%  ±2.5%  n=8", [("✓", "green"), ("-10.0%", "red"), ("±2.5%", "dim")]),
+            id="detects-absent-with-pairs-reserves-nothing",
+        ),
+        pytest.param(
             VerdictParts(glyph="≈", delta="", word="unstable", band="", pairs=""),
             VerdictWidths(delta=6, band=0),
             "red",

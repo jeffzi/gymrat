@@ -7,6 +7,7 @@ labels, the per-candidate summary lines, and the per-candidate highlights.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -40,7 +41,7 @@ from tests.report._comparisons import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.report.types import ComparisonResult
+    from gymrat.report.types import CandidateMetric, ComparisonResult
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +146,25 @@ def test_render_report_when_colored_does_style_each_cell_verdict_on_its_own(
     line = line_containing(render_report(make_result(), ReportOptions(color=True)), row)
 
     assert styles_at(line, token) == codes
+
+
+def _detecting(candidate: CandidateMetric) -> CandidateMetric:
+    """``candidate`` with its verdict carrying a 2.1% detectable change."""
+    if candidate.verdict is None or candidate.verdict.method == "exact":
+        msg = f"no approximate verdict to carry a detectable change on {candidate!r}"
+        raise AssertionError(msg)
+    return replace(candidate, verdict=replace(candidate.verdict, detectable_pct=2.1))
+
+
+def test_render_report_when_many_candidates_carry_detectable_changes_does_not_state_them():
+    result = _dimming_result()
+    metric = result.metrics["flat/time"]
+    detecting = replace(metric, candidates=tuple(map(_detecting, metric.candidates)))
+
+    report = render_report(replace(result, metrics={**result.metrics, "flat/time": detecting}))
+
+    assert "~" in line_starting_with(report, "flat/time")
+    assert "detects" not in report
 
 
 def test_render_report_when_colored_does_leave_name_and_values_plain_on_a_quiet_row():

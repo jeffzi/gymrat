@@ -112,8 +112,9 @@ def shown_verdict(
     Args:
         verdict: The verdict to render, or ``None`` when the metric has none.
         samples: The run's sample count, so a full-count verdict drops its ``n=N``.
-        with_band: Whether the caller shows a noise band (the compact
-            multi-candidate table drops it).
+        with_band: Whether the caller shows a noise band, and with it a
+            within-noise verdict's detectable change (the compact
+            multi-candidate table drops both).
 
     Returns:
         The verdict's fields with its display class, or ``None`` when there is
@@ -124,8 +125,11 @@ def shown_verdict(
     shown = display_class(verdict)
     unstable = verdict.verdict == "unstable"
     band = ""
+    detects = ""
     if with_band and not unstable and shown != "inconclusive" and verdict.method != "exact":
         band = format_noise_band_value(verdict.noise_pct)
+        if shown == "within-noise" and verdict.detectable_pct is not None:
+            detects = f"{verdict.detectable_pct:.1f}%"
     return ShownVerdict(
         parts=VerdictParts(
             glyph=GLYPHS[shown],
@@ -133,6 +137,7 @@ def shown_verdict(
             word=VERDICT_GLOSSES["unstable"] if unstable else "",
             band=band,
             pairs="" if verdict.n == samples else format_pair_count(verdict.n),
+            detects=detects,
         ),
         outcome=shown,
     )

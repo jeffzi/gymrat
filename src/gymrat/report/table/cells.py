@@ -40,6 +40,8 @@ METRIC_COLUMN_HEADER = "metric"
 
 VERDICT_COLUMN_MIN = 12
 
+DETECTS_PREFIX = "detects ≥"
+
 GEOMEAN_LABEL = "geomean"
 
 
@@ -198,6 +200,8 @@ class VerdictParts:
             otherwise.
         band: The noise band's figure, without the ``±`` the column pins.
         pairs: The ``n=N`` pair count, empty when the verdict rests on every pair.
+        detects: The detectable change's figure, without the ``detects ≥`` the
+            column pins; empty when the row states none.
     """
 
     glyph: str
@@ -205,14 +209,25 @@ class VerdictParts:
     word: str
     band: str
     pairs: str
+    detects: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class VerdictWidths:
-    """Widths a verdict column pads its delta and band to, measured on plain text."""
+    """Widths a verdict column pads its fields to, measured on plain text.
+
+    Attributes:
+        delta: The width every delta pads to.
+        band: The width every noise band's figure pads to.
+        detects: The width every detectable change's figure pads to.
+        pairs: The width a pair count pads to in a cell that states a
+            detectable change after it, so those changes line up.
+    """
 
     delta: int
     band: int
+    detects: int = 0
+    pairs: int = 0
 
 
 def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
@@ -220,17 +235,21 @@ def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
 
     Only the deltas set the delta width; a word standing in for a delta is not
     measured. A caller that wants the delta field to fit a word widens it
-    itself.
+    itself. Only the cells stating a detectable change set the pair-count
+    width, since only those cells pad their pair count.
 
     Args:
         cells: The verdict cells to measure.
 
     Returns:
-        The widest delta and the widest band across all cells.
+        The widest delta, band and detectable change across all cells, and the
+        widest pair count among the cells stating a detectable change.
     """
     return VerdictWidths(
         delta=max((len(cell.delta) for cell in cells), default=0),
         band=max((len(cell.band) for cell in cells), default=0),
+        detects=max((len(cell.detects) for cell in cells), default=0),
+        pairs=max((len(cell.pairs) for cell in cells if cell.detects != ""), default=0),
     )
 
 
@@ -258,19 +277,20 @@ def verdict_cell(
 ) -> Text:
     """A verdict cell, each field padded to its column's width and styled on its own.
 
-    The fields — glyph, delta (or the word standing in for it), band and pair
-    count — are joined by the cell gutter, a field with no text is dropped, and
-    trailing space is trimmed. Only a field's text carries its style, never the
-    padding around it, and the cell's plain text is what its column is sized on.
+    The fields — glyph, delta (or the word standing in for it), band, pair
+    count and detectable change — are joined by the cell gutter, a field with
+    no text is dropped, and trailing space is trimmed. Only a field's text
+    carries its style, never the padding around it, and the cell's plain text is
+    what its column is sized on.
 
     Args:
         parts: The verdict's fields.
-        widths: The column widths the delta and band pad to.
+        widths: The column widths the fields pad to.
         glyph_style: The style the glyph wears, or ``None`` to leave it plain.
         delta_style: The style the delta or word wears, or ``None`` to leave it
             plain.
-        band_style: The style the noise band wears, or ``None`` to leave it
-            plain.
+        band_style: The style the noise band and the detectable change wear,
+            or ``None`` to leave them plain.
 
     Returns:
         The styled cell.
@@ -282,16 +302,30 @@ def verdict_cell(
     else:
         pad = " " * max(0, widths.delta - len(parts.delta))
         delta = Text(pad).append(parts.delta, delta_style)
-    # The `±` is pinned and the figure right-aligned behind it; a row with no
-    # band reserves the same width blank where its column shows one.
-    if parts.band != "":
-        band_cell = _field(f"{PLUS_MINUS}{parts.band.rjust(widths.band)}", band_style)
-    else:
-        band_cell = Text(" " * (len(PLUS_MINUS) + widths.band) if widths.band > 0 else "")
-    fields = [_field(parts.glyph, glyph_style), delta, band_cell, Text(parts.pairs)]
+    # The `±` and `detects ≥` are pinned and each figure right-aligned behind
+    # its prefix; a row with no band reserves the same width blank where its
+    # column shows one, so the pair counts line up. The detectable change comes
+    # last so a row without one reads unchanged: its blank is trailing space,
+    # trimmed below. A row stating one pads its pair count instead, so the
+    # detectable changes line up whether or not a row shows a pair count.
+    pairs = parts.pairs.ljust(widths.pairs) if parts.detects != "" else parts.pairs
+    fields = [
+        _field(parts.glyph, glyph_style),
+        delta,
+        _pinned_field(PLUS_MINUS, parts.band, widths.band, band_style),
+        Text(pairs),
+        _pinned_field(DETECTS_PREFIX, parts.detects, widths.detects, band_style),
+    ]
     cell = Text(CELL_GUTTER).join(field for field in fields if field.plain != "")
     cell.rstrip()
     return cell
+
+
+def _pinned_field(prefix: str, figure: str, width: int, style: str | None) -> Text:
+    """``figure`` right-aligned to ``width`` behind ``prefix``, or a blank of that width."""
+    if figure != "":
+        return _field(f"{prefix}{figure.rjust(width)}", style)
+    return Text(" " * (len(prefix) + width) if width > 0 else "")
 
 
 def _field(text: str, style: str | None) -> Text:
