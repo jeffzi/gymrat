@@ -171,3 +171,86 @@ def test_doctor_when_skill_path_checked_does_report_installed_only_for_a_file(
     }
     assert result.exit_code == 0
     assert statuses["skill file"] == status
+
+
+# ---------------------------------------------------------------------------
+# samples: an odd count fails the report in both formats
+# ---------------------------------------------------------------------------
+
+_ODD_SAMPLES_HINT = (
+    "`iterate` and `compare` refuse an odd count; `measure` and `probe` still run — use 10 or 12"
+)
+
+
+@pytest.fixture
+def _ready_project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A repository root with a bench configured, run through the real report and renderers."""
+    git_env = GitEnvironment(git_available=True, inside_git_repo=True, repo_root_dir=str(tmp_path))
+    write_config(tmp_path, {"bench": "npm run bench"})
+    monkeypatch.setattr(
+        "gymrat.doctor.detect_git_environment",
+        create_autospec(detect_git_environment, return_value=git_env),
+    )
+    patch_doctor(monkeypatch, real_report=True, stub_text=False, stub_json=False)
+
+
+@pytest.mark.parametrize(
+    ("samples", "expected", "exit_code"),
+    [
+        pytest.param(
+            "11",
+            {
+                "name": "samples",
+                "status": "fail",
+                "detail": "samples: 11 — balances one target only",
+                "hint": _ODD_SAMPLES_HINT,
+            },
+            1,
+            id="odd-fails",
+        ),
+        pytest.param(
+            "12",
+            {
+                "name": "samples",
+                "status": "ok",
+                "detail": "samples: 12 — balances 2, 3, 4 or 6 targets",
+                "hint": None,
+            },
+            0,
+            id="even-passes",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("_ready_project")
+def test_doctor_when_samples_flag_given_does_report_its_check_in_json_and_exit_on_it(
+    samples: str, expected: dict[str, object], exit_code: int
+):
+    result = runner.invoke(app, ["doctor", "--samples", samples, "--format", "json"])
+
+    checks = [
+        check
+        for section in json.loads(result.stdout)["sections"]
+        if section["title"] == "Workflow"
+        for check in section["checks"]
+        if check["name"] == "samples"
+    ]
+    assert checks == [expected]
+    assert result.exit_code == exit_code
+
+
+@pytest.mark.usefixtures("_ready_project")
+def test_doctor_when_samples_odd_does_render_the_failed_check_and_hint_as_text():
+    result = runner.invoke(app, ["doctor", "--samples", "11", "--no-color"])
+
+    lines = result.stdout.split("\n")
+    failed = lines.index("  ✗ samples: 11 — balances one target only")
+    assert lines[failed + 1] == f"    {_ODD_SAMPLES_HINT.replace('`', '')}"
+    assert result.exit_code == 1
+
+
+@pytest.mark.usefixtures("_ready_project")
+def test_doctor_when_samples_even_does_render_the_passing_check_as_text():
+    result = runner.invoke(app, ["doctor", "--samples", "12", "--no-color"])
+
+    assert "  ✓ samples: 12 — balances 2, 3, 4 or 6 targets" in result.stdout.split("\n")
+    assert result.exit_code == 0

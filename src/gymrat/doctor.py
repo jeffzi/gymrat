@@ -60,6 +60,7 @@ from gymrat.report.style import (
 )
 from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
 from gymrat.session.paths import NotAGitRepositoryError, repo_root
+from gymrat.utils import balanced_counts_around, is_balanced
 
 # ---------------------------------------------------------------------------
 # report model and pure section builders
@@ -74,6 +75,10 @@ _WORKFLOW_SECTION_TITLE = "Workflow"
 # The synthetic check name emitted when config errors collapse the workflow
 # section; the renderer detects the skip by it.
 _WORKFLOW_SKIP_CHECK_NAME = "workflow"
+
+# The samples check lists the target counts from 2 up to this one that the
+# sample count balances.
+_MAX_TARGETS_CHECKED = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +222,9 @@ def build_workflow_section(
 ) -> CheckSection:
     """WARN for each missing workflow piece (skill file, checks, stop, runbook) with a fix hint.
 
+    The section also checks the sample count: it FAILS on an odd count, which
+    no run of two or more targets can balance.
+
     When ``config_has_problems`` is true the individual checks are meaningless — the
     config never settled — so the section collapses to a single skip placeholder.
 
@@ -273,6 +281,7 @@ def build_workflow_section(
             present=config.runbook is not None,
             ok_detail=f"runbook: {config.runbook}",
         ),
+        _build_samples_check(config.samples),
     ]
 
     return CheckSection(title=_WORKFLOW_SECTION_TITLE, checks=checks)
@@ -294,6 +303,37 @@ def _build_stop_check(stop: StopConfig | None) -> Check:
         status="warn",
         detail="stop is not configured",
         hint="Without stop, a session has no finish line",
+    )
+
+
+def _join_with_or(items: list[str]) -> str:
+    """``a``, ``a or b``, ``a, b or c``: the items as one English alternative."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} or {items[-1]}"
+
+
+def _build_samples_check(samples: int) -> Check:
+    """OK naming the target counts ``samples`` balances; FAIL when it balances none of them."""
+    targets = [
+        str(count) for count in range(2, _MAX_TARGETS_CHECKED + 1) if is_balanced(samples, count)
+    ]
+    if targets:
+        return Check(
+            name="samples",
+            status="ok",
+            detail=f"samples: {samples} — balances {_join_with_or(targets)} targets",
+        )
+
+    nearest = [str(count) for count in balanced_counts_around(samples, 2)]
+    return Check(
+        name="samples",
+        status="fail",
+        detail=f"samples: {samples} — balances one target only",
+        hint=(
+            "`iterate` and `compare` refuse an odd count; "
+            f"`measure` and `probe` still run — use {_join_with_or(nearest)}"
+        ),
     )
 
 
