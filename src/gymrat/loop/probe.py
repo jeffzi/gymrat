@@ -159,7 +159,7 @@ async def probe_session(
             are raised before any bench runs. Also when the adapter is unknown
             or the experiment worktree cannot be resolved.
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
     """
     required = require_open_session(root, "probing")
     names = tuple(options.names)

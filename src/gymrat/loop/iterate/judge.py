@@ -201,7 +201,7 @@ async def bench_and_judge(
     Raises:
         GymratError: When the configured adapter is unknown; nothing is sampled.
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
         AdapterError: When a bench run's output yields no usable metric or an
             unacceptable metric name.
     """
@@ -263,7 +263,7 @@ async def _measure(
 
     Raises:
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
         AdapterError: When a bench run's output yields no usable metric or an
             unacceptable metric name.
     """

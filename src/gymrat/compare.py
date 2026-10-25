@@ -303,7 +303,7 @@ async def compare(options: CompareOptions) -> ComparisonResult:
             (refused before any worktree is created), the adapter is unknown, or
             a target is neither a directory nor a resolvable ref.
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
         AdapterError: When a bench run's output yields no usable metric or an
             unacceptable metric name.
     """

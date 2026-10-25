@@ -4,12 +4,14 @@ from pathlib import Path
 import pytest
 
 from gymrat.config import CONFIG_DEFAULTS
+from gymrat.exec import OUTPUT_CAP
 from tests._ansi import normalize
 from tests._markdown import md_section
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 QUICK_EXAMPLE = "## Quick example"
 CONFIGURATION = "## Configuration"
+FEEDING_METRICS = "## Feeding it metrics"
 
 
 def _section(heading: str) -> str:
@@ -78,3 +80,12 @@ def test_readme_how_verdicts_work_when_paragraph_inspected_does_state_its_rule(
 
     missing = [phrase for phrase in phrases if phrase not in text]
     assert missing == []
+
+
+def test_readme_feeding_metrics_when_read_does_state_the_stdout_capture_cap():
+    text = normalize(_section(FEEDING_METRICS))
+
+    cap_mib = OUTPUT_CAP // (1024 * 1024)
+    assert (
+        f"at most {cap_mib} MiB of each bench run's stdout and fails a run that prints more" in text
+    )

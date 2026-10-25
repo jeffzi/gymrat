@@ -134,7 +134,7 @@ async def measure(options: MeasureOptions) -> MeasurementResult:
             directory nor a resolvable ref. When the worktree cleanup also
             failed, the message carries its diagnostics.
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
     """
     return await run_with_worktrees(
         partial(_measure_phase, options),

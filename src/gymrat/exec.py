@@ -220,13 +220,29 @@ class ExecOptions:
 
 @dataclass(frozen=True, slots=True)
 class ExecResult:
-    """A completed run's captured output and exit code."""
+    """A completed run's captured output and exit code.
+
+    Attributes:
+        stdout: The standard output captured, up to the capture cap.
+        stderr: The standard error captured, up to the capture cap.
+        exit_code: The process's exit status; non-zero means the command failed.
+        stdout_bytes: Every byte the run wrote to standard output, including
+            any past the capture cap.
+        stderr_bytes: Every byte the run wrote to standard error, including any
+            past the capture cap.
+        stdout_truncated: Whether standard output overran the capture cap and
+            lost bytes from ``stdout``.
+        stderr_truncated: Whether standard error overran the capture cap and
+            lost bytes from ``stderr``.
+    """
 
     stdout: str
     stderr: str
     exit_code: int
     stdout_bytes: int
     stderr_bytes: int
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +260,10 @@ class ExecTimeoutError:
             any past the capture cap.
         stderr_bytes: Every byte the run wrote to standard error, including any
             past the capture cap.
+        stdout_truncated: Whether standard output overran the capture cap and
+            lost bytes from ``stdout``.
+        stderr_truncated: Whether standard error overran the capture cap and
+            lost bytes from ``stderr``.
     """
 
     stdout: str
@@ -251,6 +271,8 @@ class ExecTimeoutError:
     timeout_ms: int
     stdout_bytes: int
     stderr_bytes: int
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 @dataclass(slots=True)
@@ -265,15 +287,22 @@ class OutputBuffer:
     O(n^2) re-copy from repeated string concatenation toward the 64 MiB cap.
 
     Attributes:
-        byte_count: Every byte received, kept or dropped, so a caller can tell
-            that output was truncated.
+        byte_count: Every byte received, kept or dropped.
+        truncated: Whether a chunk was dropped past the cap. Recorded at the
+            drop rather than inferred from ``byte_count``: decoding replaces
+            invalid UTF-8 with U+FFFD, so the kept text can re-encode longer
+            than the bytes received.
     """
 
     _chunks: list[str] = field(default_factory=list)
     byte_count: int = 0
+    truncated: bool = False
 
     def append(self, chunk: str, chunk_bytes: int) -> None:
         """Add ``chunk`` (worth ``chunk_bytes`` raw bytes) subject to the cap.
+
+        A zero-byte chunk is the decoder's tail at EOF: its bytes were counted
+        with the chunk before it, so it is kept or dropped along with that chunk.
 
         Args:
             chunk: The decoded text to append.
@@ -281,7 +310,8 @@ class OutputBuffer:
                 :data:`OUTPUT_CAP` even when the chunk itself is dropped past it.
         """
         self.byte_count += chunk_bytes
-        if self.byte_count - chunk_bytes >= OUTPUT_CAP:
+        if self.truncated or (chunk_bytes and self.byte_count - chunk_bytes >= OUTPUT_CAP):
+            self.truncated = True
             return
         self._chunks.append(chunk)
 
@@ -489,6 +519,8 @@ def _build_result(stdout_buf: OutputBuffer, stderr_buf: OutputBuffer, exit_code:
         exit_code,
         stdout_buf.byte_count,
         stderr_buf.byte_count,
+        stdout_truncated=stdout_buf.truncated,
+        stderr_truncated=stderr_buf.truncated,
     )
 
 
@@ -715,6 +747,8 @@ async def _settle(
             options.timeout_ms,
             stdout_buf.byte_count,
             stderr_buf.byte_count,
+            stdout_truncated=stdout_buf.truncated,
+            stderr_truncated=stderr_buf.truncated,
         )
     finally:
         await _cancel_all([stdout_task, stderr_task, stdin_task, *waiters])

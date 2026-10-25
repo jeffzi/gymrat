@@ -15,7 +15,9 @@ sampling begins.
 
 A single policy site turns a failed command (non-zero exit or timeout) into a
 :class:`~gymrat.errors.CommandError`, so a failure anywhere stops the schedule
-with the same formatted diagnosis.
+with the same formatted diagnosis. A bench run whose stdout overran exec's
+capture cap stops the schedule the same way, before an adapter reads the cut
+output.
 
 The module also resolves each target to the directory and display label it runs
 under, and wraps a phase that may claim git worktrees so they are swept on every
@@ -48,6 +50,7 @@ from gymrat.adapters import Adapter, get_adapter
 from gymrat.config import GEOMEAN_PRIMARY, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import (
+    OUTPUT_CAP,
     ExecOptions,
     ExecResult,
     ExecTimeoutError,
@@ -477,6 +480,11 @@ _REF_HINT = (
     "the worktree only contains files tracked at this ref; "
     "untracked, gitignored, or not-yet-committed files are absent"
 )
+_CAP_MIB = OUTPUT_CAP // (1024 * 1024)
+_STDOUT_CAP_HINT = (
+    "make the bench print less to stdout, for instance by keeping task functions "
+    f"from logging, so it stays under the {_CAP_MIB} MiB capture cap"
+)
 _LABEL_WIDTH = 11
 
 
@@ -512,7 +520,8 @@ async def collect_samples(
         GymratError: ``options.samples`` is not a multiple of the balancing
             cycle for the target count; the error carries the
             ``unbalanced-samples`` reason.
-        CommandError: A prepare or bench command timed out or exited non-zero.
+        CommandError: A prepare or bench command timed out or exited non-zero,
+            or a bench run's stdout overran exec's capture cap.
         AdapterError: A bench run's output yielded no usable metric or an
             unacceptable metric name.
     """
@@ -549,9 +558,10 @@ async def collect_samples(
         for index in run_orders[(round_number - 1) % len(run_orders)]:
             target = collected[index]
             emit_pass(PassStarted, round_number, target.ctx)
-            stdout = await _run_command(
+            result = await _run_command(
                 "bench", round_number, options.bench, target.ctx, timeout_ms, abort
             )
+            stdout = _require_whole_stdout(round_number, options.bench, target.ctx, result)
             emit_pass(PassFinished, round_number, target.ctx)
             target.samples.append(adapter.parse(stdout, options.warn))
 
@@ -590,12 +600,12 @@ async def _run_command(  # noqa: PLR0913, PLR0917 -- one parameter per command-e
     ctx: TargetContext,
     timeout_ms: int,
     abort: asyncio.Event,
-) -> str:
-    """Run one command and return its stdout, or raise on failure."""
+) -> ExecResult:
+    """Run one command and return its zero-exit result, or raise on failure."""
     result = await exec(command, ExecOptions(cwd=ctx.dir, timeout_ms=timeout_ms, abort=abort))
     if isinstance(result, ExecTimeoutError) or result.exit_code != 0:
         raise _to_command_error(phase, sample_index, command, ctx, result)
-    return result.stdout
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -629,27 +639,75 @@ def _to_command_error(
     Returns:
         The formatted command error with target-specific location context.
     """
-    target = ctx.target
-    if isinstance(target, RefTarget):
-        location = [_field("ref", target.ref), _field("worktree", ctx.dir)]
-        hint = _REF_HINT
-    else:
-        location = [_field("dir", ctx.dir)]
-        hint = None
-
-    position = f"{ctx.position}, " if ctx.position is not None else ""
-    sample = f", sample {sample_index}" if sample_index is not None else ""
     if isinstance(result, ExecTimeoutError):
         outcome_label = "timed out"
         outcome = _field("timeout", f"{result.timeout_ms}ms")
     else:
         outcome_label = "failed"
         outcome = _field("exit code", result.exit_code)
-    header = f'{phase} command {outcome_label} ({position}"{ctx.label}"{sample})'
+    hint = _REF_HINT if isinstance(ctx.target, RefTarget) else None
+    return _command_error(
+        _header(phase, outcome_label, sample_index, ctx),
+        ctx,
+        command,
+        [outcome, *_captured_output(result)],
+        hint,
+    )
 
-    lines = [header, *location, _field("command", command), outcome, *_captured_output(result)]
 
+def _require_whole_stdout(
+    sample_index: int, command: str, ctx: TargetContext, result: ExecResult
+) -> str:
+    """Return a bench run's stdout, refusing one that exec cut at its capture cap.
+
+    The error states the bytes written against the cap rather than a kept
+    size: exec may keep up to one read past the cap.
+
+    Args:
+        sample_index: The sample number to mention in the header.
+        command: The bench command line.
+        ctx: The target context supplying the header label, position, and
+            location lines.
+        result: The bench run's zero-exit outcome.
+
+    Returns:
+        The captured stdout, whole.
+
+    Raises:
+        CommandError: The stdout overran the capture cap; the hint asks for a
+            bench that prints less.
+    """
+    if not result.stdout_truncated:
+        return result.stdout
+    written = f"{result.stdout_bytes} bytes written, exceeded the {_CAP_MIB} MiB capture cap"
+    overflow = _command_error(
+        _header("bench", "wrote too much to stdout", sample_index, ctx),
+        ctx,
+        command,
+        [_field("stdout", written)],
+        _STDOUT_CAP_HINT,
+    )
+    raise overflow
+
+
+def _command_error(
+    header: str, ctx: TargetContext, command: str, details: list[str], hint: str | None
+) -> CommandError:
+    """Build the failed-command and stdout-overflow errors here so both share one layout."""
+    target = ctx.target
+    if isinstance(target, RefTarget):
+        location = [_field("ref", target.ref), _field("worktree", ctx.dir)]
+    else:
+        location = [_field("dir", ctx.dir)]
+    lines = [header, *location, _field("command", command), *details]
     return CommandError("\n".join(lines), hint=hint)
+
+
+def _header(phase: str, outcome: str, sample_index: int | None, ctx: TargetContext) -> str:
+    """Build a command error's first line naming the phase, outcome, target, and sample."""
+    position = f"{ctx.position}, " if ctx.position is not None else ""
+    sample = f", sample {sample_index}" if sample_index is not None else ""
+    return f'{phase} command {outcome} ({position}"{ctx.label}"{sample})'
 
 
 def _field(label: str, value: object) -> str:
@@ -660,36 +718,36 @@ def _field(label: str, value: object) -> str:
 def _captured_output(result: ExecResult | ExecTimeoutError) -> list[str]:
     """Render the captured output of a failed command.
 
-    A lone non-empty stream is emitted bare unless its captured text was
+    A lone non-empty stream is emitted bare unless exec recorded it as
     truncated, in which case it — like every stream when both are present —
-    becomes a labeled entry annotated with the true byte total.
+    becomes a labeled entry, annotated with the true byte total when truncated.
 
     Args:
         result: The failed command's outcome, carrying each stream's captured
-            text and its true byte total before truncation.
+            text, its true byte total, and whether exec truncated it.
 
     Returns:
         Lines of rendered output, ready for joining into the error message.
     """
     streams = [
-        ("stderr", result.stderr, result.stderr_bytes),
-        ("stdout", result.stdout, result.stdout_bytes),
+        ("stderr", result.stderr, result.stderr_bytes, result.stderr_truncated),
+        ("stdout", result.stdout, result.stdout_bytes, result.stdout_truncated),
     ]
-    present = [(label, text, total) for label, text, total in streams if text]
+    present = [(label, text, total, truncated) for label, text, total, truncated in streams if text]
 
-    if len(present) == 1 and not _is_truncated(*present[0][1:]):
-        return [present[0][1]]
-    return [line for entry in present for line in _labeled(*entry)]
+    match present:
+        case [(_, text, _, truncated)] if not truncated:
+            return [text]
+    return [
+        line
+        for label, text, total, truncated in present
+        for line in _labeled(label, text, total, truncated=truncated)
+    ]
 
 
-def _is_truncated(text: str, total_bytes: int) -> bool:
-    """Whether ``total_bytes`` exceeds what survived capture in ``text``."""
-    return total_bytes > len(text.encode())
-
-
-def _labeled(label: str, text: str, total: int) -> list[str]:
-    """Build a labeled stream entry, flagging truncation against the byte total."""
-    suffix = f" (truncated, {total} bytes total)" if _is_truncated(text, total) else ""
+def _labeled(label: str, text: str, total: int, *, truncated: bool) -> list[str]:
+    """Build a labeled stream entry, flagging truncation with the byte total."""
+    suffix = f" (truncated, {total} bytes total)" if truncated else ""
     return [f"--- {label}{suffix} ---", text]
 
 

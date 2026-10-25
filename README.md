@@ -92,6 +92,9 @@ gymrat parses your bench command's stdout through an adapter:
 
 Select one with `--adapter` or in the config file.
 
+gymrat reads at most 64 MiB of each bench run's stdout and fails a run that prints more, rather
+than parse output it cut short. Keep logging out of the code you measure.
+
 ## Commands
 
 | Command                                     | What it does                                                               |
