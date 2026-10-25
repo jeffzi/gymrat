@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, exec_argv
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from gymrat.signals import TERMINATION_SIGNALS
 from tests._exec_fixtures import (
@@ -315,6 +315,8 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
     assert result.stderr == "stream exploded\n"
     # The diagnostic text is internal, not command output — byte count stays zero.
     assert result.stderr_bytes == 0
+    # Nor does the diagnostic count as output dropped past the cap.
+    assert result.stderr_truncated is False
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +325,12 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 
 
 @pytest.mark.parametrize(
-    ("cap", "command", "stdout", "stdout_bytes"),
+    ("cap", "command", "stdout", "stdout_bytes", "stdout_truncated"),
     [
         # A cap of zero drops every chunk: the prior total of 0 already reaches it.
-        pytest.param(0, "echo hello", "", len(b"hello\n"), id="cap-reached-drops-every-chunk"),
+        pytest.param(
+            0, "echo hello", "", len(b"hello\n"), True, id="cap-reached-drops-every-chunk"
+        ),
         # The prior total (5) is still under the cap, so the chunk that crosses
         # it is kept whole rather than cut at the cap.
         pytest.param(
@@ -334,6 +338,7 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
             "printf plums; sleep 0.2; printf cherries",
             "plums" + "cherries",
             len(b"plums" + b"cherries"),
+            False,
             id="crossing-chunk-kept-whole",
         ),
     ],
@@ -346,6 +351,7 @@ async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_countin
     command: str,
     stdout: str,
     stdout_bytes: int,
+    stdout_truncated: bool,
 ) -> None:
     # Byte counting continues past the cap and the child is never signalled.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", cap)
@@ -353,8 +359,100 @@ async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_countin
     result = await run_exec(command, make_opts())
 
     assert result == ExecResult(
-        stdout=stdout, stderr="", exit_code=0, stdout_bytes=stdout_bytes, stderr_bytes=0
+        stdout=stdout,
+        stderr="",
+        exit_code=0,
+        stdout_bytes=stdout_bytes,
+        stderr_bytes=0,
+        stdout_truncated=stdout_truncated,
     )
+
+
+_SMALL_CAP = 2
+
+# Three invalid bytes, read before the cap is reached and so kept whole, decode
+# to three U+FFFD that re-encode to nine bytes; the later "ab" is dropped. The
+# kept text re-encodes longer than the five bytes written, yet the stream overran.
+_OVERRUN_WITH_INVALID_KEPT = "printf '\\377\\377\\377'; sleep 0.2; printf ab"
+
+# One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
+# three bytes: longer than the one byte written, yet nothing was dropped.
+_SHORT_WITH_INVALID = "printf '\\377'"
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param(
+            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}",
+            (True, False),
+            id="stdout-overran",
+        ),
+        pytest.param(
+            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2",
+            (False, True),
+            id="stderr-overran",
+        ),
+    ],
+)
+async def test_exec_when_run_finishes_does_flag_each_stream_that_overran_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    *,
+    command: str,
+    expected: tuple[bool, bool],
+) -> None:
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
+
+    result = await run_exec(command, make_opts())
+
+    assert isinstance(result, ExecResult)
+    assert (result.stdout_truncated, result.stderr_truncated) == expected
+
+
+async def test_exec_when_stream_ends_at_cap_mid_character_does_keep_tail_untruncated(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    # Three bytes land exactly on the cap; the last opens a character the stream
+    # never finishes, so the decoder holds it back until EOF. Its replacement
+    # belongs to a kept chunk, so nothing was dropped.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 3)
+
+    result = await run_exec("printf 'ab\\342'", make_opts())
+
+    assert isinstance(result, ExecResult)
+    assert (result.stdout, result.stdout_truncated) == ("ab�", False)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param(
+            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}; sleep 30",
+            (True, False),
+            id="stdout-overran",
+        ),
+        pytest.param(
+            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2; sleep 30",
+            (False, True),
+            id="stderr-overran",
+        ),
+    ],
+)
+async def test_exec_when_run_times_out_does_flag_each_stream_that_overran_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    *,
+    command: str,
+    expected: tuple[bool, bool],
+) -> None:
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
+
+    result = await run_exec(command, make_opts(timeout_ms=1000))
+
+    assert isinstance(result, ExecTimeoutError)
+    assert (result.stdout_truncated, result.stderr_truncated) == expected
 
 
 # ---------------------------------------------------------------------------

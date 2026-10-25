@@ -59,6 +59,8 @@ def capped_result(*, exit_code: int = 0) -> ExecResult:
         exit_code=exit_code,
         stdout_bytes=CAPPED_STDOUT_BYTES,
         stderr_bytes=CAPPED_STDERR_BYTES,
+        stdout_truncated=True,
+        stderr_truncated=True,
     )
 
 

@@ -5,6 +5,7 @@ samples.
 """
 
 import asyncio
+import dataclasses
 import itertools
 import time
 from collections.abc import Callable
@@ -12,9 +13,9 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.adapters import AdapterError, metric_lines_adapter
+from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
 from gymrat.errors import CommandError, GymratError
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.exec import OUTPUT_CAP, ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from gymrat.progress_events import (
     PassFinished,
@@ -31,14 +32,25 @@ from gymrat.sampling import (
     compute_metric_stats,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
-from gymrat.utils import monotonic_ms
+from gymrat.utils import WarnSink, monotonic_ms, warn_to_stderr
 from tests._config import resolved_config
-from tests._exec_fixtures import expected_result, install_exec
+from tests._exec_fixtures import (
+    CAPPED_STDERR_BYTES,
+    CAPPED_STDOUT_BYTES,
+    capped_result,
+    expected_result,
+    install_exec,
+)
 from tests.adapters._inputs import malformed_line_warning
 
 REF_HINT = (
     "the worktree only contains files tracked at this ref; "
     "untracked, gitignored, or not-yet-committed files are absent"
+)
+
+STDOUT_CAP_HINT = (
+    "make the bench print less to stdout, for instance by keeping task functions "
+    "from logging, so it stays under the 64 MiB capture cap"
 )
 
 
@@ -114,6 +126,31 @@ def install_numbered_exec(
 def numbered_sample(call: int) -> ExecResult:
     """Answer a bench run with ``METRIC x=<call>``, so each sample names the run it came from."""
     return make_success(f"METRIC x={call}")
+
+
+@dataclasses.dataclass(slots=True)
+class RecordingAdapter:
+    """An adapter that records every stdout it is handed and reads it as ``METRIC`` lines."""
+
+    name: str = "recording"
+    parsed: list[str] = dataclasses.field(default_factory=list)
+
+    def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
+        """Record ``stdout``, then parse it as the metric-lines adapter does.
+
+        Args:
+            stdout: The bench output handed to the adapter.
+            warn: Receives warnings about unreadable lines.
+
+        Returns:
+            The metrics read from ``stdout``.
+        """
+        self.parsed.append(stdout)
+        return metric_lines_adapter.parse(stdout, warn)
+
+    def defaults(self, metric_name: str) -> MetricDefaults:
+        """Answer the metric-lines adapter's defaults for ``metric_name``."""
+        return metric_lines_adapter.defaults(metric_name)
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +478,14 @@ async def test_collect_samples_when_bench_output_unreadable_does_warn_after_the_
         ),
         pytest.param(
             None,
+            capped_result(),
+            CommandError,
+            ["run"],
+            [PassStarted(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0)],
+            id="bench-stdout-overran-the-cap",
+        ),
+        pytest.param(
+            None,
             make_success("METRIC a//b=1\nMETRIC /x=2"),
             AdapterError,
             ["run"],
@@ -493,6 +538,10 @@ def _times_out_at_call_three(call: int) -> ExecResult | ExecTimeoutError:
     return _TIMED_OUT if call == 3 else numbered_sample(call)
 
 
+def _overruns_the_cap_at_call_three(call: int) -> ExecResult:
+    return capped_result() if call == 3 else numbered_sample(call)
+
+
 _ROUND_ONE_EVENTS: list[ProgressEvent] = [
     PassStarted(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
     PassFinished(round=1, total_rounds=2, target_count=2, label="old", at_ms=0.0),
@@ -521,6 +570,15 @@ _ROUND_ONE_EVENTS: list[ProgressEvent] = [
                 PassStarted(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
             ],
             id="bench-times-out",
+        ),
+        pytest.param(
+            _overruns_the_cap_at_call_three,
+            CommandError,
+            [
+                *_ROUND_ONE_EVENTS,
+                PassStarted(round=2, total_rounds=2, target_count=2, label="new", at_ms=0.0),
+            ],
+            id="bench-stdout-overran-the-cap",
         ),
         pytest.param(
             _malformed_at_call_three,
@@ -573,6 +631,15 @@ _EXIT_THREE = ExecResult(stdout="", stderr="boom", exit_code=3, stdout_bytes=4, 
 _TIMED_OUT = ExecTimeoutError(
     stdout="partial", stderr="", timeout_ms=1500, stdout_bytes=7, stderr_bytes=0
 )
+# A timeout whose stdout also overran the cap: the timeout is the diagnosis.
+_TIMED_OUT_OVER_CAP = ExecTimeoutError(
+    stdout="partial",
+    stderr="",
+    timeout_ms=1500,
+    stdout_bytes=OUTPUT_CAP + 1,
+    stderr_bytes=0,
+    stdout_truncated=True,
+)
 _BENCH_ONLY = SamplingOptions(bench="run-bench", prepare=None, samples=1, timeout_seconds=1.5)
 _WITH_PREPARE = SamplingOptions(bench="run", prepare="setup", samples=1, timeout_seconds=1.5)
 _IN_PLACE_X = TargetContext(target=InPlaceTarget(dir="/work"), dir="/work", label="x")
@@ -587,8 +654,21 @@ _FAILED_HEAD = [
 ]
 
 
-def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> ExecResult:
-    return ExecResult(stdout, stderr, 1, stdout_bytes, stderr_bytes)
+def _failed(
+    stdout: str,
+    stderr: str,
+    stdout_bytes: int,
+    stderr_bytes: int,
+    *,
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
+) -> ExecResult:
+    return ExecResult(
+        stdout, stderr, 1, stdout_bytes, stderr_bytes, stdout_truncated, stderr_truncated
+    )
+
+
+_CAP_LINE = f"  stdout:    {CAPPED_STDOUT_BYTES} bytes written, exceeded the 64 MiB capture cap"
 
 
 @pytest.mark.parametrize(
@@ -617,6 +697,19 @@ def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> E
             "partial",
             None,
             id="bench-times-out-in-a-dir",
+        ),
+        pytest.param(
+            _TIMED_OUT_OVER_CAP,
+            _IN_PLACE_NEW,
+            _BENCH_ONLY,
+            'bench command timed out (new, "main", sample 1)\n'
+            "  dir:       /work\n"
+            "  command:   run-bench\n"
+            "  timeout:   1500ms\n"
+            f"--- stdout (truncated, {OUTPUT_CAP + 1} bytes total) ---\n"
+            "partial",
+            None,
+            id="bench-times-out-over-the-cap-keeps-the-timeout",
         ),
         pytest.param(
             _EXIT_THREE,
@@ -653,7 +746,7 @@ def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> E
             id="stdout-only-bare",
         ),
         pytest.param(
-            _failed("", "err", 0, 50),
+            _failed("", "err", 0, 50, stderr_truncated=True),
             _IN_PLACE_X,
             _RUN_ONLY,
             "\n".join([*_FAILED_HEAD, "--- stderr (truncated, 50 bytes total) ---", "err"]),
@@ -661,7 +754,7 @@ def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> E
             id="stderr-only-truncated",
         ),
         pytest.param(
-            _failed("head", "", 100, 0),
+            _failed("head", "", 100, 0, stdout_truncated=True),
             _IN_PLACE_X,
             _RUN_ONLY,
             "\n".join([*_FAILED_HEAD, "--- stdout (truncated, 100 bytes total) ---", "head"]),
@@ -677,7 +770,7 @@ def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> E
             id="both-labelled-stderr-first",
         ),
         pytest.param(
-            _failed("s", "e", 1, 50),
+            _failed("s", "e", 1, 50, stderr_truncated=True),
             _IN_PLACE_X,
             _RUN_ONLY,
             "\n".join([
@@ -698,6 +791,67 @@ def _failed(stdout: str, stderr: str, stdout_bytes: int, stderr_bytes: int) -> E
             None,
             id="neither-present",
         ),
+        pytest.param(
+            _failed("\N{REPLACEMENT CHARACTER}" * 3, "", 5, 0, stdout_truncated=True),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([
+                *_FAILED_HEAD,
+                "--- stdout (truncated, 5 bytes total) ---",
+                "\N{REPLACEMENT CHARACTER}" * 3,
+            ]),
+            None,
+            id="truncated-invalid-utf8-re-encodes-longer",
+        ),
+        pytest.param(
+            _failed("", "err", 0, 50),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([*_FAILED_HEAD, "err"]),
+            None,
+            id="untruncated-count-above-kept-text-bare",
+        ),
+        pytest.param(
+            capped_result(exit_code=1),
+            _IN_PLACE_X,
+            _RUN_ONLY,
+            "\n".join([
+                *_FAILED_HEAD,
+                f"--- stderr (truncated, {CAPPED_STDERR_BYTES} bytes total) ---",
+                "capped stderr",
+                f"--- stdout (truncated, {CAPPED_STDOUT_BYTES} bytes total) ---",
+                "capped stdout",
+            ]),
+            None,
+            id="failed-bench-over-the-cap-keeps-the-failure",
+        ),
+        pytest.param(
+            capped_result(),
+            _IN_PLACE_NEW,
+            _BENCH_ONLY,
+            (
+                'bench command wrote too much to stdout (new, "main", sample 1)\n'
+                "  dir:       /work\n"
+                "  command:   run-bench\n"
+                f"{_CAP_LINE}"
+            ),
+            STDOUT_CAP_HINT,
+            id="bench-stdout-overran-the-cap-in-a-dir",
+        ),
+        pytest.param(
+            capped_result(),
+            _REF_OLD,
+            _BENCH_ONLY,
+            (
+                'bench command wrote too much to stdout (old, "base", sample 1)\n'
+                "  ref:       feature\n"
+                "  worktree:  /wt\n"
+                "  command:   run-bench\n"
+                f"{_CAP_LINE}"
+            ),
+            STDOUT_CAP_HINT,
+            id="bench-stdout-overran-the-cap-on-a-ref",
+        ),
     ],
 )
 async def test_collect_samples_when_command_fails_does_raise_error_with_full_shape(
@@ -715,6 +869,61 @@ async def test_collect_samples_when_command_fails_does_raise_error_with_full_sha
         await collect_samples(metric_lines_adapter, [target], options, asyncio.Event())
 
     assert (str(caught.value), caught.value.hint) == (expected, hint)
+
+
+async def test_collect_samples_when_bench_stdout_overran_the_cap_does_not_hand_it_to_the_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, capped_result())
+    adapter = RecordingAdapter()
+
+    with pytest.raises(CommandError):
+        await collect_samples(adapter, one_in_place_target(), _RUN_ONLY, asyncio.Event())
+
+    assert adapter.parsed == []
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(make_success("METRIC x=1"), id="stdout-well-within-the-cap"),
+        pytest.param(
+            ExecResult("METRIC x=1", "", 0, OUTPUT_CAP, 0), id="stdout-exactly-at-the-cap"
+        ),
+        pytest.param(
+            ExecResult("METRIC x=1", "capped", 0, 10, OUTPUT_CAP + 1, stderr_truncated=True),
+            id="only-stderr-overran-the-cap",
+        ),
+    ],
+)
+async def test_collect_samples_when_bench_stdout_kept_whole_does_parse_the_sample(
+    monkeypatch: pytest.MonkeyPatch, result: ExecResult
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, result)
+
+    samples = await collect_samples(
+        metric_lines_adapter, one_in_place_target(), _RUN_ONLY, asyncio.Event()
+    )
+
+    assert [ts.samples for ts in samples] == [[{"x": 1.0}]]
+
+
+def _prepare_overruns_the_cap(call: int) -> ExecResult:
+    return capped_result() if call == 1 else numbered_sample(call)
+
+
+async def test_collect_samples_when_prepare_stdout_overran_the_cap_does_still_sample(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = install_numbered_exec(monkeypatch, _prepare_overruns_the_cap)
+    options = SamplingOptions(bench="run", prepare="prep", samples=1, timeout_seconds=1.0)
+
+    samples = await collect_samples(
+        metric_lines_adapter, one_in_place_target(), options, asyncio.Event()
+    )
+
+    assert [command for command, _ in calls] == ["prep", "run"]
+    assert [ts.samples for ts in samples] == [[{"x": 2.0}]]
 
 
 # ---------------------------------------------------------------------------

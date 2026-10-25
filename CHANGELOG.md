@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Give each target every run position, and every predecessor, equally often when a comparison has
   three or more targets.
 
+### Fixed
+
+- Fail a bench run that prints more than 64 MiB to stdout, naming the capture cap, instead of
+  parsing the cut-off output as if it were complete.
+- Label a failed command's stream as truncated whenever it overran the capture cap, including one
+  holding invalid UTF-8.
+
 ## [0.22.0] - 2026-10-24
 
 ### Added
