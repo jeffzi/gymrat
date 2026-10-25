@@ -17,7 +17,7 @@ from types import ModuleType
 import pytest
 
 from gymrat import sampling
-from gymrat.adapters import Adapter
+from gymrat.adapters.contract import TIME_SUFFIX, Adapter
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.progress_events import ProgressEvent
 from gymrat.sampling import (
@@ -45,6 +45,9 @@ DIRTY_RESULT = CleanupResult(
 QUANTIZED_STEP_NS = 42.0
 """The step, in nanoseconds, that :func:`one_step_up` readings climb and the warning names."""
 
+QUANTIZED_TIME_METRIC = f"bench{TIME_SUFFIX}"
+"""The time metric whose readings trigger :data:`QUANTIZED_TIME_WARNING`."""
+
 
 def quantized_warning(name: str, gap: str | None) -> str:
     """The warning sampling sends when ``name``'s time readings look quantized.
@@ -64,8 +67,8 @@ def quantized_warning(name: str, gap: str | None) -> str:
     )
 
 
-QUANTIZED_TIME_WARNING = quantized_warning("bench#time", f"{QUANTIZED_STEP_NS:g}ns")
-"""The warning for ``bench#time`` readings that repeat and differ by one 42ns step."""
+QUANTIZED_TIME_WARNING = quantized_warning(QUANTIZED_TIME_METRIC, f"{QUANTIZED_STEP_NS:g}ns")
+"""The warning for ``bench`` time readings that repeat and differ by one 42ns step."""
 
 
 def one_step_up(start: float, *names: str) -> list[dict[str, float]]:

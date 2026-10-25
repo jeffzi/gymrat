@@ -113,6 +113,7 @@
     "taskkill",
     "testpaths",
     "timespec",
+    "tinybench",
     "TIOCSWINSZ",
     "tomli",
     "truecolor",

@@ -389,7 +389,7 @@ def _two_candidate_result() -> ComparisonResult:
                 ),
                 meta=metric_meta("encode#time", unit="ns"),
             ),
-            "encode#heap": MetricComparison(
+            "encode#memory": MetricComparison(
                 baseline_median=49152,
                 baseline_spread=0,
                 candidates=(
@@ -400,7 +400,7 @@ def _two_candidate_result() -> ComparisonResult:
                     ),
                     CandidateMetric(),
                 ),
-                meta=metric_meta("encode#heap", exact=True, unit="bytes"),
+                meta=metric_meta("encode#memory", exact=True, unit="bytes"),
             ),
         },
     )

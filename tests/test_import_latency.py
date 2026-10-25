@@ -41,7 +41,7 @@ def test_importing_package_when_loaded_does_not_import_heavy_dependencies():
         "gymrat.stats",
         "gymrat.model",
         "gymrat.verdict",
-        "gymrat.adapters",
+        "gymrat.adapters.registry",
         "gymrat.exec",
         "gymrat.signals",
         "gymrat.sampling",

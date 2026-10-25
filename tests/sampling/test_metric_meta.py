@@ -9,7 +9,8 @@ from dataclasses import replace
 
 import pytest
 
-from gymrat.adapters import MetricDefaults, metric_lines_adapter
+from gymrat.adapters.contract import TIME_SUFFIX, MetricDefaults
+from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.model import ResolvedMetricMeta
@@ -258,7 +259,7 @@ def test_resolve_metric_meta_from_samples_when_several_names_reported_does_resol
     assert result == expected
 
 
-_TIME = "bench#time"
+_TIME = f"bench{TIME_SUFFIX}"
 
 
 def _readings(*per_target: list[float], name: str = _TIME) -> list[list[dict[str, float]]]:

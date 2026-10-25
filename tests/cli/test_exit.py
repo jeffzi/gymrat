@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 import typer
 
-from gymrat.adapters import AdapterError
+from gymrat.adapters.contract import AdapterError
 from gymrat.cli.console import set_debug_mode
 from gymrat.cli.exit import (
     BUGS_URL,

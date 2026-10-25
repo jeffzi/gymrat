@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.adapters.contract import MEMORY_SUFFIX
 from gymrat.config import HooksConfig, KindEntry, MetricEntry
 from gymrat.errors import GymratError
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
@@ -45,6 +46,12 @@ SAMPLE_COUNTS = [
     pytest.param(None, 6, id="unset-falls-back-to-the-probe-default"),
     pytest.param(3, 3, id="explicit-count-wins"),
 ]
+
+#: The name a memory-kind metric carries: the bare name plus the memory suffix.
+MEMORY_METRIC = f"alloc{MEMORY_SUFFIX}"
+
+#: Bench output reporting one time metric and one memory metric.
+TIME_AND_MEMORY_STDOUT = f"METRIC total_ms=90\nMETRIC {MEMORY_METRIC}=50"
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -140,7 +147,7 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
         metrics={"total_ms": MetricEntry(direction="higher")},
         kinds={"memory": KindEntry(gating=False)},
     )
-    recorder = _install_bench(monkeypatch, "METRIC total_ms=90\nMETRIC alloc#heap=50")
+    recorder = _install_bench(monkeypatch, TIME_AND_MEMORY_STDOUT)
 
     result = await probe_session(repo, config, ProbeOptions())
 
@@ -156,7 +163,7 @@ async def test_probe_session_when_no_names_does_bench_the_whole_bench_in_the_exp
         (metric.name, metric.meta.direction, metric.meta.gating) for metric in result.metrics
     ] == [
         ("total_ms", "higher", True),
-        ("alloc#heap", "lower", False),
+        (MEMORY_METRIC, "lower", False),
     ]
 
 
@@ -190,11 +197,11 @@ async def test_probe_session_when_run_reports_metrics_does_pair_each_with_its_ba
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    _install_bench(monkeypatch, "METRIC total_ms=90\nMETRIC alloc#heap=50")
+    _install_bench(monkeypatch, TIME_AND_MEMORY_STDOUT)
 
     result = await probe_session(repo, checks_config(), ProbeOptions())
 
-    assert [metric.name for metric in result.metrics] == ["total_ms", "alloc#heap"]
+    assert [metric.name for metric in result.metrics] == ["total_ms", MEMORY_METRIC]
     assert (result.metrics[0].median, result.metrics[0].spread) == (90.0, 0.0)
     assert result.metrics[0].reference_median == 100.0
     assert result.metrics[0].delta_pct == pytest.approx(-10.0)

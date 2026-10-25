@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `detects ≥X%` in the text table and as `detectable_pct` in the JSON output and the session log.
 - Add a `samples` check to `gymrat doctor` that lists the target counts from 2 through 8 the
   configured value balances, and fails on an odd count.
+- Add a built-in `tinybench` adapter, selected with `--adapter tinybench`, that reads the results a
+  tinybench 6 bench script prints.
 
 ### Changed
 
@@ -21,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Refuse a sample count that cannot balance the run order before any bench or hook
   runs; use an even count for two targets, a multiple of `N` for an even number `N` of targets, or
   a multiple of `2N` for an odd number.
+- **Breaking:** Rename the `#heap` metric suffix to `#memory`; rename `#heap` to `#memory` in your
+  `METRIC` lines and `[metrics]` keys, since a name ending in `#heap` is now a plain number and the
+  `mitata` adapter emits `<alias>#memory`.
 - Give each target every run position, and every predecessor, equally often when a comparison has
   three or more targets.
 

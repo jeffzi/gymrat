@@ -33,6 +33,7 @@ from tests._git import (
 )
 from tests._pipeline import (
     DIRTY_RESULT,
+    QUANTIZED_TIME_METRIC,
     QUANTIZED_TIME_WARNING,
     install_pipeline,
     one_step_up,
@@ -143,7 +144,9 @@ async def test_orchestrator_when_time_readings_look_quantized_does_warn_the_sink
     orchestrate: Orchestrate,
     targets: int,
 ):
-    install_pipeline(monkeypatch, orchestrator, [one_step_up(333.0, "bench#time")] * targets)
+    install_pipeline(
+        monkeypatch, orchestrator, [one_step_up(333.0, QUANTIZED_TIME_METRIC)] * targets
+    )
     warnings: list[str] = []
 
     await orchestrate(run_options(samples=6, warn=warnings.append))

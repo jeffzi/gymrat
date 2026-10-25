@@ -14,7 +14,7 @@ import asyncio
 from dataclasses import dataclass
 from functools import partial
 
-from gymrat.adapters import get_adapter
+from gymrat.adapters.registry import get_adapter
 from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (

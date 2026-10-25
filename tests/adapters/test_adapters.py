@@ -1,13 +1,15 @@
 import pytest
 
-from gymrat.adapters import (
+from gymrat.adapters.contract import (
+    MEMORY_SUFFIX,
+    TIME_SUFFIX,
     Adapter,
     AdapterError,
     MetricDefaults,
-    get_adapter,
-    metric_lines_adapter,
-    mitata_adapter,
 )
+from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.adapters.mitata import mitata_adapter
+from gymrat.adapters.registry import get_adapter
 from gymrat.errors import GymratError
 from tests.adapters._inputs import (
     NULL_BENCHMARK_WARNING,
@@ -71,21 +73,21 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
     ("metric_name", "expected"),
     [
         pytest.param(
-            "bench#time",
+            f"bench{TIME_SUFFIX}",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="bench"),
             id="time-suffix",
         ),
         pytest.param(
-            "a/b#time",
+            f"a/b{TIME_SUFFIX}",
             MetricDefaults(direction="lower", unit="ns", kind="time", short_name="a/b"),
             id="time-suffix-keeps-path",
         ),
         pytest.param(
-            "bench#heap",
+            f"bench{MEMORY_SUFFIX}",
             MetricDefaults(
                 direction="lower", unit="bytes", kind="memory", short_name="bench", resolution=1.0
             ),
-            id="heap-suffix",
+            id="memory-suffix",
         ),
         pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
     ],
@@ -107,7 +109,9 @@ def test_defaults_when_kind_suffix_varies_does_derive_defaults_from_it(
     ("stdout", "expected"),
     [
         pytest.param("  METRIC foo=42  ", {"foo": 42.0}, id="both-whitespace"),
-        pytest.param("METRIC bench#time=42", {"bench#time": 42.0}, id="single-hash"),
+        pytest.param(
+            f"METRIC bench{TIME_SUFFIX}=42", {f"bench{TIME_SUFFIX}": 42.0}, id="single-hash"
+        ),
     ],
 )
 def test_parse_when_single_metric_line_does_return_named_value(
@@ -220,6 +224,10 @@ def test_parse_when_non_metric_lines_present_does_ignore_them_silently(stdout: s
         pytest.param("METRIC u=1_0", id="underscore-separator"),
         pytest.param("METRIC h=0x10z", id="radix-trailing-junk"),
         pytest.param("METRIC h=-0x10", id="signed-radix"),
+        # JavaScript Number() reads only ASCII digits. Full-width digits are the case
+        # because Unicode normalization (NFKC) folds them to ASCII, which would let
+        # them through.
+        pytest.param("METRIC foo=\uff11\uff12", id="full-width-digits"),
         # A radix literal matches the number grammar but names an integer too large
         # to convert to a float; the conversion overflows and the line is skipped.
         pytest.param(f"METRIC big=0x{'f' * 300}", id="radix-overflows-float"),

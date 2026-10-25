@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.adapters.contract import TIME_SUFFIX
 from gymrat.config import HooksConfig, MetricEntry, StopConfig
 from gymrat.errors import GymratError
 from gymrat.loop.iterate.run import IterateOptions, iterate_session
@@ -47,7 +48,7 @@ from gymrat.session.store import settle_first_hint
 from gymrat.targets import InPlaceTarget
 from tests._clock import install_monotonic_clock
 from tests._config import resolved_config
-from tests._pipeline import QUANTIZED_TIME_WARNING
+from tests._pipeline import QUANTIZED_STEP_NS, QUANTIZED_TIME_WARNING
 from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
 from tests.loop.iterate._fixtures import (
     BASELINE_BYTES,
@@ -780,9 +781,12 @@ async def test_iterate_session_when_warn_sink_given_does_route_adapter_warnings_
 async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_sink_once_across_the_confirmation(
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
+    time_metric = f"bench{TIME_SUFFIX}"
+    base = 333.0
     quantized_slower = PairedRun(
-        experiment=[{"bench#time": 375.0}] * 9 + [{"bench#time": 417.0}],
-        baseline=[{"bench#time": 333.0}] * 9 + [{"bench#time": 375.0}],
+        experiment=[{time_metric: base + QUANTIZED_STEP_NS}] * 9
+        + [{time_metric: base + 2 * QUANTIZED_STEP_NS}],
+        baseline=[{time_metric: base}] * 9 + [{time_metric: base + QUANTIZED_STEP_NS}],
     )
     stub_runs(samples_mock, open_repo, [quantized_slower, quantized_slower])
     warnings: list[str] = []
@@ -791,7 +795,7 @@ async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_s
         open_repo, resolved_config(), options=IterateOptions(warn=warnings.append)
     )
 
-    metric_warnings = _warnings_about(warnings, "bench#time")
+    metric_warnings = _warnings_about(warnings, time_metric)
     assert (samples_mock.call_count, metric_warnings) == (2, [QUANTIZED_TIME_WARNING])
 
 

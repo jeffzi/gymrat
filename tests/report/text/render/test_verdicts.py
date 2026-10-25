@@ -804,7 +804,7 @@ def _evidence_result() -> ComparisonResult:
     """An exact metric and an unstable one, each highlighted with an evidence suffix."""
     return create_comparison_result(
         metrics={
-            "cheaper#heap": exact_metric(delta=-7.9),
+            "cheaper#memory": exact_metric(delta=-7.9),
             "jittery#time": band_metric(verdict="unstable", delta=5, noise_pct=30, n=10),
         }
     )

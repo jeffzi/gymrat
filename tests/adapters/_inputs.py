@@ -4,11 +4,13 @@
 ``{"benchmarks": [...]}`` envelope the mitata adapter expects on stdout. Named
 ``build_stdout`` rather than ``stdout`` because callers commonly bind its
 result to a local variable named ``stdout``, which would otherwise shadow the
-import.
+import. :func:`build_tinybench_stdout` does the same for the
+``{"tinybench": [...]}`` envelope the tinybench adapter expects.
 
 :func:`benchmark` builds one mitata benchmark entry with a single run, and
 :data:`VALID_BENCHMARK` is the well-formed sibling a test places next to a bad
-entry to prove the adapter keeps parsing past it.
+entry to prove the adapter keeps parsing past it. :func:`task` and
+:data:`VALID_TASK` are their tinybench counterparts.
 
 :data:`LINE_BREAKS` lists every character ``str.splitlines`` breaks on, with the
 escape ``json.dumps`` writes for it. ``tests/adapters/test_mitata.py`` builds its
@@ -19,7 +21,8 @@ message ``get_adapter`` puts on an unknown-adapter error, shared by every test
 that surfaces that error. :func:`malformed_line_warning` is the warning the
 metric-lines adapter gives for a line it cannot read, shared by every test that
 sees that warning reach a sink. :data:`NULL_BENCHMARK_WARNING` is the warning the
-mitata adapter gives for a ``null`` benchmark entry, shared the same way.
+mitata adapter gives for a ``null`` benchmark entry, and :data:`NULL_TASK_WARNING`
+the one the tinybench adapter gives for a ``null`` task, shared the same way.
 
 This is test-support code shared across test modules, not a test module. It
 carries no test functions of its own.
@@ -59,7 +62,7 @@ LINE_BREAKS = (
 ``utils.LINE_TERMINATORS`` must match exactly this set.
 """
 
-VALID_ADAPTERS_HINT = "valid adapters are: metric-lines, mitata"
+VALID_ADAPTERS_HINT = "valid adapters are: metric-lines, mitata, tinybench"
 """The hint on an unknown-adapter error, listing every built-in adapter."""
 
 
@@ -89,6 +92,9 @@ def malformed_line_warning(line: str) -> str:
 
 NULL_BENCHMARK_WARNING = "Skipping benchmark: expected an object, got null"
 """The warning the mitata adapter gives for a ``null`` benchmark entry."""
+
+NULL_TASK_WARNING = "Skipping task: expected an object, got null"
+"""The warning the tinybench adapter gives for a ``null`` task."""
 
 
 def build_stdout(benchmarks: list[Any]) -> str:
@@ -126,3 +132,41 @@ def benchmark(
 
 VALID_BENCHMARK = benchmark("valid")
 """A well-formed benchmark that parses to ``{"valid#time": 1}``."""
+
+
+def build_tinybench_stdout(tasks: list[Any]) -> str:
+    """Serialize ``tasks`` into the stdout JSON envelope the tinybench adapter reads.
+
+    Args:
+        tasks: The raw task entries, well-formed or not.
+
+    Returns:
+        The JSON document a bench script prints through the documented emission line.
+    """
+    return json.dumps({"tinybench": tasks})
+
+
+def task(
+    name: str,
+    p50: float = 0.5,
+    state: str = "completed",
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a tinybench task entry as the documented emission line writes it.
+
+    Args:
+        name: The task name.
+        p50: The median latency in milliseconds; ignored when ``result`` is given.
+        state: The result's state; ignored when ``result`` is given.
+        result: The task's whole result object; ``None`` means one holding
+            ``state`` and ``latency.p50``.
+
+    Returns:
+        The task entry, ready for :func:`build_tinybench_stdout`.
+    """
+    task_result = {"state": state, "latency": {"p50": p50}} if result is None else result
+    return {"name": name, "result": task_result}
+
+
+VALID_TASK = task("valid")
+"""A well-formed completed task that parses to ``{"valid#time": 500_000}``."""

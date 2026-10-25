@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from gymrat import utils
-from gymrat.adapters import get_adapter
+from gymrat.adapters.registry import get_adapter
 from gymrat.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.loop.gating import is_gating_regression
 from gymrat.model import ExactVerdict
@@ -59,7 +59,7 @@ from gymrat.verdict import compute_geomean, compute_verdicts
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from gymrat.adapters import Adapter
+    from gymrat.adapters.contract import Adapter
     from gymrat.config import KindEntry
     from gymrat.loop.iterate.run import IterateOptions
     from gymrat.model import MetricVerdict, ResolvedMetricMeta

@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from gymrat.adapters import Adapter, MetricDefaults
+from gymrat.adapters.contract import Adapter, MetricDefaults
 from gymrat.utils import WarnSink, warn_to_stderr
 
 

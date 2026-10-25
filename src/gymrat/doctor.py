@@ -41,7 +41,7 @@ from typing import Literal
 
 from rich.markup import escape
 
-from gymrat.adapters import get_adapter
+from gymrat.adapters.registry import get_adapter
 from gymrat.config import (
     CONFIG_DEFAULTS,
     BenchlessConfig,

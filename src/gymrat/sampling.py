@@ -46,7 +46,8 @@ from pathlib import Path
 from typing import Final, Literal, Self
 
 from gymrat import utils
-from gymrat.adapters import Adapter, get_adapter
+from gymrat.adapters.contract import Adapter
+from gymrat.adapters.registry import get_adapter
 from gymrat.config import GEOMEAN_PRIMARY, KindEntry, MetricEntry, ResolvedConfig
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import (

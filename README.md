@@ -86,9 +86,23 @@ gymrat parses your bench command's stdout through an adapter:
 
 - **`metric-lines`** (default): your script prints one `METRIC <name>=<value>` line per sample,
   e.g. `METRIC decode#time=12000000`. gymrat reduces repeated names to their median. It treats names
-  ending in `#time` as nanoseconds and names ending in `#heap` as bytes; any other name is a plain
+  ending in `#time` as nanoseconds and names ending in `#memory` as bytes; any other name is a plain
   number where lower is better.
 - **`mitata`**: parses [mitata](https://github.com/evanwashere/mitata) benchmark output directly.
+- **`tinybench`**: reads the results of a [tinybench](https://github.com/tinylibs/tinybench) 6.x
+  bench script. tinybench prints nothing on its own, so end your script with this line:
+
+  ```js
+  console.log(
+    JSON.stringify({ tinybench: bench.tasks.map(({ name, result }) => ({ name, result })) }),
+  )
+  ```
+
+  Each completed task becomes a `<task name>#time` metric holding the task's median latency,
+  converted from tinybench's milliseconds to nanoseconds. gymrat skips each task that errored or did
+  not complete, and warns about it. Medians land on whole timer steps, and the adapter cannot detect
+  your timer's step. For sub-microsecond tasks, set [`resolution`](#configuration) to that step:
+  41.67 nanoseconds (ns) on a 24 megahertz (MHz) timer such as Apple Silicon's.
 
 Select one with `--adapter` or in the config file.
 
@@ -126,7 +140,7 @@ keys:
 ```toml
 bench = "npm run bench" # required: the command whose stdout carries metrics
 prepare = "npm ci && npm run build" # run once per revision before sampling
-adapter = "metric-lines" # or "mitata"
+adapter = "metric-lines" # or "mitata", "tinybench"
 samples = 12 # paired samples per target; see How verdicts work for valid counts
 timeout_seconds = 1800 # default; per bench invocation; flag --timeout, variable GYMRAT_TIMEOUT
 filter = "npm run bench -- --filter {names}" # scopes confirmation reruns and `gymrat probe`
@@ -139,7 +153,7 @@ max_iterations = 20 # the loop stops after this many iterations
 
 [metrics."decode#time"]
 direction = "lower" # per-metric overrides: direction, gating, exact, resolution
-resolution = 41.67 # one measurement step, in nanoseconds (ns): a timer that ticks at 24 MHz
+resolution = 41.67 # one measurement step, in ns: a timer that ticks at 24 MHz
 
 [kinds.time]
 resolution = 41.67 # every time metric that sets no step of its own
@@ -147,7 +161,7 @@ resolution = 41.67 # every time metric that sets no step of its own
 
 The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` overrides of
 `gating` and `resolution`, and a `[hooks]` table of shell commands that run around each
-`gymrat iterate` (see [Hooks](#hooks)). Kinds are `time` (`#time` metrics), `memory` (`#heap`
+`gymrat iterate` (see [Hooks](#hooks)). Kinds are `time` (`#time` metrics), `memory` (`#memory`
 metrics), and `other` (every other metric). gymrat names any unknown key or invalid value when it
 reads the file; it ignores a `[kinds]` entry that matches no kind.
 
@@ -159,7 +173,7 @@ reads the file; it ignores a `[kinds]` entry that matches no kind.
   exist.
 
 `resolution` is the size of one measurement step, in the metric's unit: 41.67 for a timer that
-ticks at 24 MHz and is read in nanoseconds. gymrat gives `#heap` metrics a built-in step of one
+ticks at 24 MHz and is read in nanoseconds. gymrat gives `#memory` metrics a built-in step of one
 byte. A change of one step never signals, because the true change behind it can be anything from
 nothing to two steps. Where the bench allows it, time more iterations per reading instead of
 declaring a step: the step then shrinks relative to each reading, so smaller changes can signal.
@@ -392,7 +406,7 @@ noise band.
 A metric's noise band is 1.5 times the larger of the two sides' half-ranges, never less than 0.5%.
 A half-range is half the span from lowest to highest sample, taken as a percentage of that side's
 median. A metric measured in whole steps must also move by more than 1.25 steps: its declared
-`resolution`, or one byte for a `#heap` metric that declares none. Its band therefore never sits
+`resolution`, or one byte for a `#memory` metric that declares none. Its band therefore never sits
 below 1.25 steps as a share of the baseline median, and a change within those 1.25 steps counts as
 noise whatever the pairs say. Setting `exact = true` on a metric skips the statistical test and the
 noise band: any difference between its medians is a change.

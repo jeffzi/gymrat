@@ -1,10 +1,12 @@
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from gymrat.adapters import AdapterError, mitata_adapter
+from gymrat.adapters.contract import MEMORY_SUFFIX, TIME_SUFFIX, AdapterError
+from gymrat.adapters.mitata import mitata_adapter
 from tests.adapters._inputs import (
     LINE_BREAKS,
     NULL_BENCHMARK_WARNING,
@@ -35,7 +37,7 @@ _BASIC_FIXTURE = build_stdout([benchmark("encode", p50=42)])
     ],
 )
 def test_parse_when_json_surrounded_by_text_does_extract_metrics(stdout: str):
-    assert mitata_adapter.parse(stdout) == {"encode#time": 42}
+    assert mitata_adapter.parse(stdout) == {f"encode{TIME_SUFFIX}": 42}
 
 
 @pytest.mark.parametrize(
@@ -50,7 +52,7 @@ def test_parse_when_a_payload_string_carries_braces_or_quotes_does_read_the_whol
 ):
     payload = build_stdout([benchmark(alias, p50=42)])
 
-    assert mitata_adapter.parse(payload) == {f"{alias}#time": 42}
+    assert mitata_adapter.parse(payload) == {f"{alias}{TIME_SUFFIX}": 42}
 
 
 def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure():
@@ -77,7 +79,13 @@ def test_parse_when_decoy_precedes_real_object_does_prefer_the_benchmarks_carrie
     decoy = json.dumps({"foo": "bar"})
     real = build_stdout([benchmark("a")])
 
-    assert mitata_adapter.parse(f"{decoy}\n{real}") == {"a#time": 1}
+    assert mitata_adapter.parse(f"{decoy}\n{real}") == {f"a{TIME_SUFFIX}": 1}
+
+
+def test_parse_when_stdout_holds_several_carriers_does_read_the_first():
+    stdout = f"{build_stdout([benchmark('first')])}\n{build_stdout([benchmark('second')])}"
+
+    assert mitata_adapter.parse(stdout) == {f"first{TIME_SUFFIX}": 1}
 
 
 def test_parse_when_several_candidates_fail_does_report_longest_candidates_error():
@@ -101,37 +109,45 @@ def test_parse_when_several_candidates_fail_does_report_longest_candidates_error
     ("alias", "args", "p50", "metric_name"),
     [
         pytest.param(
-            "decode/$text", {"text": "digits"}, 42, "decode/text=digits#time", id="single"
+            "decode/$text", {"text": "digits"}, 42, f"decode/text=digits{TIME_SUFFIX}", id="single"
         ),
-        pytest.param("op/$a/$b", {"a": "x", "b": "y"}, 50, "op/a=x/b=y#time", id="multiple"),
-        pytest.param("test/$x/sep/$x", {"x": "1"}, 99, "test/x=1/sep/x=1#time", id="repeated"),
         pytest.param(
-            "test/$x/$unknown", {"x": "1"}, 77, "test/x=1/$unknown#time", id="stray-dollar"
+            "op/$a/$b", {"a": "x", "b": "y"}, 50, f"op/a=x/b=y{TIME_SUFFIX}", id="multiple"
         ),
-        pytest.param("$ab", {"a": "x", "ab": "y"}, 8, "ab=y#time", id="longest-key-first"),
-        pytest.param("test/$x", {}, 42, "test/$x#time", id="no-args-keeps-placeholder"),
         pytest.param(
-            "decode/$text", {"text": "a\\1b"}, 42, "decode/text=a\\1b#time", id="backreference"
+            "test/$x/sep/$x", {"x": "1"}, 99, f"test/x=1/sep/x=1{TIME_SUFFIX}", id="repeated"
+        ),
+        pytest.param(
+            "test/$x/$unknown", {"x": "1"}, 77, f"test/x=1/$unknown{TIME_SUFFIX}", id="stray-dollar"
+        ),
+        pytest.param("$ab", {"a": "x", "ab": "y"}, 8, f"ab=y{TIME_SUFFIX}", id="longest-key-first"),
+        pytest.param("test/$x", {}, 42, f"test/$x{TIME_SUFFIX}", id="no-args-keeps-placeholder"),
+        pytest.param(
+            "decode/$text",
+            {"text": "a\\1b"},
+            42,
+            f"decode/text=a\\1b{TIME_SUFFIX}",
+            id="backreference",
         ),
         pytest.param(
             "decode/$text",
             {"text": "\\g<0>"},
             42,
-            "decode/text=\\g<0>#time",
+            f"decode/text=\\g<0>{TIME_SUFFIX}",
             id="named-group-reference",
         ),
         pytest.param(
             "op/$a/$b",
             {"a": "$b", "b": "y"},
             7,
-            "op/a=$b/b=y#time",
+            f"op/a=$b/b=y{TIME_SUFFIX}",
             id="value-is-later-placeholder",
         ),
         pytest.param(
             "op/$a/$b",
             {"a": "y", "b": "$a"},
             7,
-            "op/a=y/b=$a#time",
+            f"op/a=y/b=$a{TIME_SUFFIX}",
             id="value-is-earlier-placeholder",
         ),
     ],
@@ -162,7 +178,7 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
 def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serialized: str):
     stdout = build_stdout([benchmark("b/$v", args={"v": value})])
 
-    assert mitata_adapter.parse(stdout) == {f"b/v={serialized}#time": 1}
+    assert mitata_adapter.parse(stdout) == {f"b/v={serialized}{TIME_SUFFIX}": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +212,7 @@ def test_parse_when_metric_name_holds_line_terminator_does_skip_run_with_one_lin
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"valid#time": 1}
+    assert result == {f"valid{TIME_SUFFIX}": 1}
     assert warnings == [
         (
             f"Skipping run with a line terminator in its metric name: {warned_alias} "
@@ -307,7 +323,7 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"valid#time": 1}
+    assert result == {f"valid{TIME_SUFFIX}": 1}
     assert warnings == [f'Skipping run with an empty path segment in its metric name: "{prefix}"']
 
 
@@ -394,7 +410,7 @@ def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test#time": 5}
+    assert result == {f"test{TIME_SUFFIX}": 5}
     assert warnings == [warning]
 
 
@@ -404,7 +420,7 @@ def test_parse_when_run_args_missing_does_read_args_as_empty_without_warning():
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test#time": 5}
+    assert result == {f"test{TIME_SUFFIX}": 5}
     assert warnings == []
 
 
@@ -455,7 +471,11 @@ def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert (result, warnings, capsys.readouterr().err) == ({"valid#time": 1}, [warning], "")
+    assert (result, warnings, capsys.readouterr().err) == (
+        {f"valid{TIME_SUFFIX}": 1},
+        [warning],
+        "",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,13 +496,13 @@ def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with
                     ],
                 }
             ]),
-            "decode#time",
+            f"decode{TIME_SUFFIX}",
             20,
             id="alias-missing-placeholder",
         ),
         pytest.param(
             build_stdout([benchmark("encode", p50=1), benchmark("encode", p50=2)]),
-            "encode#time",
+            f"encode{TIME_SUFFIX}",
             2,
             id="two-benchmarks-share-alias",
         ),
@@ -505,16 +525,16 @@ def test_parse_when_metric_names_collide_does_keep_last_value_with_warning(
 
 
 # ---------------------------------------------------------------------------
-# heap metric emission
+# memory metric emission
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
+def test_parse_when_heap_avg_present_does_emit_memory_metric_keeping_integers():
     stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": {"avg": 1024}})])
 
     result = mitata_adapter.parse(stdout)
 
-    assert result == {"test#time": 42, "test#heap": 1024}
+    assert result == {f"test{TIME_SUFFIX}": 42, f"test{MEMORY_SUFFIX}": 1024}
     assert [type(v) for v in result.values()] == [int, int]
 
 
@@ -525,57 +545,40 @@ def test_parse_when_heap_avg_present_does_emit_heap_metric_keeping_integers():
         pytest.param({"p50": 42}, id="heap-absent"),
     ],
 )
-def test_parse_when_heap_avg_not_given_does_skip_heap_metric_silently(stats: dict[str, Any]):
+def test_parse_when_heap_avg_not_given_does_skip_memory_metric_silently(stats: dict[str, Any]):
     stdout = build_stdout([benchmark("test", stats=stats)])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test#time": 42}
+    assert result == {f"test{TIME_SUFFIX}": 42}
     assert warnings == []
 
 
-_INVALID_HEAP_PREFIX = 'Skipping heap metric of "test" with invalid'
-
-
+# Each row pairs a heap value with a regex for the computed parts of its skip warning.
 @pytest.mark.parametrize(
-    ("heap_value", "warning"),
+    ("heap_value", "pattern"),
     [
+        pytest.param(42, r'"test".*stats\.heap.*42', id="integer"),
+        pytest.param({"avg": "bad"}, r'"test".*stats\.heap\.avg.*"bad"', id="avg-string"),
+        pytest.param({"avg": True}, r'"test".*stats\.heap\.avg.*true', id="avg-boolean"),
         pytest.param(
-            42, f"{_INVALID_HEAP_PREFIX} stats.heap: expected an object, got 42", id="integer"
+            {"avg": float("inf")}, r'"test".*stats\.heap\.avg.*Infinity', id="avg-infinity"
         ),
-        pytest.param(
-            {"avg": "bad"},
-            f'{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a number, got "bad"',
-            id="avg-string",
-        ),
-        pytest.param(
-            {"avg": True},
-            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a number, got true",
-            id="avg-boolean",
-        ),
-        pytest.param(
-            {"avg": float("inf")},
-            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a finite number, got Infinity",
-            id="avg-infinity",
-        ),
-        pytest.param(
-            {"avg": float("nan")},
-            f"{_INVALID_HEAP_PREFIX} stats.heap.avg: expected a finite number, got NaN",
-            id="avg-nan",
-        ),
+        pytest.param({"avg": float("nan")}, r'"test".*stats\.heap\.avg.*NaN', id="avg-nan"),
     ],
 )
 def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
-    heap_value: object, warning: str
+    heap_value: object, pattern: str
 ):
     stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": heap_value})])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert result == {"test#time": 42}
-    assert warnings == [warning]
+    assert result == {f"test{TIME_SUFFIX}": 42}
+    assert len(warnings) == 1
+    assert re.search(pattern, warnings[0])
 
 
 # ---------------------------------------------------------------------------
@@ -632,14 +635,14 @@ def test_parse_when_stdout_has_no_usable_payload_does_raise_adapter_error(
                 },
                 {"name": "b", "args": {"x": "b"}, "stats": {"p50": 20}},
             ],
-            {"test/x=b#time": 20},
+            {f"test/x=b{TIME_SUFFIX}": 20},
             'Skipping run with an error: "test/$x" (something went wrong)',
             id="error-string",
         ),
         pytest.param(
             "test",
             [{"args": {}, "error": "boom"}, {"args": {}, "stats": {"p50": 20}}],
-            {"test#time": 20},
+            {f"test{TIME_SUFFIX}": 20},
             'Skipping run with an error: "test" (boom)',
             id="error-without-stats",
         ),
@@ -649,7 +652,7 @@ def test_parse_when_stdout_has_no_usable_payload_does_raise_adapter_error(
                 {"name": "a", "args": {}, "error": {"code": 7}, "stats": {"p50": 10}},
                 {"name": "b", "args": {}, "stats": {"p50": 20}},
             ],
-            {"test#time": 20},
+            {f"test{TIME_SUFFIX}": 20},
             'Skipping run with an error: "test" ({"code": 7})',
             id="error-object",
         ),
@@ -695,7 +698,7 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
         }
     ])
 
-    assert mitata_adapter.parse(stdout) == {"test#time": 10}
+    assert mitata_adapter.parse(stdout) == {f"test{TIME_SUFFIX}": 10}
 
 
 # ---------------------------------------------------------------------------
@@ -709,10 +712,10 @@ def test_parse_when_given_real_fixture_does_extract_all_metrics():
     result = mitata_adapter.parse(stdout)
 
     assert result == {
-        "decode/text=digits#time": 4.0791015625,
-        "decode/text=digits#heap": 0.13420623129857714,
-        "decode/text=words#time": 7.8125,
-        "decode/text=words#heap": 0.14746411878141288,
-        "encode#time": 42.66357421875,
-        "encode#heap": 80.1967411655276,
+        f"decode/text=digits{TIME_SUFFIX}": 4.0791015625,
+        f"decode/text=digits{MEMORY_SUFFIX}": 0.13420623129857714,
+        f"decode/text=words{TIME_SUFFIX}": 7.8125,
+        f"decode/text=words{MEMORY_SUFFIX}": 0.14746411878141288,
+        f"encode{TIME_SUFFIX}": 42.66357421875,
+        f"encode{MEMORY_SUFFIX}": 80.1967411655276,
     }

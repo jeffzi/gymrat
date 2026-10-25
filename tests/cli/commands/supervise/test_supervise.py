@@ -24,7 +24,8 @@ from unittest.mock import create_autospec
 import pytest
 import typer
 
-from gymrat.adapters import MetricDefaults, get_adapter
+from gymrat.adapters.contract import MetricDefaults
+from gymrat.adapters.registry import get_adapter
 from gymrat.cli.app import app
 from gymrat.cli.commands import supervise as supervise_cmd
 from gymrat.cli.supervise.preflight import run_preflight

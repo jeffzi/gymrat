@@ -13,7 +13,8 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.adapters import AdapterError, MetricDefaults, metric_lines_adapter
+from gymrat.adapters.contract import AdapterError, MetricDefaults
+from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import OUTPUT_CAP, ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec

@@ -18,7 +18,7 @@ from typing import Any, NoReturn
 import typer
 from rich.markup import escape
 
-from gymrat.adapters import AdapterError
+from gymrat.adapters.contract import AdapterError
 from gymrat.cli import console
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.report.style import format_hint, highlight_inline_code, markup, render_lines
