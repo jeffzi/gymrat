@@ -99,7 +99,8 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
             measured, the feasibility check refuses, or another process holds
             the repository lock.
         CommandError: When a prepare or bench command of the baseline
-            measurement times out or exits non-zero.
+            measurement times out or exits non-zero, or a bench run's stdout
+            overran the capture cap.
     """
     if config.checks is None:
         warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
@@ -205,7 +206,7 @@ async def _baseline_step(
         GymratError: When the adapter is unknown or the baseline target cannot
             be resolved.
         CommandError: When a prepare or bench command times out or exits
-            non-zero.
+            non-zero, or a bench run's stdout overran the capture cap.
     """
     if latest_baseline(read_session_records(root)) is not None:
         return
