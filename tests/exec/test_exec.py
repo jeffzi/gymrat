@@ -299,10 +299,13 @@ async def test_exec_when_child_killed_by_signal_does_report_exit_one(
 
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 async def test_exec_when_stream_read_fails_does_settle_as_failure(
+    monkeypatch: pytest.MonkeyPatch,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     stream: str,
 ) -> None:
+    # A cap shorter than the diagnostic, so its length alone cannot pass for truncation.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 4)
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     pipe: asyncio.StreamReader = getattr(proc, stream)
