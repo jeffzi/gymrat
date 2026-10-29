@@ -332,7 +332,7 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
 
 def _require_session_header(record: SessionLogRecord, at: str) -> SessionRecord:
     if not isinstance(record, SessionRecord):
-        message = f"Expected session header at {at}, got a {record.type} record"
+        message = f"Expected session header at {at}, got record type {record.type}"
         raise GymratError(message, hint="The session log is corrupt; start a new session.")
     return record
 
