@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parsing the cut-off output as if it were complete.
 - Label a failed command's stream as truncated whenever it overran the capture cap, including one
   holding invalid UTF-8.
+- Tell the quantized-readings warning and the README to set `resolution` to the timer's tick divided
+  by the calls each reading averages, instead of the bare tick, which hid real changes on batched
+  benchmarks.
 
 ## [0.22.0] - 2026-10-24
 

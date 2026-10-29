@@ -101,8 +101,10 @@ gymrat parses your bench command's stdout through an adapter:
   Each completed task becomes a `<task name>#time` metric holding the task's median latency,
   converted from tinybench's milliseconds to nanoseconds. gymrat skips each task that errored or did
   not complete, and warns about it. Medians land on whole timer steps, and the adapter cannot detect
-  your timer's step. For sub-microsecond tasks, set [`resolution`](#configuration) to that step:
-  41.67 nanoseconds (ns) on a 24 megahertz (MHz) timer such as Apple Silicon's.
+  your timer's step. For sub-microsecond tasks that time one call per sample, set
+  [`resolution`](#configuration) to that step: 41.67 nanoseconds (ns) on a 24 megahertz (MHz) timer
+  such as Apple Silicon's. A task that batches calls and returns the per-call mean through
+  `overriddenDuration` moves in the step divided by its call count.
 
 Select one with `--adapter` or in the config file.
 
@@ -172,13 +174,16 @@ reads the file; it ignores a `[kinds]` entry that matches no kind.
 - `runbook` names the runbook file, relative to the directory holding `gymrat.toml`. The file must
   exist.
 
-`resolution` is the size of one measurement step, in the metric's unit: 41.67 for a timer that
-ticks at 24 MHz and is read in nanoseconds. gymrat gives `#memory` metrics a built-in step of one
-byte. A change of one step never signals, because the true change behind it can be anything from
-nothing to two steps. Where the bench allows it, time more iterations per reading instead of
-declaring a step: the step then shrinks relative to each reading, so smaller changes can signal.
-gymrat warns when a time metric's readings look quantized and no step is declared. The gap the
-warning names is the largest the step can be, so declare the timer's tick rather than the gap.
+`resolution` is the size of one step of the reported value, in the metric's unit: 41.67 for a
+timer that ticks at 24 MHz and is read in nanoseconds, when each reading times one call. A reading
+that averages several calls moves in smaller steps: the tick divided by the number of calls, about
+10.4 ns for four. Declaring the tick there would hide real changes up to 1.25 ticks. gymrat gives
+`#memory` metrics a built-in step of one byte. A change of one step never signals, because the true
+change behind it can be anything from nothing to two steps. Where the bench allows it, time more
+iterations per reading instead of declaring a step: the step then shrinks relative to each reading,
+so smaller changes can signal. gymrat warns when a time metric's readings look quantized and no
+step is declared. The gap the warning names is the largest the step can be, so declare the tick
+divided by the calls each reading averages, rather than the gap.
 
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.

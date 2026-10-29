@@ -468,7 +468,8 @@ def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str
     step = "" if gap is None else f"; its step is at most {format_value(gap, 'ns')}"
     return (
         f"{name}: readings repeat as a quantized timer's would{step}. "
-        "Set `resolution` to the timer's tick, or time more iterations per reading"
+        "Set `resolution` to the timer's tick divided by the calls each reading averages, "
+        "or time more iterations per reading"
     )
 
 
