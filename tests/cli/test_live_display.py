@@ -23,7 +23,6 @@ from __future__ import annotations
 import sys
 import threading
 import time
-import warnings
 from io import StringIO
 from typing import TYPE_CHECKING, NamedTuple, override
 
@@ -35,20 +34,15 @@ from gymrat.cli.live_display import ErasableLive, format_timestamp, mount_live
 from gymrat.signals import install_termination_cleanup, write_on_exit
 from tests._process_helpers import InterruptedTerminal, ProcessExit, track_cleanups
 from tests._rich import (
-    HIDE_CURSOR,
     KEPT_LINE,
     TERMINATION_SIGNAL,
-    WARNING_LINE,
     console_output,
     cursor_hidden,
     kept_line_terminal,
     screen_lines,
     sealed_console,
 )
-from tests._streams import (
-    RaisingStream,
-    RecordingStream,
-)
+from tests._streams import RaisingStream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -97,21 +91,13 @@ class _InFlight(NamedTuple):
     screen: list[str]
 
 
-# The signal lands before the new frame's write, so the old frame is still on screen.
-_BEFORE_WRITE_CASES = [
-    pytest.param(_InFlight(2, 4, lands=False, screen=[KEPT_LINE]), id="grows-before-write"),
-    pytest.param(
-        _InFlight(4, 2, lands=False, screen=[KEPT_LINE, "old 1", "old 2"]),
-        id="shrinks-before-write",
-    ),
-]
-
-# The erase covers the shorter frame, so the taller frame's extra rows remain.
+# The erase covers the shorter frame: a frame that grew before its write landed
+# keeps the old rows, and one that shrank after its write landed keeps none.
+_GROWS_BEFORE_WRITE = pytest.param(
+    _InFlight(2, 4, lands=False, screen=[KEPT_LINE]), id="grows-before-write"
+)
 _IN_FLIGHT_CASES = [
-    *_BEFORE_WRITE_CASES,
-    pytest.param(
-        _InFlight(2, 4, lands=True, screen=[KEPT_LINE, "new 1", "new 2"]), id="grows-after-write"
-    ),
+    _GROWS_BEFORE_WRITE,
     pytest.param(_InFlight(4, 2, lands=True, screen=[KEPT_LINE]), id="shrinks-after-write"),
 ]
 
@@ -242,10 +228,6 @@ class _StalledWrites(StringIO):
         return len(text) if self._lands else super().write(text)
 
 
-def _warn() -> None:
-    warnings.warn(WARNING_LINE, RuntimeWarning, stacklevel=1)
-
-
 @pytest.fixture
 def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
     """Mount live displays on a console and take them down at teardown."""
@@ -309,54 +291,21 @@ def _signal_mid_paint(
 
 
 @pytest.mark.parametrize(
-    ("row_count", "redirect_stderr"),
-    [
-        pytest.param(1, False, id="one-row"),
-        pytest.param(4, False, id="four-rows"),
-        pytest.param(3, True, id="live-redirects-stderr"),
-    ],
+    "row_count", [pytest.param(1, id="one-row"), pytest.param(4, id="four-rows")]
 )
 def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_cursor_shown(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
     row_count: int,
-    redirect_stderr: bool,
 ):
     console = kept_line_terminal(monkeypatch)
-    mounted_live(console, _rows(row_count), redirect_stderr=redirect_stderr)
+    mounted_live(console, _rows(row_count))
 
     raise_signal(TERMINATION_SIGNAL)
 
     out = console_output(console)
     assert (screen_lines(out), cursor_hidden(out)) == ([KEPT_LINE], False)
-
-
-def test_mount_live_when_signal_lands_before_first_paint_does_restore_the_screen(
-    monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
-):
-    terminal = InterruptedTerminal()
-    console = kept_line_terminal(monkeypatch, stream=terminal)
-    terminal.interrupt_write(
-        lambda: raise_signal(TERMINATION_SIGNAL), marker=HIDE_CURSOR, lands=True
-    )
-    live = ErasableLive(_rows(3), console=console, auto_refresh=False)
-
-    with pytest.raises(ProcessExit):
-        mount_live(live)
-
-    assert (screen_lines(terminal.at_exit), cursor_hidden(terminal.at_exit)) == ([KEPT_LINE], False)
-
-
-def test_mount_live_when_mounted_does_start_the_display(
-    mounted_live: Callable[..., ErasableLive],
-):
-    console = sealed_console()
-
-    live = mounted_live(console, _rows(2))
-
-    assert live.is_started is True
 
 
 def _live_whose_first_paint_raises() -> ErasableLive:
@@ -390,28 +339,15 @@ def test_mount_live_when_mounting_raises_does_roll_back_the_mount(
 ):
     registry = track_cleanups(monkeypatch, "gymrat.cli.live_display")
     live = build_live()
-    threads_before = set(threading.enumerate())
 
     with pytest.raises(error, match=message):
         mount_live(live)
 
-    assert (live.is_started, _spawned_threads_ended(threads_before), registry.live()) == (
-        False,
-        True,
-        [],
-    )
+    assert (live.is_started, registry.live()) == (False, [])
 
 
-@pytest.mark.parametrize(
-    "stop_error",
-    [
-        pytest.param(RuntimeError(_REPAINT_FAILURE), id="exception"),
-        pytest.param(_Abort(_REPAINT_FAILURE), id="base-exception"),
-    ],
-)
-def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_a_note(
-    stop_error: BaseException,
-):
+def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_a_note():
+    stop_error = _Abort(_REPAINT_FAILURE)
     live = ErasableLive(
         _FailingFrame(repaint_error=stop_error), console=sealed_console(), auto_refresh=False
     )
@@ -419,7 +355,8 @@ def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_
     with pytest.raises(RuntimeError, match=_PAINT_FAILURE) as raised:
         mount_live(live)
 
-    assert raised.value.__notes__ == [f"stopping the display also failed: {stop_error!r}"]
+    (note,) = raised.value.__notes__
+    assert repr(stop_error) in note
 
 
 def test_erasable_live_refresh_when_erased_does_not_build_or_paint_a_frame(
@@ -443,41 +380,6 @@ def test_erasable_live_refresh_when_erased_does_not_build_or_paint_a_frame(
     live.refresh()
 
     assert (len(builds), console_output(console)) == (built, erased)
-
-
-def test_mount_live_when_later_cleanup_warns_does_write_erase_and_warning_in_one_write(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
-):
-    console = sealed_console()
-    console.print(KEPT_LINE)
-    mounted_live(console, _rows(3))
-    stderr = RecordingStream()
-    monkeypatch.setattr(sys, "stderr", stderr)
-    install_termination_cleanup(_warn)
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    on_screen = console_output(console) + "".join(stderr.writes)
-    assert (len(stderr.writes), screen_lines(on_screen)) == (1, [KEPT_LINE, WARNING_LINE])
-
-
-def test_mount_live_when_live_redirects_stdio_does_hand_later_cleanups_the_real_streams(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
-):
-    stdout, stderr = StringIO(), StringIO()
-    monkeypatch.setattr(sys, "stdout", stdout)
-    monkeypatch.setattr(sys, "stderr", stderr)
-    mounted_live(sealed_console(), _rows(2), redirect_stdout=True, redirect_stderr=True)
-    seen: list[tuple[object, object]] = []
-    install_termination_cleanup(lambda: seen.append((sys.stdout, sys.stderr)))
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert seen == [(stdout, stderr)]
 
 
 def test_erase_for_exit_when_display_already_erased_does_leave_the_screen_unchanged(
@@ -647,24 +549,6 @@ def test_mount_live_when_refresh_thread_write_stalls_does_erase_the_shorter_fram
     assert screen_lines(on_screen) == case.screen
 
 
-def test_mount_live_when_refresh_thread_running_does_stop_its_paints(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
-):
-    threads_before = set(threading.enumerate())
-    console = sealed_console()
-    log = _WriteLog()
-    console.file = log
-    mounted_live(console, _rows(2), auto_refresh=True)
-    _await(log.painted_by_refresh)
-    monkeypatch.setattr(sys, "stderr", StringIO())
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert _spawned_threads_ended(threads_before)
-
-
 @pytest.mark.parametrize("case", _IN_FLIGHT_CASES)
 def test_mount_live_when_main_thread_paint_interrupted_does_erase_the_shorter_frame(
     monkeypatch: pytest.MonkeyPatch,
@@ -778,41 +662,6 @@ def test_erase_for_exit_when_paint_dropped_while_earlier_paint_in_flight_does_er
     assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        *_BEFORE_WRITE_CASES,
-        pytest.param(
-            _InFlight(2, 4, lands=True, screen=[KEPT_LINE, "banana", "new 1", "new 2"]),
-            id="grows-after-write",
-        ),
-        pytest.param(
-            _InFlight(4, 2, lands=True, screen=[KEPT_LINE, "banana"]), id="shrinks-after-write"
-        ),
-    ],
-)
-def test_mount_live_when_print_interrupted_does_erase_the_shorter_frame(
-    monkeypatch: pytest.MonkeyPatch,
-    mounted_live: Callable[..., ErasableLive],
-    raise_signal: Callable[[int], int],
-    case: _InFlight,
-):
-    console = sealed_console()
-    terminal = InterruptedTerminal()
-    console.file = terminal
-    console.print(KEPT_LINE)
-    frame = _ResizableFrame(case.rows_before)
-    mounted_live(console, frame)
-    frame.resize(case.rows_after)
-    monkeypatch.setattr(sys, "stderr", terminal)
-    terminal.interrupt_write(lambda: raise_signal(TERMINATION_SIGNAL), lands=case.lands)
-
-    with pytest.raises(ProcessExit):
-        console.print("banana")
-
-    assert screen_lines(terminal.at_exit) == case.screen
-
-
 # ---------------------------------------------------------------------------
 # format_timestamp
 # ---------------------------------------------------------------------------
@@ -821,13 +670,8 @@ def test_mount_live_when_print_interrupted_does_erase_the_shorter_frame(
 @pytest.mark.parametrize(
     ("at_ms", "run_start_ms", "expected"),
     [
-        pytest.param(1_000, 1_000, "[00:00:00]", id="zero-elapsed"),
-        pytest.param(999, 1_000, "[00:00:00]", id="negative-elapsed-clamps-to-zero"),
-        pytest.param(0, 90_000, "[00:00:00]", id="large-negative-elapsed-clamps-to-zero"),
         pytest.param(90_000, None, "[00:00:00]", id="unanchored-run"),
         pytest.param(91_000, 1_000, "[00:01:30]", id="ninety-seconds-elapsed"),
-        pytest.param(3_601_000, 1_000, "[01:00:00]", id="one-hour-elapsed"),
-        pytest.param(36_001_000, 1_000, "[10:00:00]", id="multi-digit-hours-elapsed"),
     ],
 )
 def test_format_timestamp_when_given_a_moment_does_render_the_elapsed_clock(

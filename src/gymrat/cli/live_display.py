@@ -20,7 +20,7 @@ from gymrat.signals import install_termination_cleanup, write_on_exit
 from gymrat.utils import floored_clock_tiers
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Generator
 
     from rich.console import (
         Console,
@@ -277,11 +277,12 @@ def mount_live(live: ErasableLive) -> Callable[[], None]:
     return uninstall
 
 
-def _stop_unless_stream_closed(live: ErasableLive) -> None:
+@contextlib.contextmanager
+def _unless_stream_closed() -> Generator[None]:
     try:
         # stderr closed or broken at shutdown raises OSError on write
         with contextlib.suppress(OSError):
-            live.stop()
+            yield
     except ValueError as exc:
         # A closed text stream raises ValueError("I/O operation on closed
         # file") on write, not OSError; any other ValueError is unexpected
@@ -370,8 +371,12 @@ class LiveDisplayMixin:
         if self._uninstall_erase is not None:
             self._uninstall_erase()
         if self._live is not None:
-            _stop_unless_stream_closed(self._live)
-            self._after_live_stopped()
+            with _unless_stream_closed():
+                self._live.stop()
+            # A separate guard, so a write that fails in live.stop() still
+            # lets the renderer's closing line try its own.
+            with _unless_stream_closed():
+                self._after_live_stopped()
             self._live = None
 
     def warn(self, message: str) -> None:
