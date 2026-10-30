@@ -17,6 +17,10 @@ from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 #: value is immaterial to every test that uses it.
 FIXED_HOLDER_AT = "2026-01-01T00:00:00.000Z"
 
+#: Every lock ``hold_lock`` acquired, keyed by its OS lock file, so
+#: ``remove_lock_files`` can release one a test still holds before unlinking it.
+_held_locks: dict[str, list[FileLock]] = {}
+
 
 def os_lock_file(lock_path: str) -> str:
     """The OS lock file ``acquire_lock`` takes beside the holder record at ``lock_path``.
@@ -69,6 +73,7 @@ def hold_lock(
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(os_lock_file(lock_path), timeout=0)
     lock.acquire()
+    _held_locks.setdefault(os_lock_file(lock_path), []).append(lock)
     if holder is None:
         holder = {"pid": os.getpid(), "command": command, "at": now_iso()}
     Path(lock_path).write_text(json.dumps(holder), encoding="utf-8")
@@ -147,9 +152,15 @@ def remove_lock_files(root: str) -> None:
     leaves them behind. Each lock is three files: the holder record, the OS
     lock, and the publish lock.
 
+    A lock ``hold_lock`` acquired that the test still holds is released first:
+    Windows refuses to unlink a locked file, and the fixture releasing it may
+    tear down after this cleanup runs.
+
     Args:
         root: The repository whose lock files are removed.
     """
     for lock in (lockfile_path(root), supervise_lockfile_path(root)):
         for leftover in (lock, os_lock_file(lock), publish_lock_file(lock)):
+            for held in _held_locks.pop(leftover, []):
+                held.release()
             Path(leftover).unlink(missing_ok=True)
