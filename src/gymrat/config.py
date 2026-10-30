@@ -54,6 +54,7 @@ from gymrat.utils import (
     describe_key,
     drop_prefix_errors,
     expected_got,
+    first_set,
     os_error_reason,
     phrase_for_error,
 )
@@ -612,11 +613,6 @@ def find_implicit_base() -> str:
         return str(Path.cwd())
 
 
-def _first_set[T](*values: T | None, default: T) -> T:
-    """The first value that is set, in precedence order, else ``default``."""
-    return next((value for value in values if value is not None), default)
-
-
 def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
     """Merge flags, config file, and defaults into every setting but ``bench``.
 
@@ -633,15 +629,15 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
     """
     return BenchlessConfig(
         adapter=flags.adapter or config_file.adapter or CONFIG_DEFAULTS.adapter,
-        samples=_first_set(flags.samples, config_file.samples, default=CONFIG_DEFAULTS.samples),
-        timeout_seconds=_first_set(
+        samples=first_set(flags.samples, config_file.samples, default=CONFIG_DEFAULTS.samples),
+        timeout_seconds=first_set(
             flags.timeout, config_file.timeout_seconds, default=CONFIG_DEFAULTS.timeout_seconds
         ),
-        unstable_noise_pct=_first_set(
+        unstable_noise_pct=first_set(
             config_file.unstable_noise_pct, default=CONFIG_DEFAULTS.unstable_noise_pct
         ),
         primary=config_file.primary or CONFIG_DEFAULTS.primary,
-        prepare=_first_set(flags.prepare, default=config_file.prepare),
+        prepare=first_set(flags.prepare, default=config_file.prepare),
         metrics=dict(config_file.metrics) if config_file.metrics is not None else None,
         kinds=dict(config_file.kinds) if config_file.kinds is not None else None,
         checks=config_file.checks,
