@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tell the quantized-readings warning and the README to set `resolution` to the timer's tick divided
   by the calls each reading averages, instead of the bare tick, which hid real changes on batched
   benchmarks.
+- Stop the quantized-readings warning from firing on readings that sit on a fine lattice and happen
+  to repeat once; with four or more distinct readings it now names the timer step the readings fit.
 
 ## [0.22.0] - 2026-10-24
 
