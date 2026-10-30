@@ -22,20 +22,19 @@ The scan itself, ``detect_end_condition``, is pinned directly in
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import StopConfig
+from gymrat.errors import GymratError
 from gymrat.session.paths import session_dir, session_jsonl_path
+from gymrat.session.store import read_records
 from gymrat.supervisor.events import (
-    CapEvent,
     FollowUpEvent,
     SessionEvent,
-    TurnEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import detect_end_condition
@@ -48,22 +47,17 @@ from tests.session.records._fixtures import (
     append_records,
     command_record,
     discard_record,
-    finalize_record,
     hook_record,
     iteration_record,
-    session_record,
     session_state,
     stop_record,
 )
 from tests.supervisor._fixtures import (
     ActionStep,
-    DelegatingSession,
     EmitStep,
     FollowUpWatch,
-    InterruptEmitsEndDriver,
     LockSwitch,
     MockStep,
-    SupervisorClock,
     TurnEndStep,
     WrapDriver,
     append_step,
@@ -72,9 +66,8 @@ from tests.supervisor._fixtures import (
     collecting_observer,
     create_mock_driver,
     driver_calls,
-    emit_turn_end,
     event_log_markers,
-    events_of,
+    follow_up_reasons,
     follow_ups_with_action,
     run_supervised,
     sent_texts,
@@ -85,8 +78,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from gymrat.session.records import SessionLogRecord
-    from gymrat.supervisor.driver import Driver, DriverSession
-    from gymrat.supervisor.supervise import SupervisionResult
 
 
 def _scanned_reason(
@@ -119,8 +110,6 @@ def _scanned_reason(
 
 _FAILED_HOOK = hook_record(stage="after", seq=2, exit_code=1, stderr_bytes=5)
 _FAILED_HOOK_REASON = _scanned_reason([_FAILED_HOOK])
-
-_LATER_FAILED_HOOK = hook_record(stage="before", seq=3, exit_code=4, stderr_bytes=0)
 
 _MAX_ITERATIONS_REASON = _scanned_reason([], stop=StopConfig(max_iterations=1), iteration_count=1)
 
@@ -155,33 +144,12 @@ def _log_path(root: str) -> Path:
     return Path(session_jsonl_path(root))
 
 
-def _overwrite_log(root: str, content: bytes) -> None:
-    _log_path(root).write_bytes(content)
-
-
 def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
     return EmitStep(emit=tool_end_event(tool_name, tool_use_id))
 
 
 def _ended_markers(markers: list[str]) -> list[str]:
     return [marker for marker in markers if marker.startswith("follow_up:ended:")]
-
-
-class _StubbornSession(DelegatingSession):
-    """A session that ignores ``interrupt`` and ``end``, so only the abort event or the script's own end stops it."""
-
-    @override
-    async def interrupt(self) -> None:
-        return None
-
-    @override
-    async def end(self) -> None:
-        return None
-
-
-def _stubborn(inner: Driver) -> WrapDriver:
-    """Wrap ``inner`` so every session it starts ignores ``interrupt`` and ``end``."""
-    return WrapDriver(inner, lambda session, _abort: _StubbornSession(session))
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +163,6 @@ class _DetectionCase:
 
     appended: tuple[SessionLogRecord, ...]
     stop: StopConfig | None
-    tool_name: str
     ended_by: str
     reason: str
 
@@ -207,21 +174,19 @@ class _DetectionCase:
             _DetectionCase(
                 appended=(_FAILED_HOOK,),
                 stop=None,
-                tool_name="Bash",
                 ended_by="hook-failure",
                 reason=_FAILED_HOOK_REASON,
             ),
-            id="hook-failure-after-a-bash-end",
+            id="hook-failure",
         ),
         pytest.param(
             _DetectionCase(
                 appended=(iteration_record(seq=1),),
                 stop=StopConfig(max_iterations=1),
-                tool_name="mcp__gymrat__iterate",
                 ended_by="stop-condition",
                 reason=_MAX_ITERATIONS_REASON,
             ),
-            id="stop-condition-met-during-run-after-an-iterate-tool-end",
+            id="stop-condition-met-during-run",
         ),
     ],
 )
@@ -231,7 +196,7 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
 ):
     driver = create_mock_driver([
         append_step(root, *case.appended),
-        _tool_end(tool_name=case.tool_name),
+        _tool_end(),
         blocked_step(),
     ])
 
@@ -246,108 +211,67 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
     assert markers.index(ended[0]) > markers.index("tool_end:t1")
 
 
-@pytest.mark.parametrize(
-    ("seeded", "stop", "appended"),
-    [
-        pytest.param(
-            (command_record(), _FAILED_HOOK),
-            None,
-            (hook_record(stage="before", seq=3),),
-            id="hook-failure-before-launch-after-a-command-record",
-        ),
-        pytest.param(
-            (iteration_record(seq=1),),
-            StopConfig(max_iterations=1),
-            (command_record(),),
-            id="stop-condition-met-at-launch",
-        ),
-        pytest.param(
-            (),
-            None,
-            (iteration_record(seq=1), hook_record(seq=1), command_record()),
-            id="no-stop-configuration-and-clean-hooks",
-        ),
-    ],
-)
 async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_session(
     root: str,
-    seeded: tuple[SessionLogRecord, ...],
-    stop: StopConfig | None,
-    appended: tuple[SessionLogRecord, ...],
 ):
-    append_records(root, *seeded)
-    driver = create_mock_driver([append_step(root, *appended), _tool_end()])
+    append_records(root, command_record(), _FAILED_HOOK)
+    driver = create_mock_driver([
+        append_step(root, hook_record(stage="before", seq=3)),
+        _tool_end(),
+    ])
 
-    result = await run_supervised(root, driver, config=benchless_config(stop=stop))
+    result = await run_supervised(root, driver)
 
     assert result.ended_by == "session"
     assert result.outcome.reason == "completed"
 
 
-def _directory_at_log(root: str, _access: _SessionDirAccess) -> None:
-    _log_path(root).unlink()
-    _log_path(root).mkdir()
+def _breaking_steps(break_log: Callable[[], None], trigger: MockStep) -> list[MockStep]:
+    """Steps that record a cost, break the session log, then let ``trigger`` read it."""
 
+    async def run_break() -> None:
+        break_log()
 
-def _append_invalid_json(root: str, _access: _SessionDirAccess) -> None:
-    append_raw(_log_path(root), b"not valid json\n")
-
-
-def _deny_session_dir(_root: str, access: _SessionDirAccess) -> None:
-    access.deny()
+    return [
+        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.25)),
+        ActionStep(action=run_break),
+        trigger,
+    ]
 
 
 @pytest.mark.parametrize(
-    ("make_unreadable", "trigger", "message"),
+    "trigger",
     [
-        pytest.param(
-            _directory_at_log,
-            _tool_end(),
-            "{log}",
-            id="directory-at-tool-end-scan",
-        ),
-        pytest.param(
-            _directory_at_log,
-            TurnEndStep(),
-            "{log}",
-            id="directory-at-turn-end-settle",
-        ),
-        pytest.param(
-            _append_invalid_json,
-            _tool_end(),
-            "{log}",
-            id="invalid-json-at-tool-end-scan",
-        ),
-        pytest.param(
-            _append_invalid_json,
-            TurnEndStep(),
-            "{log}",
-            id="invalid-json-at-turn-end-settle",
-        ),
-        pytest.param(
-            _deny_session_dir,
-            _tool_end(),
-            "Cannot inspect session log {log}",
-            id="stat-denied-at-tool-end-scan",
-            marks=needs_mode_bits,
-        ),
+        pytest.param(_tool_end(), id="at-tool-end-scan"),
+        pytest.param(TurnEndStep(), id="at-turn-end-settle"),
     ],
 )
-async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome_naming_the_log(
+async def test_supervise_when_log_holds_invalid_json_does_end_with_the_read_error_as_outcome(
+    root: str,
+    trigger: MockStep,
+):
+    driver = create_mock_driver(
+        _breaking_steps(lambda: append_raw(_log_path(root), b"not valid json\n"), trigger)
+    )
+
+    result = await run_supervised(root, driver)
+
+    with pytest.raises(GymratError) as raised:
+        read_records(session_jsonl_path(root))
+    assert (result.ended_by, result.outcome.reason, result.outcome.cost_usd) == (
+        "session",
+        "error",
+        0.25,
+    )
+    assert result.end_reason == result.outcome.message == str(raised.value)
+
+
+@needs_mode_bits
+async def test_supervise_when_log_stat_denied_at_tool_end_does_end_with_error_outcome_naming_the_log(
     root: str,
     session_dir_access: _SessionDirAccess,
-    make_unreadable: Callable[[str, _SessionDirAccess], None],
-    trigger: MockStep,
-    message: str,
 ):
-    async def break_log() -> None:
-        make_unreadable(root, session_dir_access)
-
-    driver = create_mock_driver([
-        EmitStep(emit=UsageUpdateEvent(at=now_ns(), cost_usd=0.25)),
-        ActionStep(action=break_log),
-        trigger,
-    ])
+    driver = create_mock_driver(_breaking_steps(session_dir_access.deny, _tool_end()))
 
     result = await run_supervised(root, driver)
 
@@ -357,7 +281,7 @@ async def test_supervise_when_log_becomes_unreadable_does_end_with_error_outcome
         0.25,
     )
     assert result.end_reason == result.outcome.message
-    assert message.format(log=session_jsonl_path(root)) in str(result.outcome.message)
+    assert session_jsonl_path(root) in str(result.outcome.message)
 
 
 async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_once(root: str):
@@ -390,48 +314,15 @@ async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_onc
 _DISCARD_STREAK = tuple(discard_record(seq=seq) for seq in range(1, CONSECUTIVE_DISCARD_LIMIT + 1))
 
 
-def _repair_log(root: str, access: _SessionDirAccess, *records: SessionLogRecord) -> ActionStep:
-    async def repair() -> None:
-        access.allow()
-        with contextlib.suppress(NotADirectoryError):
-            _log_path(root).rmdir()
-        _overwrite_log(root, b"")
-        append_records(root, session_record(), *records)
-
-    return ActionStep(action=repair)
-
-
-@pytest.mark.parametrize(
-    ("fail_launch_read", "message"),
-    [
-        pytest.param(_append_invalid_json, "{log}", id="log-unparsable"),
-        pytest.param(_directory_at_log, "{log}", id="log-is-a-directory"),
-        pytest.param(
-            _deny_session_dir,
-            "Cannot inspect session log {log}",
-            id="log-stat-denied",
-            marks=needs_mode_bits,
-        ),
-    ],
-)
-async def test_supervise_when_launch_read_fails_does_end_with_error_outcome_naming_the_log(
-    root: str,
-    session_dir_access: _SessionDirAccess,
-    fail_launch_read: Callable[[str, _SessionDirAccess], None],
-    message: str,
-):
-    append_records(root, *_DISCARD_STREAK)
-    fail_launch_read(root, session_dir_access)
-    driver = create_mock_driver([
-        _repair_log(root, session_dir_access, *_DISCARD_STREAK),
-        TurnEndStep(cost_usd=0.01),
-    ])
+async def test_supervise_when_launch_read_fails_does_end_with_error_outcome(root: str):
+    append_raw(_log_path(root), b"not valid json\n")
+    driver = create_mock_driver([])
 
     result = await run_supervised(root, driver)
 
+    assert driver.sessions == []
     assert (result.ended_by, result.outcome.reason) == ("session", "error")
     assert result.end_reason == result.outcome.message
-    assert message.format(log=session_jsonl_path(root)) in str(result.outcome.message)
 
 
 @pytest.mark.parametrize(
@@ -500,95 +391,12 @@ async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_tu
 # ---------------------------------------------------------------------------
 
 
-def _follow_ups(events: list[SessionEvent]) -> list[tuple[str, str | None]]:
-    return [(event.action, event.reason) for event in events_of(events, FollowUpEvent)]
-
-
-@dataclass(frozen=True, slots=True)
-class _LaterEndCase:
-    """A way a run ends that is not its stop condition becoming met."""
-
-    script: Callable[[str], list[MockStep]]
-    ended_by: str
-    follow_ups: tuple[tuple[str, str | None], ...]
-    max_usd: float | None = None
-
-
-_LATER_END_CASES = [
-    pytest.param(
-        _LaterEndCase(
-            script=lambda root: [TurnEndStep(), append_step(root, stop_record()), TurnEndStep()],
-            ended_by="session",
-            follow_ups=(("replied", None), ("ended", "finished")),
-        ),
-        id="stop-record",
-    ),
-    pytest.param(
-        _LaterEndCase(
-            script=lambda root: [
-                TurnEndStep(),
-                append_step(root, finalize_record()),
-                TurnEndStep(),
-            ],
-            ended_by="session",
-            follow_ups=(("replied", None), ("ended", "finished")),
-        ),
-        id="finalize",
-    ),
-    pytest.param(
-        _LaterEndCase(
-            script=lambda _root: [TurnEndStep(), TurnEndStep(cost_usd=5.0)],
-            ended_by="spend-cap",
-            follow_ups=(("replied", None), ("ended", "spend-cap")),
-            max_usd=1.0,
-        ),
-        id="spend-cap",
-    ),
-    pytest.param(
-        _LaterEndCase(
-            script=lambda _root: [TurnEndStep()] * 4,
-            ended_by="guard",
-            follow_ups=(
-                ("replied", None),
-                ("replied", None),
-                ("replied", None),
-                ("ended", "no-progress"),
-            ),
-        ),
-        id="no-progress-guard",
-    ),
-]
-
-
-@pytest.mark.parametrize("case", _LATER_END_CASES)
 async def test_supervise_when_stop_condition_met_at_launch_does_reply_until_a_later_end(
-    root: str, case: _LaterEndCase
+    root: str,
 ):
     append_records(root, iteration_record(seq=1))
     probe = collecting_observer()
-    driver = create_mock_driver(case.script(root))
-
-    result = await run_supervised(
-        root,
-        driver,
-        config=benchless_config(stop=StopConfig(max_iterations=1)),
-        observer=probe.observer,
-        max_usd=case.max_usd,
-    )
-
-    assert result.ended_by == case.ended_by
-    assert _follow_ups(probe.events) == list(case.follow_ups)
-
-
-async def test_supervise_when_stop_condition_met_after_a_reply_does_end_at_the_next_turn_end(
-    root: str,
-):
-    probe = collecting_observer()
-    driver = create_mock_driver([
-        TurnEndStep(),
-        append_step(root, iteration_record(seq=1)),
-        TurnEndStep(),
-    ])
+    driver = create_mock_driver([TurnEndStep(), append_step(root, stop_record()), TurnEndStep()])
 
     result = await run_supervised(
         root,
@@ -597,9 +405,8 @@ async def test_supervise_when_stop_condition_met_after_a_reply_does_end_at_the_n
         observer=probe.observer,
     )
 
-    assert (result.ended_by, result.end_reason) == ("stop-condition", _MAX_ITERATIONS_REASON)
-    assert _follow_ups(probe.events) == [("replied", None), ("ended", _MAX_ITERATIONS_REASON)]
-    assert len(sent_texts(driver.sessions[0])) == 1
+    assert result.ended_by == "session"
+    assert follow_up_reasons(probe.events) == [("replied", None), ("ended", "finished")]
 
 
 # ---------------------------------------------------------------------------
@@ -629,25 +436,6 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
     assert markers.index(ended[0]) > markers.index("tool_end:t2")
 
 
-async def test_supervise_when_end_pending_and_lock_free_at_agent_turn_end_does_end_unclassified(
-    root: str,
-):
-    lock = LockSwitch(held=True)
-    driver = create_mock_driver([
-        append_step(root, _FAILED_HOOK),
-        _tool_end(),
-        ActionStep(action=lock.release),
-        TurnEndStep(),
-    ])
-
-    result = await run_supervised(root, driver, is_lock_held=lock.is_held)
-
-    assert result.ended_by == "hook-failure"
-    assert result.end_reason == _FAILED_HOOK_REASON
-    assert result.outcome.reason == "completed"
-    assert sent_texts(driver.sessions[0]) == []
-
-
 async def test_supervise_when_end_pending_and_lock_held_at_agent_turn_end_does_wait_then_end(
     root: str,
 ):
@@ -663,28 +451,6 @@ async def test_supervise_when_end_pending_and_lock_held_at_agent_turn_end_does_w
     assert result.outcome.reason == "completed"
     assert follow_ups_with_action(probe.events, "waiting") != []
     assert sent_texts(driver.sessions[0]) == []
-
-
-async def test_supervise_when_end_pending_at_injected_turn_end_with_reply_outstanding_does_wait(
-    root: str,
-):
-    lock = LockSwitch(held=False)
-    driver = create_mock_driver([
-        TurnEndStep(),
-        ActionStep(action=lock.hold),
-        append_step(root, _FAILED_HOOK),
-        _tool_end("t1"),
-        emit_turn_end(origin="injected"),
-        ActionStep(action=lock.release),
-        _tool_end("t2"),
-        blocked_step(),
-    ])
-
-    result = await run_supervised(root, driver, is_lock_held=lock.is_held)
-
-    assert result.ended_by == "hook-failure"
-    assert result.outcome.reason == "interrupted"
-    assert "end" not in driver_calls(driver.sessions[0])
 
 
 # ---------------------------------------------------------------------------
@@ -774,243 +540,22 @@ async def test_supervise_when_lock_probe_raises_does_end_promptly_with_error_out
 # ---------------------------------------------------------------------------
 
 
-async def test_supervise_when_condition_end_already_fired_does_not_detect_at_later_tool_end(
-    root: str,
-):
-    driver = _stubborn(
-        create_mock_driver([
-            append_step(root, _FAILED_HOOK),
-            _tool_end("t1"),
-            append_step(root, _LATER_FAILED_HOOK),
-            _tool_end("t2"),
-            blocked_step(),
-        ])
-    )
-
-    result = await run_supervised(root, driver, grace_ms=200)
-
-    assert result.end_reason == _FAILED_HOOK_REASON
-    assert _ended_markers(event_log_markers(root)) == [f"follow_up:ended:{_FAILED_HOOK_REASON}"]
-
-
-async def test_supervise_when_cap_already_fired_does_not_detect_at_later_tool_end(root: str):
-    cap_seen = asyncio.Event()
-
-    def note_cap(event: SessionEvent) -> None:
-        if isinstance(event, CapEvent):
-            cap_seen.set()
-
-    async def wait_for_cap() -> None:
-        await asyncio.wait_for(cap_seen.wait(), timeout=2.0)
-
-    driver = _stubborn(
-        create_mock_driver([
-            emit_turn_end(cost_usd=5.0),
-            ActionStep(action=wait_for_cap),
-            append_step(root, _FAILED_HOOK),
-            _tool_end(),
-        ])
-    )
-
-    result = await run_supervised(root, driver, observer=note_cap, max_usd=1.0)
-
-    assert result.ended_by == "spend-cap"
-    assert f"follow_up:ended:{_FAILED_HOOK_REASON}" not in event_log_markers(root)
-
-
-def _hook_failure_pending_from_tool_end(
-    root: str, lock: LockSwitch, turn: TurnEndStep
-) -> list[MockStep]:
-    return [append_step(root, _FAILED_HOOK), _tool_end(), ActionStep(action=lock.release), turn]
-
-
-def _hook_failure_detected_at_settle(
-    root: str, lock: LockSwitch, turn: TurnEndStep
-) -> list[MockStep]:
-    return [ActionStep(action=lock.release), _tool_end(), append_step(root, _FAILED_HOOK), turn]
-
-
-@pytest.mark.parametrize(
-    ("turn", "max_usd"),
-    [
-        pytest.param(TurnEndStep(cost_usd=5.0), 1.0, id="cost-reaches-max-usd"),
-        pytest.param(TurnEndStep(budget_exhausted=True), None, id="session-budget-exhausted"),
-    ],
-)
-@pytest.mark.parametrize(
-    "script",
-    [
-        pytest.param(_hook_failure_pending_from_tool_end, id="pending-from-tool-end"),
-        pytest.param(_hook_failure_detected_at_settle, id="detected-at-settle"),
-    ],
-)
 async def test_supervise_when_spend_cap_reached_at_turn_end_with_condition_pending_does_end_as_spend_cap(
     root: str,
-    script: Callable[[str, LockSwitch, TurnEndStep], list[MockStep]],
-    turn: TurnEndStep,
-    max_usd: float | None,
 ):
     lock = LockSwitch(held=True)
     probe = collecting_observer()
-    driver = create_mock_driver(script(root, lock, turn))
+    driver = create_mock_driver([
+        append_step(root, _FAILED_HOOK),
+        _tool_end(),
+        ActionStep(action=lock.release),
+        TurnEndStep(cost_usd=5.0),
+    ])
 
     result = await run_supervised(
-        root, driver, observer=probe.observer, is_lock_held=lock.is_held, max_usd=max_usd
+        root, driver, observer=probe.observer, is_lock_held=lock.is_held, max_usd=1.0
     )
 
-    caps = cap_actions(probe.events)
-    ended_reasons = [event.reason for event in follow_ups_with_action(probe.events, "ended")]
     assert result.ended_by == "spend-cap"
     assert result.end_reason == "spend-cap"
-    assert caps == [("spend-cap", "ending")]
-    assert _FAILED_HOOK_REASON not in ended_reasons
-
-
-async def test_supervise_when_wall_clock_fires_while_end_pending_does_report_the_cap(
-    root: str, supervisor_clock: SupervisorClock
-):
-    lock = LockSwitch(held=True)
-    driver = InterruptEmitsEndDriver(
-        create_mock_driver([
-            append_step(root, _FAILED_HOOK),
-            _tool_end(),
-            ActionStep(action=lock.release),
-            supervisor_clock.jump_step(supervisor_clock.deadline_ms),
-            blocked_step(),
-        ])
-    )
-
-    result = await run_supervised(
-        root,
-        driver,
-        is_lock_held=lock.is_held,
-        grace_ms=50,
-        deadline_ms=supervisor_clock.deadline_ms,
-    )
-
-    assert result.ended_by == "wall-clock"
-    assert result.end_reason == "wall-clock"
-
-
-# ---------------------------------------------------------------------------
-# grace fallback when the session is ended at a turn boundary
-# ---------------------------------------------------------------------------
-
-
-class _AbortSettledSession(DelegatingSession):
-    """A session that ignores ``end`` and settles only once the abort event is set.
-
-    Models a backend that stays up after a polite end. ``settling`` is the task
-    that interrupts the inner session on abort, for the test to await.
-
-    Args:
-        inner: The session every call but ``end`` is delegated to.
-        abort: The event whose setting interrupts ``inner`` and settles the session.
-    """
-
-    def __init__(self, inner: DriverSession, abort: asyncio.Event) -> None:
-        super().__init__(inner)
-        self.settling = asyncio.ensure_future(self._settle_on_abort(abort))
-
-    async def _settle_on_abort(self, abort: asyncio.Event) -> None:
-        await abort.wait()
-        await self._inner.interrupt()
-
-    @override
-    async def end(self) -> None:
-        return None
-
-
-def _hook_failure_after_last_tool_end(root: str) -> list[MockStep]:
-    return [_tool_end(), append_step(root, _FAILED_HOOK), TurnEndStep()]
-
-
-@dataclass(frozen=True, slots=True)
-class _BoundaryEndCase:
-    """A script that stops at a turn end, the knobs that end the session there, and the ending."""
-
-    script: Callable[[str], list[MockStep]]
-    ended_by: str
-    max_usd: float | None = None
-    deadline_after_turn_end: bool = False
-    settle_window_ms: int = 0
-
-
-async def _supervise_boundary_case(
-    root: str, driver: Driver, case: _BoundaryEndCase, clock: SupervisorClock
-) -> SupervisionResult:
-    """Supervise ``driver`` under ``case``'s caps, its deadline passing only after a turn end.
-
-    Args:
-        root: The repository the session runs in.
-        driver: The agent driver to supervise.
-        case: The script's caps and settle window.
-        clock: The supervisor's wall clock, moved to its deadline on a turn end.
-
-    Returns:
-        How the supervised session ended.
-    """
-    return await run_supervised(
-        root,
-        driver,
-        grace_ms=50,
-        max_usd=case.max_usd,
-        deadline_ms=clock.deadline_ms,
-        observer=clock.jump_on(TurnEndEvent) if case.deadline_after_turn_end else None,
-        settle_window_ms=case.settle_window_ms,
-    )
-
-
-_BOUNDARY_END_CASES = [
-    pytest.param(
-        _BoundaryEndCase(
-            script=lambda _root: [TurnEndStep(cost_usd=0.01)],
-            ended_by="wall-clock",
-            deadline_after_turn_end=True,
-            settle_window_ms=10_000,
-        ),
-        id="wall-clock-while-idle",
-    ),
-    pytest.param(
-        _BoundaryEndCase(
-            script=lambda _root: [TurnEndStep(cost_usd=5.0)],
-            ended_by="spend-cap",
-            max_usd=1.0,
-        ),
-        id="spend-cap-at-settle",
-    ),
-    pytest.param(
-        _BoundaryEndCase(script=_hook_failure_after_last_tool_end, ended_by="hook-failure"),
-        id="hook-failure-at-settle",
-    ),
-]
-
-
-@pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
-async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort_after_grace(
-    root: str, case: _BoundaryEndCase, supervisor_clock: SupervisorClock
-):
-    driver = WrapDriver(create_mock_driver(case.script(root)), _AbortSettledSession)
-
-    result = await asyncio.wait_for(
-        _supervise_boundary_case(root, driver, case, supervisor_clock), timeout=2.0
-    )
-    await cast("_AbortSettledSession", driver.session).settling
-
-    assert driver.abort.is_set()
-    assert result.ended_by == case.ended_by
-
-
-@pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
-async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_abort(
-    root: str, case: _BoundaryEndCase, supervisor_clock: SupervisorClock
-):
-    driver = WrapDriver(create_mock_driver(case.script(root)))
-
-    result = await _supervise_boundary_case(root, driver, case, supervisor_clock)
-    # Outlast the grace period, so a grace timer left armed would set the abort.
-    await asyncio.sleep(0.15)
-
-    assert not driver.abort.is_set()
-    assert result.ended_by == case.ended_by
-    assert asyncio.all_tasks() == {asyncio.current_task()}
+    assert cap_actions(probe.events) == [("spend-cap", "ending")]

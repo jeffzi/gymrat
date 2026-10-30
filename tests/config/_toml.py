@@ -1,4 +1,4 @@
-"""Writers and ready-made documents for the ``gymrat.toml`` files tests put on disk.
+"""Writers for the ``gymrat.toml`` files tests put on disk, and a pre-existing one.
 
 Shared across the suite: the config, scaffold, and command tests all write their
 ``gymrat.toml`` through these.
@@ -7,50 +7,9 @@ Shared across the suite: the config, scaffold, and command tests all write their
 from pathlib import Path
 
 import tomli_w
-from typing_extensions import TypedDict
-
-from gymrat.config import HooksConfig, StopConfig
-
-#: A document whose decimal integer literal has more digits than the
-#: interpreter converts, so the TOML parser raises a plain ``ValueError``.
-DIGIT_LIMIT_DOCUMENT = "samples = 1" + "0" * 5000
-
-#: A document nested deeper than the interpreter's recursion limit, so the TOML
-#: parser raises ``RecursionError``.
-DEEP_NESTING_DOCUMENT = "bench = " + "[" * 100_000 + "]" * 100_000
 
 #: A ``gymrat.toml`` already on disk before a scaffold, so a test can see it left untouched.
 EXISTING_CONFIG = 'bench = "old"\n'
-
-
-#: The loop keys a fully configured ``gymrat.toml`` carries beside its bench.
-LOOP_CONFIG: dict[str, object] = {
-    "checks": "npm test",
-    "filter": "npm run bench -- {names}",
-    "primary": "decode/time",
-    "stop": {"target_value": 1.5, "max_iterations": 20},
-    "hooks": {"before": "npm run warm-cache", "after": "npm run cool-down"},
-}
-
-
-class LoopFields(TypedDict, closed=True):
-    """The config fields ``LOOP_CONFIG`` parses to, keyed by field name."""
-
-    checks: str
-    filter: str
-    primary: str
-    stop: StopConfig
-    hooks: HooksConfig
-
-
-#: What ``LOOP_CONFIG`` parses and settles to, ready to splat into a config.
-LOOP_FIELDS = LoopFields(
-    checks="npm test",
-    filter="npm run bench -- {names}",
-    primary="decode/time",
-    stop=StopConfig(target_value=1.5, max_iterations=20),
-    hooks=HooksConfig(before="npm run warm-cache", after="npm run cool-down"),
-)
 
 
 def write_raw(directory: Path, text: str, *, name: str = "gymrat.toml") -> Path:

@@ -22,11 +22,22 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import EndedBy, SupervisedSession
 
 
-#: The step a run closes on when it would have finalized but ``--no-finalize`` was passed.
-NOT_FINALIZED_STEP = ExitStep(kind="nothing", text="session left open (--no-finalize)")
+def is_kept_step(step: ExitStep, *, checks: str = "checks passed") -> bool:
+    """Whether ``step`` settles iteration 1 by keeping it.
 
-#: The step a run settles on when it keeps an improved iteration 1 whose checks passed.
-KEPT_STEP = ExitStep(kind="settled", text="settled: kept iteration 1 (checks passed)")
+    Args:
+        step: The step to inspect.
+        checks: The checks label the keep reports, which only a kept step carries.
+
+    Returns:
+        True when ``step`` is a settled step naming iteration 1 under ``checks``.
+    """
+    return step.kind == "settled" and "iteration 1" in step.text and checks in step.text
+
+
+def is_left_open_step(step: ExitStep) -> bool:
+    """Whether ``step`` reports the session left open because ``--no-finalize`` was passed."""
+    return step.kind == "nothing" and "--no-finalize" in step.text
 
 
 class ExitRun(NamedTuple):

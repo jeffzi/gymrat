@@ -44,11 +44,6 @@ def stripped_cells(line: str) -> list[str]:
     return [cell.strip() for cell in cells_of(line)]
 
 
-def rule_lines(report: str) -> list[str]:
-    """Every table rule of ``report``, styling stripped, in report order."""
-    return [bare for line in report.split("\n") if _RULE.match(bare := strip_ansi(line))]
-
-
 def delta_cell(line: str) -> str:
     """The last cell of a rendered table line — the delta/verdict column."""
     return cells_of(line)[-1]
@@ -136,6 +131,41 @@ def styles_at(line: str, marker: str, *, last: bool = False) -> list[str]:
     return params
 
 
+def word_styles(line: str) -> list[tuple[str, list[str]]]:
+    r"""Each whitespace-separated word of ``line`` with the SGR parameters opened right before it.
+
+    Escape codes are parsed out before the text is split, so a digit inside an
+    escape (``\x1b[1m``, a truecolor component) can never be mistaken for a word.
+    Like `styles_at`, only the unbroken run of escapes touching a word counts, and
+    resets are dropped.
+
+    Args:
+        line: One rendered line, escape codes included.
+
+    Returns:
+        ``(word, params)`` pairs in reading order.
+    """
+    pending: list[str] = []
+    position = 0
+    texts: list[tuple[str, list[str]]] = []
+    for escape in SGR_RE.finditer(line):
+        text = line[position : escape.start()]
+        if text:
+            texts.append((text, pending))
+            pending = []
+        attributes = sgr_attributes(escape.group(1).split(";"))
+        pending = [*pending, *(param for param in attributes if param not in {"", "0"})]
+        position = escape.end()
+    if line[position:]:
+        texts.append((line[position:], pending))
+    words: list[tuple[str, list[str]]] = []
+    for text, opened in texts:
+        for index, word in enumerate(text.split()):
+            touches = index == 0 and not text[0].isspace()
+            words.append((word, opened if touches else []))
+    return words
+
+
 def sgr_for(style: str) -> list[str]:
     """The SGR parameters rich opens for the rich ``style``, as `styles_at` reads them.
 
@@ -150,22 +180,6 @@ def sgr_for(style: str) -> list[str]:
         The SGR parameters a span in ``style`` opens, in the order they open.
     """
     return styles_at(render_colored(markup("x", style)), "x")
-
-
-def offsets_of(line: str, glyph: str) -> list[int]:
-    """Character offsets of every occurrence of ``glyph`` in a rendered line.
-
-    Two table lines whose ``│`` separators sit at the same offsets have aligned
-    columns.
-
-    Args:
-        line: One rendered line.
-        glyph: The text to locate.
-
-    Returns:
-        The start offset of each occurrence, left to right.
-    """
-    return [match.start() for match in re.finditer(re.escape(glyph), line)]
 
 
 def table_region(report: str) -> list[str]:

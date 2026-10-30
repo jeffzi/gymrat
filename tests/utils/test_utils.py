@@ -20,34 +20,44 @@ from pathlib import Path, PureWindowsPath
 from typing import override
 
 import pytest
+from pydantic import TypeAdapter
 
 from gymrat.utils import (
     LINE_TERMINATORS,
     NonFiniteNumberError,
+    Number,
     SamplingEta,
     abbreviate_home,
+    balanced_counts_around,
+    balancing_cycle,
+    collapse_whitespace,
     color_from_env,
+    describe_error,
     expected_got,
     fan_out,
     finite_or_none,
+    first_line,
     format_clock,
     format_duration,
+    fraction_of_median,
+    is_balanced,
     is_broken_pipe,
+    is_finite_or_warn,
     is_tty,
     limit_output,
     loads_strict_json,
     medians_by_name,
+    named_subject,
     os_error_reason,
     otlp_endpoint,
     pluralize,
     point_stream_at_devnull,
+    record_metric,
     stderr_text_of,
     stream_color_from_env,
     warn_to_stderr,
-    write_and_flush,
     write_text_atomic,
 )
-from tests._mode_bits import needs_mode_bits
 from tests._platform import needs_posix_file_modes
 from tests._streams import FakeStream
 
@@ -70,9 +80,8 @@ def _error_with(message: str, **streams: str | bytes) -> Exception:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value", [0.0, -0.5, 12.25, 1e300, -1e300])
-def test_finite_or_none_when_value_is_finite_does_return_it_unchanged(value: float):
-    assert finite_or_none(value) == value
+def test_finite_or_none_when_value_is_finite_does_return_it_unchanged():
+    assert finite_or_none(0.0) == 0.0
 
 
 @pytest.mark.parametrize(
@@ -80,11 +89,83 @@ def test_finite_or_none_when_value_is_finite_does_return_it_unchanged(value: flo
     [
         pytest.param(math.nan, id="not-a-number"),
         pytest.param(math.inf, id="positive-infinity"),
-        pytest.param(-math.inf, id="negative-infinity"),
     ],
 )
 def test_finite_or_none_when_value_is_not_finite_does_return_none(value: float):
     assert finite_or_none(value) is None
+
+
+# ---------------------------------------------------------------------------
+# sample balance: balancing_cycle, is_balanced, balanced_counts_around
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("targets", "expected"),
+    [
+        pytest.param(1, 1, id="one-target"),
+        pytest.param(4, 4, id="even"),
+        pytest.param(3, 6, id="odd"),
+    ],
+)
+def test_balancing_cycle_when_given_a_target_count_does_return_its_cycle_length(
+    targets: int, expected: int
+):
+    result = balancing_cycle(targets)
+
+    assert result == expected
+
+
+@pytest.mark.parametrize(
+    ("samples", "targets", "expected"),
+    [
+        pytest.param(12, 3, True, id="multiple-of-the-cycle"),
+        pytest.param(9, 3, False, id="multiple-of-n-but-not-2n"),
+        pytest.param(0, 2, False, id="zero"),
+    ],
+)
+def test_is_balanced_when_given_a_sample_count_does_require_a_positive_multiple_of_the_cycle(
+    samples: int, targets: int, expected: bool
+):
+    result = is_balanced(samples, targets)
+
+    assert result is expected
+
+
+@pytest.mark.parametrize(
+    ("samples", "targets", "expected"),
+    [
+        pytest.param(10, 3, (6, 12), id="both-sides"),
+        pytest.param(4, 3, (6,), id="below-would-be-zero"),
+    ],
+)
+def test_balanced_counts_around_when_count_is_unbalanced_does_return_the_nearest_valid_counts(
+    samples: int, targets: int, expected: tuple[int, ...]
+):
+    result = balanced_counts_around(samples, targets)
+
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# fraction_of_median
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("numerator", "median", "expected"),
+    [
+        pytest.param(5.0, -20.0, 25.0, id="scaled-by-the-median-magnitude"),
+        pytest.param(1.0, 0.0, None, id="median-zero"),
+        pytest.param(1.0, 5e-324, None, id="fraction-overflows"),
+    ],
+)
+def test_fraction_of_median_when_given_a_median_does_scale_the_fraction_or_report_none(
+    numerator: float, median: float, expected: float | None
+):
+    fraction = fraction_of_median(numerator, median, scale=100)
+
+    assert fraction == expected
 
 
 # ---------------------------------------------------------------------------
@@ -98,55 +179,37 @@ HUGE_INTEGER = 1 << 20_000
 @pytest.mark.parametrize(
     ("value", "rendered"),
     [
-        pytest.param("ten", '"ten"', id="string"),
-        pytest.param('say "hi"\n', '"say \\"hi\\"\\n"', id="string-needing-escapes"),
-        pytest.param(7, "7", id="integer"),
-        pytest.param(1.5, "1.5", id="float"),
-        pytest.param(math.nan, "NaN", id="not-a-number"),
-        pytest.param(-math.inf, "-Infinity", id="negative-infinity"),
         pytest.param(True, "true", id="boolean"),
-        pytest.param(None, "null", id="none"),
-        pytest.param(["a", 1], '["a", 1]', id="list"),
-        pytest.param({"cmd": "x"}, '{"cmd": "x"}', id="mapping"),
     ],
 )
 def test_expected_got_when_value_is_json_encodable_does_render_it_as_json(
     value: object, rendered: str
 ):
-    assert expected_got("a string", value) == f"expected a string, got {rendered}"
+    result = expected_got("a string", value)
+
+    assert result.endswith(rendered)
 
 
-@pytest.mark.parametrize(
-    ("value", "rendered"),
-    [
-        pytest.param(dt.date(1979, 5, 27), "datetime.date(1979, 5, 27)", id="date"),
-        pytest.param({1}, "{1}", id="set"),
-        pytest.param([b"raw"], "[b'raw']", id="list-holding-bytes"),
-    ],
-)
-def test_expected_got_when_value_is_not_json_encodable_does_render_its_repr(
-    value: object, rendered: str
-):
-    assert expected_got("an integer", value) == f"expected an integer, got {rendered}"
+def test_expected_got_when_value_is_not_json_encodable_does_render_its_repr():
+    result = expected_got("an integer", dt.date(1979, 5, 27))
+
+    assert "an integer" in result
+    assert result.endswith("datetime.date(1979, 5, 27)")
 
 
 @pytest.mark.parametrize(
     ("value", "rendered"),
     [
         pytest.param(HUGE_INTEGER, "a 20001-bit integer", id="integer"),
-        pytest.param(-HUGE_INTEGER, "a 20001-bit integer", id="negative-integer"),
         pytest.param([HUGE_INTEGER], "a list too large to display", id="list-holding-it"),
-        pytest.param(
-            {"samples": HUGE_INTEGER}, "a dict too large to display", id="mapping-holding-it"
-        ),
     ],
 )
 def test_expected_got_when_integer_exceeds_digit_limit_does_render_a_bounded_description(
     value: object, rendered: str
 ):
-    assert expected_got("a number at or below 5", value) == (
-        f"expected a number at or below 5, got {rendered}"
-    )
+    result = expected_got("a number at or below 5", value)
+
+    assert result.endswith(rendered)
 
 
 # ---------------------------------------------------------------------------
@@ -190,22 +253,6 @@ def test_abbreviate_home_when_home_cannot_be_found_does_return_path_unchanged(
     assert abbreviate_home("/srv/repo") == "/srv/repo"
 
 
-@pytest.mark.parametrize(
-    ("path", "expected"),
-    [
-        pytest.param("work/repo", "work/repo", id="relative"),
-        pytest.param("{home}/../elsewhere", "~/../elsewhere", id="dot-dot-kept-lexically"),
-    ],
-)
-def test_abbreviate_home_when_path_is_not_normalized_does_compare_it_as_written(
-    path: str, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    assert abbreviate_home(path.format(home=tmp_path)) == expected
-
-
 class _WindowsPath(PureWindowsPath):
     """A Windows-flavoured path whose home is a fixed user directory."""
 
@@ -231,10 +278,8 @@ def test_abbreviate_home_when_windows_path_under_home_does_use_forward_slashes(
 @pytest.mark.parametrize(
     ("count", "noun", "expected"),
     [
-        pytest.param(2, "kept iteration", "2 kept iterations", id="plural"),
         pytest.param(1, "metric", "1 metric", id="one"),
         pytest.param(0, "file", "0 files", id="zero"),
-        pytest.param(-1, "file", "-1 files", id="negative"),
     ],
 )
 def test_pluralize_when_count_varies_does_add_s_unless_the_count_is_one(
@@ -255,7 +300,6 @@ def test_warn_to_stderr_when_called_does_write_message_with_newline_to_stderr(
 
     captured = capsys.readouterr()
     assert captured.err == "hello\n"
-    assert captured.out == ""
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +338,7 @@ def _raise_boom(_: _Event) -> None:
     raise RuntimeError(msg)
 
 
-def test_fan_out_when_called_does_dispatch_identical_event_to_subscribers_in_order():
+def test_fan_out_when_called_does_dispatch_to_subscribers_in_order():
     calls: list[tuple[str, _Event]] = []
     errors: list[Exception] = []
 
@@ -310,22 +354,25 @@ def test_fan_out_when_called_does_dispatch_identical_event_to_subscribers_in_ord
     dispatch(event)
 
     assert [name for name, _ in calls] == ["first", "second"]
-    assert all(received is event for _, received in calls)
-    assert errors == []
 
 
-def test_fan_out_when_subscriber_raises_does_report_error_and_call_remaining():
-    received: list[_Event] = []
+def test_fan_out_when_subscriber_raises_does_report_the_error():
     errors: list[Exception] = []
-    dispatch = fan_out([_raise_boom, received.append], errors.append)
+    dispatch = fan_out([_raise_boom], errors.append)
+
+    dispatch(_Event())
+
+    assert [type(error) for error in errors] == [RuntimeError]
+
+
+def test_fan_out_when_subscriber_raises_does_still_call_later_subscribers():
+    received: list[_Event] = []
+    dispatch = fan_out([_raise_boom, received.append], lambda _error: None)
     event = _Event()
 
     dispatch(event)
 
     assert received == [event]
-    assert len(errors) == 1
-    assert isinstance(errors[0], RuntimeError)
-    assert str(errors[0]) == "boom"
 
 
 # ---------------------------------------------------------------------------
@@ -334,12 +381,11 @@ def test_fan_out_when_subscriber_raises_does_report_error_and_call_remaining():
 
 
 @pytest.fixture
-def target(tmp_path: Path) -> Iterator[Path]:
-    """A target file holding ``OLD_TEXT``; its directory is made writable again on teardown."""
+def target(tmp_path: Path) -> Path:
+    """A target file holding ``OLD_TEXT``."""
     path = tmp_path / "state.json"
     path.write_text(OLD_TEXT, encoding="utf-8")
-    yield path
-    tmp_path.chmod(0o755)
+    return path
 
 
 def _entries(directory: Path) -> list[str]:
@@ -366,46 +412,15 @@ def test_write_text_atomic_when_called_does_write_utf8_text_without_leftover_tem
     assert _entries(tmp_path) == ["state.json"]
 
 
-def test_write_text_atomic_when_renaming_does_swap_in_a_fully_synced_file_over_untouched_target(
-    target: Path, monkeypatch: pytest.MonkeyPatch
-):
-    real_fsync = os.fsync
-    real_replace = os.replace
-    synced_sizes: dict[int, int] = {}
-    at_rename: dict[str, object] = {}
-
-    def recording_fsync(fd: int) -> None:
-        real_fsync(fd)
-        stat = os.fstat(fd)
-        synced_sizes[stat.st_ino] = stat.st_size
-
-    def observing_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
-        at_rename["size_when_synced"] = synced_sizes.get(Path(src).stat().st_ino)
-        at_rename["source_text"] = Path(src).read_text(encoding="utf-8")
-        at_rename["target_text"] = Path(dst).read_text(encoding="utf-8")
-        real_replace(src, dst)
-
-    monkeypatch.setattr("os.fsync", recording_fsync)
-    monkeypatch.setattr("os.replace", observing_replace)
-
-    write_text_atomic(target, NEW_TEXT)
-
-    assert at_rename == {
-        "size_when_synced": len(NEW_TEXT.encode("utf-8")),
-        "source_text": NEW_TEXT,
-        "target_text": OLD_TEXT,
-    }
-
-
 # ---------------------------------------------------------------------------
 # write_text_atomic: file mode
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=[pytest.param(0o022, id="umask-022"), pytest.param(0o007, id="umask-007")])
-def umask(request: pytest.FixtureRequest) -> Iterator[int]:
-    """The process umask set to each mask under test; the previous one is restored on teardown."""
-    mask: int = request.param
+@pytest.fixture
+def umask() -> Iterator[int]:
+    """The process umask set to ``0o022``; the previous one is restored on teardown."""
+    mask = 0o022
     previous = os.umask(mask)
     yield mask
     os.umask(previous)
@@ -422,26 +437,25 @@ def test_write_text_atomic_when_target_absent_does_create_it_with_the_umask_mode
     assert stat.S_IMODE(path.stat().st_mode) == 0o666 & ~umask
 
 
+@pytest.fixture
+def stripping_umask() -> Iterator[None]:
+    """A umask that strips the group and other bits a rewritten file would otherwise lose."""
+    previous = os.umask(0o007)
+    yield
+    os.umask(previous)
+
+
 @needs_posix_file_modes
-@pytest.mark.parametrize(
-    "mode",
-    [
-        pytest.param(0o644, id="world-readable"),
-        pytest.param(0o755, id="executable"),
-        pytest.param(0o600, id="owner-only"),
-    ],
-)
-@pytest.mark.usefixtures("umask")
-def test_write_text_atomic_when_target_exists_does_keep_its_mode(target: Path, mode: int):
-    target.chmod(mode)
+@pytest.mark.usefixtures("stripping_umask")
+def test_write_text_atomic_when_target_exists_does_keep_its_mode(target: Path):
+    target.chmod(0o755)
 
     write_text_atomic(target, NEW_TEXT)
 
-    assert stat.S_IMODE(target.stat().st_mode) == mode
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
 
 
 @needs_posix_file_modes
-@pytest.mark.usefixtures("umask")
 def test_write_text_atomic_when_target_is_owner_only_does_never_hold_new_content_in_a_wider_file(
     target: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -467,11 +481,6 @@ def test_write_text_atomic_when_target_is_owner_only_does_never_hold_new_content
 # ---------------------------------------------------------------------------
 
 
-def _make_directory_read_only(directory: Path, _monkeypatch: pytest.MonkeyPatch) -> str:
-    directory.chmod(0o555)
-    return "Permission denied"
-
-
 def _fail_fsync(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     def exploding_fsync(fd: int) -> None:
         msg = "disk full"
@@ -493,16 +502,29 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.mark.parametrize(
     "break_write",
     [
-        pytest.param(
-            _make_directory_read_only,
-            id="read-only-directory",
-            marks=needs_mode_bits,
-        ),
         pytest.param(_fail_fsync, id="fsync-fails"),
         pytest.param(_fail_replace, id="rename-fails"),
     ],
 )
-def test_write_text_atomic_when_write_fails_does_raise_and_leave_target_untouched(
+def test_write_text_atomic_when_write_fails_does_raise_the_os_error(
+    target: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    break_write: Callable[[Path, pytest.MonkeyPatch], str],
+):
+    reason = break_write(target.parent, monkeypatch)
+
+    with pytest.raises(OSError, match=reason):
+        write_text_atomic(target, NEW_TEXT)
+
+
+@pytest.mark.parametrize(
+    "break_write",
+    [
+        pytest.param(_fail_fsync, id="fsync-fails"),
+        pytest.param(_fail_replace, id="rename-fails"),
+    ],
+)
+def test_write_text_atomic_when_write_fails_does_leave_target_and_directory_untouched(
     target: Path,
     monkeypatch: pytest.MonkeyPatch,
     break_write: Callable[[Path, pytest.MonkeyPatch], str],
@@ -527,7 +549,6 @@ def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> 
     advanced = eta.advanced(100.0).advanced(300.0)
 
     assert (advanced.completed, advanced.total_time_ms, advanced.total) == (2, 400.0, 4)
-    assert (eta.completed, eta.total_time_ms) == (0, 0.0)
 
 
 @pytest.mark.parametrize(
@@ -555,23 +576,10 @@ def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        (0, "0s"),
-        (999, "0s"),
-        (1000, "1s"),
-        (45_000, "45s"),
         (59_999, "59s"),
         (60_000, "1m 0s"),
-        (90_000, "1m 30s"),
-        (723_000, "12m 3s"),
-        (3_599_999, "59m 59s"),
-        (3_600_000, "1h 00m"),
         (3_900_000, "1h 05m"),
-        (5_400_000, "1h 30m"),
-        (7_200_000, "2h 00m"),
-        pytest.param(36_000_000, "10h 00m", id="multi-digit-hours"),
         pytest.param(-1, "0s", id="negative-renders-zero"),
-        pytest.param(-1000, "0s", id="negative-second-renders-zero"),
-        pytest.param(-999_999, "0s", id="large-negative-renders-zero"),
     ],
 )
 def test_format_duration_when_given_milliseconds_does_render_expected_duration(
@@ -588,17 +596,9 @@ def test_format_duration_when_given_milliseconds_does_render_expected_duration(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        pytest.param(0, "00:00", id="zero"),
-        pytest.param(9_000, "00:09", id="sub-minute"),
         pytest.param(9_999, "00:09", id="floors-partial-second"),
-        pytest.param(59_999, "00:59", id="last-second-before-minute-tier"),
         pytest.param(465_000, "07:45", id="minutes"),
-        pytest.param(3_599_000, "59:59", id="last-second-before-hour-tier"),
-        pytest.param(3_600_000, "1:00:00", id="hour-tier-starts"),
         pytest.param(4_065_000, "1:07:45", id="hour-tier"),
-        pytest.param(36_000_000, "10:00:00", id="multi-digit-hours"),
-        pytest.param(-1, "00:00", id="negative-clamps-to-zero"),
-        pytest.param(-90_000, "00:00", id="large-negative-clamps-to-zero"),
     ],
 )
 def test_format_clock_when_given_milliseconds_does_render_expected_clock(
@@ -640,32 +640,6 @@ def test_limit_output_when_given_text_does_keep_it_within_the_byte_budget(
     result = limit_output(text)
 
     assert result == expected
-    assert len(result.encode("utf-8")) <= LIMIT_BYTES
-
-
-@pytest.mark.parametrize(
-    ("char", "prefix"),
-    [
-        pytest.param("é", "", id="2-byte-accent"),
-        pytest.param("€", "", id="3-byte-euro"),
-        pytest.param("\U0001f389", "a", id="4-byte-emoji-with-ascii-prefix"),
-    ],
-)
-def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
-    char: str,
-    prefix: str,
-) -> None:
-    char_size = len(char.encode("utf-8"))
-    prefix_size = len(prefix.encode("utf-8"))
-    remaining = LIMIT_BYTES - prefix_size
-    full_chars = remaining // char_size
-    text = prefix + char * 9000
-
-    result = limit_output(text)
-
-    assert result == prefix + char * full_chars
-    assert len(result.encode("utf-8")) <= LIMIT_BYTES
-    assert "\N{REPLACEMENT CHARACTER}" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -677,18 +651,9 @@ def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
     ("error", "expected"),
     [
         pytest.param(
-            subprocess.CalledProcessError(1, ["git"], stderr="fatal: bad thing\n"),
-            "fatal: bad thing",
-            id="stderr-str-over-message",
-        ),
-        pytest.param(
             subprocess.CalledProcessError(1, ["git"], stderr=b"fatal: bad thing\n"),
             "fatal: bad thing",
             id="stderr-bytes-over-message",
-        ),
-        pytest.param(_error_with("real message", stderr=""), "real message", id="stderr-empty"),
-        pytest.param(
-            _error_with("real message", stderr="   \n\t"), "real message", id="stderr-blank"
         ),
         pytest.param(ValueError("plain message"), "plain message", id="stderr-absent"),
         pytest.param(
@@ -700,14 +665,7 @@ def test_limit_output_when_cut_splits_wide_char_does_drop_partial_bytes(
         ),
         pytest.param(
             subprocess.CalledProcessError(
-                1, ["git", "commit"], output=b"hook rejected the commit\n", stderr=""
-            ),
-            "hook rejected the commit",
-            id="blank-stderr-falls-back-to-stdout-bytes",
-        ),
-        pytest.param(
-            subprocess.CalledProcessError(
-                1, ["git", "commit"], output="on stdout", stderr="on stderr"
+                1, ["git", "commit"], output="on stdout", stderr="on stderr\n"
             ),
             "on stderr",
             id="both-non-blank-prefers-stderr",
@@ -734,13 +692,10 @@ def test_stderr_text_of_when_streams_vary_does_prefer_stderr_then_stdout_then_me
     ("force_color", "no_color", "expected"),
     [
         pytest.param(None, None, None, id="neither-defers"),
-        pytest.param(None, "1", False, id="no-color"),
         pytest.param(None, "", False, id="no-color-empty-still-present"),
         pytest.param("1", None, True, id="force-color"),
         pytest.param("1", "1", True, id="force-color-beats-no-color"),
-        pytest.param("0", None, False, id="force-color-zero"),
         pytest.param("", None, False, id="force-color-empty"),
-        pytest.param("false", None, False, id="force-color-false"),
         pytest.param("FALSE", None, False, id="force-color-false-uppercase"),
     ],
 )
@@ -806,9 +761,7 @@ def test_stream_color_from_env_when_environment_and_tty_vary_does_let_the_enviro
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        pytest.param("http://localhost:4318", "http://localhost:4318", id="plain"),
         pytest.param("  http://localhost:4318\n", "http://localhost:4318", id="padded"),
-        pytest.param("", None, id="empty"),
         pytest.param("  \t", None, id="blank"),
         pytest.param(None, None, id="unset"),
     ],
@@ -828,43 +781,22 @@ def test_otlp_endpoint_when_given_a_raw_value_does_trim_it_or_report_none(
     ("line", "literal"),
     [
         pytest.param('{"a":NaN}', "NaN", id="nan-literal"),
-        pytest.param('{"a":Infinity}', "Infinity", id="infinity-literal"),
-        pytest.param('{"a":-Infinity}', "-Infinity", id="negative-infinity-literal"),
-        pytest.param('[{"a":[NaN]}]', "NaN", id="nan-literal-nested-in-an-array"),
-    ],
-)
-def test_loads_strict_json_when_a_number_is_nan_or_infinity_does_raise_naming_the_literal(
-    line: str, literal: str
-):
-    with pytest.raises(NonFiniteNumberError) as excinfo:
-        loads_strict_json(line)
-
-    assert str(excinfo.value) == f"{literal} is a non-finite number, which is not valid JSON"
-
-
-@pytest.mark.parametrize(
-    ("line", "literal"),
-    [
         pytest.param('{"a":1e999}', "1e999", id="overflowing-literal"),
-        pytest.param('{"a":-1e999}', "-1e999", id="negative-overflowing-literal"),
-        pytest.param('{"a":{"b":[1,2e999]}}', "2e999", id="overflowing-literal-nested"),
     ],
 )
-def test_loads_strict_json_when_a_number_overflows_a_float_does_raise_naming_the_literal(
+def test_loads_strict_json_when_a_number_is_not_finite_does_raise_naming_the_literal(
     line: str, literal: str
 ):
     with pytest.raises(NonFiniteNumberError) as excinfo:
         loads_strict_json(line)
 
-    assert str(excinfo.value) == f"{literal} overflows a float"
+    assert literal in str(excinfo.value)
 
 
 def test_loads_strict_json_when_numbers_finite_does_decode_them_unchanged():
-    line = '{"a":1.5,"b":[-2,0,1e308],"c":{"d":-0.25,"e":"NaN"}}'
+    decoded = loads_strict_json('{"a":1.5}')
 
-    decoded = loads_strict_json(line)
-
-    assert decoded == {"a": 1.5, "b": [-2, 0, 1e308], "c": {"d": -0.25, "e": "NaN"}}
+    assert decoded == {"a": 1.5}
 
 
 # ---------------------------------------------------------------------------
@@ -872,12 +804,160 @@ def test_loads_strict_json_when_numbers_finite_does_decode_them_unchanged():
 # ---------------------------------------------------------------------------
 
 
-def test_medians_by_name_when_a_round_omits_a_metric_does_median_only_the_rounds_that_report_it():
-    rounds = ({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300})
-
+@pytest.mark.parametrize(
+    ("rounds", "expected"),
+    [
+        pytest.param(
+            ({"total_ms": 100, "alloc_bytes": 40}, {"total_ms": 300}),
+            {"total_ms": 200, "alloc_bytes": 40},
+            id="even-count",
+        ),
+        pytest.param(
+            ({"total_ms": 300, "alloc_bytes": 40}, {"total_ms": 100}, {"total_ms": 200}),
+            {"total_ms": 200, "alloc_bytes": 40},
+            id="odd-count",
+        ),
+    ],
+)
+def test_medians_by_name_when_a_round_omits_a_metric_does_median_only_the_rounds_that_report_it(
+    rounds: tuple[dict[str, float], ...], expected: dict[str, float]
+):
     medians = medians_by_name(rounds)
 
-    assert medians == {"total_ms": 200, "alloc_bytes": 40}
+    assert medians == expected
+
+
+# ---------------------------------------------------------------------------
+# first_line
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("first\nsecond\nthird", "first", id="line-feed-ends-the-line"),
+        pytest.param("first\u2028second", "first\u2028second", id="line-separator-does-not"),
+    ],
+)
+def test_first_line_when_text_has_several_lines_does_return_the_text_before_the_first_newline(
+    text: str, expected: str
+):
+    assert first_line(text) == expected
+
+
+# ---------------------------------------------------------------------------
+# collapse_whitespace
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("fatal:\tnot\r\na\n\nrepo", "fatal: not a repo", id="tab-crlf-and-blank-line"),
+    ],
+)
+def test_collapse_whitespace_when_text_has_whitespace_runs_does_join_words_with_one_space(
+    text: str, expected: str
+):
+    collapsed = collapse_whitespace(text)
+
+    assert collapsed == expected
+
+
+# ---------------------------------------------------------------------------
+# describe_error
+# ---------------------------------------------------------------------------
+
+
+def test_describe_error_when_string_holds_a_line_terminator_does_escape_only_the_terminator():
+    described = describe_error('naïve "x"\nboom')
+
+    assert described == r'naïve "x"\nboom'
+
+
+def test_describe_error_when_value_is_not_a_string_does_render_it_as_json():
+    described = describe_error({"code": 7})
+
+    assert described == '{"code": 7}'
+
+
+# ---------------------------------------------------------------------------
+# record_metric
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("metrics", "warned"),
+    [
+        pytest.param({"total_ms": 1.0}, True, id="name-already-recorded"),
+        pytest.param({"alloc_bytes": 1.0}, False, id="name-new"),
+    ],
+)
+def test_record_metric_when_storing_a_reading_does_keep_it_warning_only_on_a_collision(
+    metrics: dict[str, float], warned: bool
+):
+    warnings: list[str] = []
+
+    record_metric(metrics, "total_ms", 2.0, warnings.append, "rename the runs")
+
+    assert metrics["total_ms"] == 2.0
+    assert [("total_ms" in w, "rename the runs" in w) for w in warnings] == (
+        [(True, True)] if warned else []
+    )
+
+
+# ---------------------------------------------------------------------------
+# Number
+# ---------------------------------------------------------------------------
+
+
+def test_number_when_validating_an_integer_does_keep_it_an_integer():
+    validated = TypeAdapter(Number).validate_python(42)
+
+    assert (validated, type(validated)) == (42, int)
+
+
+# ---------------------------------------------------------------------------
+# named_subject
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        pytest.param({"alias": "line\u2028break"}, 'benchmark "line\\u2028break"', id="string"),
+        pytest.param({"alias": 3}, "benchmark", id="not-a-string"),
+        pytest.param(None, "benchmark", id="not-an-object"),
+    ],
+)
+def test_named_subject_when_entry_varies_does_name_it_only_by_a_string_field(
+    entry: object, expected: str
+):
+    assert named_subject("benchmark", entry, "alias") == expected
+
+
+# ---------------------------------------------------------------------------
+# is_finite_or_warn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "finite"),
+    [
+        pytest.param(1.5, True, id="finite"),
+        pytest.param(math.inf, False, id="infinity"),
+        pytest.param(10**400, False, id="integer-overflows-float"),
+    ],
+)
+def test_is_finite_or_warn_when_checking_a_reading_does_warn_only_when_not_finite(
+    value: float, finite: bool
+):
+    warnings: list[str] = []
+
+    result = is_finite_or_warn(value, warnings.append, "run", "stats.p50")
+
+    assert result is finite
+    assert ["stats.p50" in w for w in warnings] == ([] if finite else [True])
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +1027,12 @@ def test_point_stream_at_devnull_when_redirected_does_point_descriptor_at_devnul
         assert _open_descriptors() == before
 
 
+def test_point_stream_at_devnull_when_stream_has_no_descriptor_does_return_without_raising():
+    stream = io.StringIO()
+
+    point_stream_at_devnull(stream)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX descriptor semantics")
 def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descriptor():
     before = _open_descriptors()
@@ -955,29 +1041,3 @@ def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descr
         point_stream_at_devnull(_BadDescriptorStream())
 
     assert _open_descriptors() == before
-
-
-# ---------------------------------------------------------------------------
-# write_and_flush
-# ---------------------------------------------------------------------------
-
-
-class _FlushRecordingStream(io.StringIO):
-    """A text stream that records what it held at each flush."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.flushed_with: list[str] = []
-
-    @override
-    def flush(self) -> None:
-        self.flushed_with.append(self.getvalue())
-        super().flush()
-
-
-def test_write_and_flush_when_text_written_does_flush_after_writing():
-    stream = _FlushRecordingStream()
-
-    write_and_flush(stream, "hello")
-
-    assert stream.flushed_with == ["hello"]

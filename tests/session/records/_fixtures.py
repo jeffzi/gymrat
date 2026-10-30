@@ -13,6 +13,7 @@ from typing import Any, Literal, overload
 
 from pydantic import BaseModel
 
+from gymrat.loop.start import StartResult
 from gymrat.session.paths import (
     archived_session_path,
     baseline_worktree_dir,
@@ -335,6 +336,26 @@ def session_state(**changes: Any) -> SessionState:
         The empty session state with ``changes`` applied.
     """
     return replace(empty_session_state(), **changes)
+
+
+#: The id of the finalized session a reopened start archived.
+ARCHIVED_SESSION_ID = "20260701-120000-beef"
+
+#: Where that finalized session's log was moved.
+ARCHIVED_SESSION_PATH = "/repo/.gymrat/archive/20260701-120000-beef"
+
+
+def start_result(**overrides: Any) -> StartResult:
+    """A brand-new session's start result (not resumed, nothing archived).
+
+    Args:
+        **overrides: Field values that replace the fresh start's.
+
+    Returns:
+        The fresh start result with ``overrides`` applied.
+    """
+    fresh = StartResult(session=session_record(), state=empty_session_state(), resumed=False)
+    return replace(fresh, **overrides)
 
 
 def write_session_log(

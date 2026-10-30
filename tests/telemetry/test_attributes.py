@@ -1,10 +1,12 @@
-"""Tests for record-to-attribute mapping (pure dict, no OTel imports)."""
+"""Tests for record-to-attribute mapping and the command span a record starts."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any
 
 import pytest
+from opentelemetry.context import Context
+from opentelemetry.trace import StatusCode
 
 from gymrat.session.records import (
     CommandRecord,
@@ -12,24 +14,15 @@ from gymrat.session.records import (
     SessionLogRecord,
     record_event,
 )
-from gymrat.telemetry.command_span import command_attributes
-from gymrat.telemetry.run_spans import run_attributes
+from gymrat.telemetry.command_span import command_attributes, start_command_span
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,
-    blocked_keep,
     command_record,
     committed_keep,
-    discard_record,
-    finalize_record,
-    hook_record,
     iteration_record,
-    stop_record,
 )
-from tests.supervisor._fixtures import make_launch
-
-if TYPE_CHECKING:
-    from gymrat.supervisor.events import LaunchEvent
+from tests.telemetry._fixtures import memory_tracing, span_by_name
 
 # ---------------------------------------------------------------------------
 # command_attributes
@@ -91,50 +84,55 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
 
 
 # ---------------------------------------------------------------------------
-# run_attributes
+# start_command_span
 # ---------------------------------------------------------------------------
 
 
-_FIXED_RUN_ATTRIBUTES = {
-    "gymrat.session.id": SESSION_ID,
-    "gymrat.run.head_sha": "abc123def",
-    "gymrat.run.max_minutes": 60.0,
-    "gen_ai.provider.name": "anthropic",
-}
+def _start_and_end_command_span(record: CommandRecord) -> Any:
+    with memory_tracing(SESSION_ID) as exporter:
+        start_command_span(
+            record, session_id=SESSION_ID, line_number=2, context=Context(), start_time=1
+        ).end()
+    return span_by_name(exporter.get_finished_spans(), f"gymrat.command.{record.name}")
 
 
 @pytest.mark.parametrize(
-    ("launch", "expected"),
+    ("exit_code", "reason", "expected"),
     [
-        pytest.param(
-            make_launch(session_id=SESSION_ID, max_minutes=60.0),
-            _FIXED_RUN_ATTRIBUTES,
-            id="options-unset-are-left-off",
-        ),
-        pytest.param(
-            make_launch(
-                session_id=SESSION_ID,
-                max_minutes=60.0,
-                max_usd=5.0,
-                effort="high",
-                model="claude-sonnet-4-20250514",
-            ),
-            {
-                **_FIXED_RUN_ATTRIBUTES,
-                "gymrat.run.max_usd": 5.0,
-                "gymrat.run.effort": "high",
-                "gen_ai.request.model": "claude-sonnet-4-20250514",
-            },
-            id="options-set-are-recorded",
-        ),
+        pytest.param(0, None, (StatusCode.OK, None), id="exit-0-ok"),
+        pytest.param(2, "error", (StatusCode.ERROR, "error"), id="exit-2-error-with-its-reason"),
+        pytest.param(1, "gating-block", (StatusCode.UNSET, None), id="exit-1-unset"),
     ],
 )
-def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_off(
-    launch: LaunchEvent, expected: dict[str, object]
+def test_start_command_span_when_exit_code_varies_does_set_the_matching_status(
+    exit_code: int, reason: str | None, expected: tuple[StatusCode, str | None]
 ):
-    result = run_attributes(launch)
+    record = command_record(exit_code=exit_code, reason=reason)
 
-    assert result == expected
+    span = _start_and_end_command_span(record)
+
+    assert (span.status.status_code, span.status.description) == expected
+
+
+@pytest.mark.parametrize(
+    ("traceparent", "expected_links"),
+    [
+        pytest.param(
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            [0xB7AD6B7169203331],
+            id="given",
+        ),
+        pytest.param(None, [], id="absent"),
+    ],
+)
+def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_given_one(
+    traceparent: str | None, expected_links: list[int]
+):
+    record = command_record(traceparent=traceparent)
+
+    span = _start_and_end_command_span(record)
+
+    assert [link.context.span_id for link in span.links] == expected_links
 
 
 # ---------------------------------------------------------------------------
@@ -168,21 +166,6 @@ def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_of
             id="iteration-without-delta",
         ),
         pytest.param(
-            hook_record(stage="before", exit_code=0, seq=5),
-            (
-                "gymrat.hook",
-                {
-                    "gymrat.iteration.seq": 5,
-                    "gymrat.hook.stage": "before",
-                    "gymrat.hook.exit_code": 0,
-                    "gymrat.hook.duration_ms": 120,
-                    "gymrat.hook.stdout_bytes": 80,
-                    "gymrat.hook.timed_out": False,
-                },
-            ),
-            id="hook",
-        ),
-        pytest.param(
             committed_keep(1),
             (
                 "gymrat.keep",
@@ -196,41 +179,9 @@ def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_of
             id="committed-keep",
         ),
         pytest.param(
-            blocked_keep(1),
-            (
-                "gymrat.keep",
-                {
-                    "gymrat.iteration.seq": 1,
-                    "gymrat.keep.status": "blocked",
-                    "gymrat.keep.reason": "checks-failed",
-                },
-            ),
-            id="blocked-keep",
-        ),
-        pytest.param(
             baseline_record(label="initial"),
             ("gymrat.baseline", {"gymrat.baseline.label": "initial"}),
             id="baseline-has-no-seq",
-        ),
-        pytest.param(
-            stop_record(),
-            ("gymrat.stop", {"gymrat.stop.message": "user requested stop"}),
-            id="stop-has-no-seq",
-        ),
-        pytest.param(
-            discard_record(2), ("gymrat.discard", {"gymrat.iteration.seq": 2}), id="discard"
-        ),
-        pytest.param(
-            finalize_record(branch="gymrat/test-final"),
-            (
-                "gymrat.finalize",
-                {
-                    "gymrat.finalize.branch": "gymrat/test-final",
-                    "gymrat.finalize.commit": "c" * 40,
-                    "gymrat.finalize.message": "squash 1 kept iteration",
-                },
-            ),
-            id="finalize-has-no-seq",
         ),
     ],
 )

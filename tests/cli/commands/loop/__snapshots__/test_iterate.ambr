@@ -1,11 +1,10 @@
 # serializer version: 1
-# name: test_iterate_command_when_live_does_render_the_session_dashboard_timing_the_judge_in_seconds
+# name: test_iterate_command_when_live_does_render_the_session_dashboard
   '''
-  iterate #1 · session 20260808-141530-a3f2 · 00:00/00:11
-  ✓ prepared 1s
-  ⠋ sampling · experiment ━╸                                      1/24 00:00/00:11
-  ⠋ judging geomean primary 3s
-  ○ confirm (only if a gating metric regresses)
-  ○ record
+  iterate #1 · session 20260808-141530-a3f2 · 00:03/01:12
+  ○ prepare
+  ⠧ sampling · experiment ━╸                                      1/24 00:03/01:12
+  ✓ judged -15.1% on geomean · no gating regression
+  ✓ recorded improved suggested
   '''
 # ---

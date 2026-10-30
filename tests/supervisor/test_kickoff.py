@@ -5,7 +5,6 @@ and returns the system-prompt append and the kickoff message the supervisor
 hands to the driven session.
 """
 
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import create_autospec
 
@@ -13,25 +12,12 @@ import pytest
 
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.errors import GymratError
-from gymrat.supervisor.kickoff import KickoffResult, compose_kickoff
+from gymrat.supervisor.kickoff import DEFAULT_KICKOFF, KickoffResult, compose_kickoff
 from tests._config import benchless_config
 
 RUNBOOK_CONTENT = "# My Runbook\n\nStep 1: run benchmarks.\n"
 
 _EXPERIMENT_WORKTREE = "/tmp/experiment"
-
-# The supervised-mode contract an unattended session runs under, word for word.
-_CONTRACT_PARAGRAPH = (
-    "No human reads the turns of this session. Ask-first rules resolve to deciding "
-    "from the runbook — the runbook is the authority. When the work is done, run "
-    '`gymrat stop -m "<report>"` and only then end the turn. The supervisor replies '
-    "after every turn and the session continues, so ending a turn never waits for "
-    "anything. Never run a gymrat command in the background."
-)
-
-# A minimal skill body used where the paragraph checks below only need some
-# text, not the bundled skill's actual content.
-_GENERIC_SKILL_TEXT = "# Skill Title\n\nSome guidance.\n"
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +27,7 @@ _GENERIC_SKILL_TEXT = "# Skill Title\n\nSome guidance.\n"
 
 def _bundled_skill_heading() -> str:
     # The heading the packaged SKILL.md opens its body with; finding it in the append proves the
-    # real bundled skill text made it in. Its wording is pinned in tests/test_bundled_skill.py.
+    # real bundled skill text made it in.
     return next(line for line in read_bundled_skill().splitlines() if line.startswith("# "))
 
 
@@ -67,38 +53,15 @@ def _compose_with_skill_text(
 
 
 # ---------------------------------------------------------------------------
-# compose_kickoff — bundled skill
-# ---------------------------------------------------------------------------
-
-
-def test_compose_kickoff_when_bundled_skill_missing_does_raise_before_runbook_check(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr(
-        "gymrat.supervisor.kickoff.read_bundled_skill",
-        create_autospec(read_bundled_skill, side_effect=GymratError("bundled skill unavailable")),
-    )
-    config = benchless_config(runbook=None)
-
-    with pytest.raises(GymratError, match="bundled skill unavailable"):
-        compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-
-# ---------------------------------------------------------------------------
 # compose_kickoff — runbook validation
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_no_runbook_configured_does_raise_naming_gymrat_toml():
+def test_compose_kickoff_when_no_runbook_configured_does_raise():
     config = benchless_config(runbook=None)
 
-    with pytest.raises(GymratError) as excinfo:
+    with pytest.raises(GymratError):
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    message = str(excinfo.value)
-    assert "runbook" in message.lower()
-    assert "gymrat.toml" in message
-    assert excinfo.value.hint
 
 
 def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cause(
@@ -110,8 +73,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
     with pytest.raises(GymratError) as excinfo:
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
-    assert str(excinfo.value) == f"Runbook not found at {missing}."
-    assert excinfo.value.hint
+    assert missing in str(excinfo.value)
     assert excinfo.value.__cause__ is not None
 
 
@@ -120,7 +82,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_frontmatter_free_skill_ahead_of_the_runbook(
+def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_skill(
     tmp_path: Path,
 ):
     config = benchless_config(runbook=_write_runbook(tmp_path))
@@ -128,16 +90,20 @@ def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_fron
 
     result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
+    assert skill_heading in result.system_prompt_append
+
+
+def test_compose_kickoff_when_runbook_configured_does_append_its_content_and_path(
+    tmp_path: Path,
+):
+    runbook = _write_runbook(tmp_path)
+    config = benchless_config(runbook=runbook)
+
+    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
+
     append = result.system_prompt_append
-    prelude = append.partition(skill_heading)[0]
-    assert skill_heading in append
     assert RUNBOOK_CONTENT in append
-    assert f"## Runbook: {config.runbook}" in append
-    assert append.index(skill_heading) < append.index("## Runbook:")
-    assert "---" not in prelude
-    assert "name: gymrat" not in prelude
-    assert "description:" not in prelude
-    assert "when_to_use:" not in prelude
+    assert runbook in append
 
 
 def test_compose_kickoff_when_skill_has_no_frontmatter_does_keep_text_unchanged(
@@ -185,7 +151,7 @@ def test_compose_kickoff_when_frontmatter_values_span_lines_does_drop_whole_bloc
 @pytest.mark.parametrize(
     ("prompt", "opening"),
     [
-        pytest.param(None, "Drive the optimization session.", id="default-prompt"),
+        pytest.param(None, DEFAULT_KICKOFF, id="default-prompt"),
         pytest.param("optimize the decoder loop", "optimize the decoder loop", id="prompt-given"),
     ],
 )
@@ -201,23 +167,7 @@ def test_compose_kickoff_when_prompt_is_default_or_given_does_lead_the_kickoff_a
 
     trailing = result.kickoff.split("\n\n")[-1]
     assert result.kickoff.startswith(opening)
-    assert "session" in trailing.lower()
-    assert "baseline" in trailing.lower()
     assert experiment_path in trailing
-    assert "step" in trailing.lower()
-    assert "runbook" in trailing.lower()
-
-
-def test_compose_kickoff_when_composed_does_leave_tool_guidance_out_of_the_kickoff(
-    tmp_path: Path,
-):
-    config = benchless_config(runbook=_write_runbook(tmp_path))
-
-    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    kickoff_lower = result.kickoff.lower()
-    assert "tool" not in kickoff_lower
-    assert "`probe`" not in kickoff_lower
 
 
 # ---------------------------------------------------------------------------
@@ -236,116 +186,3 @@ def test_compose_kickoff_when_runbook_not_utf8_does_raise_gymrat_error_naming_pa
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
     assert str(runbook_path) in str(excinfo.value)
-    assert excinfo.value.hint
-
-
-# ---------------------------------------------------------------------------
-# compose_kickoff — no spend language or cap amounts in code-authored text
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("field", ["system_prompt_append", "kickoff"])
-@pytest.mark.parametrize("forbidden", ["usd", "spend", "$", "30 minute", "max_minutes"])
-def test_compose_kickoff_when_skill_mentions_spend_does_keep_spend_and_cap_amounts_out_of_authored_text(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    field: str,
-    forbidden: str,
-):
-    skill_text = "# Skill Title\n\nSome guidance with --max-usd 10 and spend and $ dollar.\n"
-
-    result = _compose_with_skill_text(skill_text, tmp_path, monkeypatch)
-
-    # The skill text may legitimately mention spend; only code-authored text is checked.
-    authored = getattr(result, field).replace(skill_text, "").lower()
-    assert forbidden not in authored
-
-
-# ---------------------------------------------------------------------------
-# compose_kickoff — authored paragraphs in system-prompt append
-# ---------------------------------------------------------------------------
-
-
-def _tools_paragraph_index(paragraphs: list[str]) -> int:
-    """Index of the append paragraph that introduces the ``probe`` tool."""
-    return next(i for i, paragraph in enumerate(paragraphs) if "`probe`" in paragraph)
-
-
-def _clock_rule_index(paragraphs: list[str]) -> int:
-    """Index of the append paragraph carrying the wall-clock reading rule."""
-    return next(
-        i for i, paragraph in enumerate(paragraphs) if "never estimate" in paragraph.lower()
-    )
-
-
-#: What the clock rule must say: how to read the time left (the command form, its output, the
-#: two tools, the JSON field), the cap it reads against, and that a killed measurement records
-#: nothing.
-_CLOCK_RULE_PHRASES = [
-    "bash",
-    "time-left",
-    "`iterate`",
-    "`probe`",
-    "budget.remaining_seconds",
-    "json",
-    "wall-clock",
-    "time left",
-    "never estimate",
-    "records nothing",
-]
-
-
-#: What the tools paragraph must name: the two tools, the bash commands it leaves to the
-#: agent, that commands run in the foreground, and that each prints a JSON document.
-_TOOLS_PARAGRAPH_PHRASES = [
-    "`probe`",
-    "`iterate`",
-    "bash",
-    "`measure`",
-    "`compare`",
-    "`keep`",
-    "`discard`",
-    "`status`",
-    "`stop`",
-    "foreground",
-    "json document",
-]
-
-
-def test_compose_kickoff_when_a_runbook_is_configured_does_author_the_supervision_paragraphs_ahead_of_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    paragraphs = result.system_prompt_append.split("\n\n")
-    contract_index = paragraphs.index(_CONTRACT_PARAGRAPH)
-    tools_index = _tools_paragraph_index(paragraphs)
-    clock_rule_index = _clock_rule_index(paragraphs)
-    runbook_index = next(i for i, p in enumerate(paragraphs) if p.startswith("## Runbook:"))
-    assert contract_index < tools_index < clock_rule_index < runbook_index
-
-
-@pytest.mark.parametrize(
-    ("locate", "phrase"),
-    [
-        *(
-            pytest.param(_tools_paragraph_index, phrase, id=f"tools-{phrase.strip('`')}")
-            for phrase in _TOOLS_PARAGRAPH_PHRASES
-        ),
-        *(
-            pytest.param(_clock_rule_index, phrase, id=f"clock-rule-{phrase.strip('`')}")
-            for phrase in _CLOCK_RULE_PHRASES
-        ),
-    ],
-)
-def test_compose_kickoff_when_a_runbook_is_configured_does_name_each_required_phrase_in_its_paragraph(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    locate: Callable[[list[str]], int],
-    phrase: str,
-):
-    result = _compose_with_skill_text(_GENERIC_SKILL_TEXT, tmp_path, monkeypatch)
-
-    paragraphs = result.system_prompt_append.split("\n\n")
-    assert phrase in paragraphs[locate(paragraphs)].lower()

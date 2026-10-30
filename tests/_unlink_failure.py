@@ -1,8 +1,6 @@
-"""A failure double for removing a sidecar file, shared by the sidecar tests.
+"""A failure double for removing a file, shared by tests whose removal must be refused.
 
-This is test-support code, not a test module: ``tests/utils/test_sidecar.py``,
-``tests/session/test_budget.py`` and ``tests/session/test_progress_file.py``
-import it. It carries no test functions of its own.
+It carries no test functions of its own.
 """
 
 import os

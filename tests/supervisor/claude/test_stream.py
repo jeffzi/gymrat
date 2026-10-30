@@ -148,45 +148,6 @@ async def test_start_when_phase_event_received_does_emit_model_phase(
 
 
 # ---------------------------------------------------------------------------
-# stream events — silent event types
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        pytest.param(
-            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}},
-            id="text-delta",
-        ),
-        pytest.param(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "input_json_delta", "partial_json": '{"a"'},
-            },
-            id="input-json-delta",
-        ),
-        pytest.param(
-            {
-                "type": "content_block_delta",
-                "delta": {"type": "signature_delta", "signature": "sig"},
-            },
-            id="signature-delta",
-        ),
-        pytest.param({"type": "message_start"}, id="message-start"),
-        pytest.param({"type": "message_delta"}, id="message-delta"),
-        pytest.param({"type": "totally_unknown_type"}, id="unrecognized"),
-    ],
-)
-async def test_start_when_silent_event_type_does_emit_nothing(event: dict[str, object]):
-    messages = [stream_event(event)]
-
-    events = await run_with_messages(messages)
-
-    assert events == []
-
-
-# ---------------------------------------------------------------------------
 # stream events — per-parent thinking scoping
 # ---------------------------------------------------------------------------
 

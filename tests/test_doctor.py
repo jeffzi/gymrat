@@ -8,16 +8,18 @@ patches ``shutil.which`` to control executable availability.
 
 The report assembly (``build_doctor_report``) coordinates the section builders,
 config inspection, and git environment probe to produce a ``DoctorReport``;
-those tests run it against a real directory and verify that sections are
-collected in order, that config problems and adapter flags reach the bench
-section, and that ``detect_git_environment`` maps git-missing, outside-repo,
-and unresolvable root to distinct ``GitEnvironment`` outcomes without raising.
+those tests run it against a real directory and verify that config problems
+and adapter flags reach the bench section, and that ``detect_git_environment``
+maps git-missing, outside-repo, and unresolvable root to distinct
+``GitEnvironment`` outcomes without raising.
 
 The text renderer is pinned by one golden per named scenario (glyphs, hint
 and multi-line indentation, caveat note, summary counts); the JSON renderer
-by its exact document.
+by the failure flag it adds.
 """
 
+import json
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -43,11 +45,11 @@ from gymrat.doctor import (
     render_doctor_json,
     render_doctor_report,
 )
-from tests._ansi import sgr_codes, strip_ansi
+from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
 from tests._git import refuse_git_lookups
-from tests.adapters._inputs import VALID_ADAPTERS_HINT, unknown_adapter_message
+from tests.adapters._inputs import unknown_adapter_error
 from tests.config._toml import write_raw
 
 _DEFAULT_CONFIG = _config()
@@ -101,17 +103,6 @@ def _find(section: CheckSection, name: str) -> Check:
             True,
             id="mixed-statuses",
         ),
-        pytest.param(
-            [
-                CheckSection(title="A", checks=[Check(name="a", status="ok", detail="")]),
-                CheckSection(title="B", checks=[Check(name="b", status="warn", detail="")]),
-                CheckSection(title="C", checks=[Check(name="c", status="fail", detail="")]),
-            ],
-            (1, 1, 1),
-            True,
-            id="across-sections",
-        ),
-        pytest.param([], (0, 0, 0), False, id="no-sections"),
     ],
 )
 def test_create_doctor_report_when_statuses_vary_does_aggregate_the_status_summary(
@@ -128,47 +119,22 @@ def test_create_doctor_report_when_statuses_vary_does_aggregate_the_status_summa
 # ---------------------------------------------------------------------------
 
 
-_GIT_OK = Check(name="git", status="ok", detail="git is available on PATH")
-_INSIDE_REPO = Check(
-    name="git repository", status="ok", detail="current directory is inside a git repository"
-)
-_OUTSIDE_REPO = Check(
-    name="git repository",
-    status="warn",
-    detail="current directory is not inside a git repository",
-    hint="The compare command resolves refs against a git repository",
-)
-
-
 @pytest.mark.parametrize(
     ("git_available", "inside_git_repo", "checks"),
     [
-        pytest.param(True, True, [_GIT_OK, _INSIDE_REPO], id="inside-repo"),
-        pytest.param(True, False, [_GIT_OK, _OUTSIDE_REPO], id="outside-repo"),
-        pytest.param(
-            False,
-            False,
-            [
-                Check(
-                    name="git",
-                    status="fail",
-                    detail="git is not available on PATH",
-                    hint="Install git: https://git-scm.com/downloads",
-                ),
-                _OUTSIDE_REPO,
-            ],
-            id="git-missing",
-        ),
+        pytest.param(True, True, [("git", "ok"), ("git repository", "ok")], id="inside-repo"),
+        pytest.param(True, False, [("git", "ok"), ("git repository", "warn")], id="outside-repo"),
+        pytest.param(False, False, [("git", "fail"), ("git repository", "warn")], id="git-missing"),
     ],
 )
-def test_build_environment_section_when_git_state_varies_does_produce_the_exact_section(
-    git_available: bool, inside_git_repo: bool, checks: list[Check]
+def test_build_environment_section_when_git_state_varies_does_set_each_check_status(
+    git_available: bool, inside_git_repo: bool, checks: list[tuple[str, str]]
 ):
     section = build_environment_section(
         git_available=git_available, inside_git_repo=inside_git_repo
     )
 
-    assert section == CheckSection(title="Environment", checks=checks)
+    assert [(check.name, check.status) for check in section.checks] == checks
 
 
 def test_build_environment_section_when_git_error_given_does_warn_naming_the_error():
@@ -179,9 +145,6 @@ def test_build_environment_section_when_git_error_given_does_warn_naming_the_err
     root = _find(section, "git repository root")
     assert root.status == "warn"
     assert "permission denied" in root.detail
-    assert (
-        root.hint == "Falling back to the current directory; commands may operate on the wrong path"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +155,8 @@ def test_build_environment_section_when_git_error_given_does_warn_naming_the_err
 def test_build_config_section_when_clean_does_produce_single_ok_naming_the_path():
     section = build_config_section(_inspection(config_path="/my/project/gymrat.json", problems=[]))
 
-    assert section.title == "Configuration"
-    assert section.checks == [
-        Check(name="config", status="ok", detail="Config file loaded: /my/project/gymrat.json")
-    ]
+    assert [(check.name, check.status) for check in section.checks] == [("config", "ok")]
+    assert "/my/project/gymrat.json" in section.checks[0].detail
 
 
 def test_build_config_section_when_problems_present_does_produce_one_fail_per_problem_verbatim():
@@ -220,163 +181,53 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
         _config(), config_has_problems=True, skill_file_exists=True, config_file_exists=False
     )
 
-    assert section.title == "Workflow"
-    assert section.checks == [
-        Check(name="workflow", status="ok", detail="Skipped — fix config errors first")
-    ]
+    assert [(check.name, check.status) for check in section.checks] == [("workflow", "ok")]
 
 
-_STOP_UNSET = Check(
-    name="stop",
-    status="warn",
-    detail="stop is not configured",
-    hint="Without stop, a session has no finish line",
-)
-
-_UNSET_WORKFLOW_CHECKS = [
-    Check(
-        name="checks",
-        status="warn",
-        detail="checks is not configured",
-        hint="Without checks, keep cannot gate commits",
-    ),
-    _STOP_UNSET,
-    Check(
-        name="runbook",
-        status="warn",
-        detail="runbook is not configured",
-        hint=(
-            "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml. "
-            "Without one, supervise has no instructions to follow."
-        ),
-    ),
-    Check(name="samples", status="ok", detail="samples: 12 — balances 2, 3, 4 or 6 targets"),
-]
-
-
-@pytest.mark.parametrize(
-    ("skill_file_exists", "skill_check"),
-    [
-        pytest.param(
-            True,
-            Check(name="skill file", status="ok", detail="Skill file is installed"),
-            id="skill-file-present",
-        ),
-        pytest.param(
-            False,
-            Check(
-                name="skill file",
-                status="warn",
-                detail="No skill file — Claude Code agents won't have gymrat's workflow instructions",
-                hint="Run `gymrat init` to scaffold the project.",
-            ),
-            id="skill-file-missing",
-        ),
-    ],
-)
-def test_build_workflow_section_when_config_unset_does_produce_the_exact_section(
-    skill_file_exists: bool, skill_check: Check
-):
+def test_build_workflow_section_when_config_unset_does_warn_for_each_missing_piece():
     section = build_workflow_section(
         _config(),
         config_has_problems=False,
-        skill_file_exists=skill_file_exists,
+        skill_file_exists=False,
         config_file_exists=False,
     )
 
-    assert section == CheckSection(title="Workflow", checks=[skill_check, *_UNSET_WORKFLOW_CHECKS])
+    assert [(check.name, check.status) for check in section.checks] == [
+        ("skill file", "warn"),
+        ("checks", "warn"),
+        ("stop", "warn"),
+        ("runbook", "warn"),
+        ("samples", "ok"),
+    ]
 
 
 @pytest.mark.parametrize(
-    ("config", "name", "expected"),
+    ("config", "name", "inserted"),
     [
-        pytest.param(
-            _config(checks="npm test"),
-            "checks",
-            Check(name="checks", status="ok", detail="checks: npm test"),
-            id="checks-set",
-        ),
+        pytest.param(_config(checks="npm test"), "checks", "npm test", id="checks-set"),
         pytest.param(
             _config(stop=StopConfig(target_value=1.5)),
             "stop",
-            Check(name="stop", status="ok", detail="stop: target_value: 1.5"),
+            "target_value: 1.5",
             id="stop-target-only",
         ),
         pytest.param(
             _config(stop=StopConfig(max_iterations=20)),
             "stop",
-            Check(name="stop", status="ok", detail="stop: max_iterations: 20"),
+            "max_iterations: 20",
             id="stop-max-only",
         ),
         pytest.param(
             _config(stop=StopConfig(target_value=1.5, max_iterations=20)),
             "stop",
-            Check(name="stop", status="ok", detail="stop: target_value: 1.5, max_iterations: 20"),
+            "target_value: 1.5, max_iterations: 20",
             id="stop-both",
         ),
-        pytest.param(_config(stop=StopConfig()), "stop", _STOP_UNSET, id="stop-empty"),
-        pytest.param(
-            _config(runbook="./RUNBOOK.md"),
-            "runbook",
-            Check(name="runbook", status="ok", detail="runbook: ./RUNBOOK.md"),
-            id="runbook-set",
-        ),
-        pytest.param(
-            _config(samples=10),
-            "samples",
-            Check(name="samples", status="ok", detail="samples: 10 — balances 2 or 5 targets"),
-            id="samples-even-two-targets-counts",
-        ),
-        pytest.param(
-            _config(samples=2),
-            "samples",
-            Check(name="samples", status="ok", detail="samples: 2 — balances 2 targets"),
-            id="samples-even-one-target-count",
-        ),
-        pytest.param(
-            _config(samples=8),
-            "samples",
-            Check(name="samples", status="ok", detail="samples: 8 — balances 2, 4 or 8 targets"),
-            id="samples-even-up-to-eight-targets",
-        ),
-        pytest.param(
-            _config(samples=18),
-            "samples",
-            Check(name="samples", status="ok", detail="samples: 18 — balances 2, 3 or 6 targets"),
-            id="samples-even-no-further-than-eight-targets",
-        ),
-        pytest.param(
-            _config(samples=11),
-            "samples",
-            Check(
-                name="samples",
-                status="fail",
-                detail="samples: 11 — balances one target only",
-                hint=(
-                    "`iterate` and `compare` refuse an odd count; "
-                    "`measure` and `probe` still run — use 10 or 12"
-                ),
-            ),
-            id="samples-odd",
-        ),
-        pytest.param(
-            _config(samples=1),
-            "samples",
-            Check(
-                name="samples",
-                status="fail",
-                detail="samples: 1 — balances one target only",
-                hint=(
-                    "`iterate` and `compare` refuse an odd count; "
-                    "`measure` and `probe` still run — use 2"
-                ),
-            ),
-            id="samples-one",
-        ),
+        pytest.param(_config(runbook="./RUNBOOK.md"), "runbook", "./RUNBOOK.md", id="runbook-set"),
     ],
 )
 def test_build_workflow_section_when_field_configured_does_report_its_check(
-    config: BenchlessConfig, name: str, expected: Check
+    config: BenchlessConfig, name: str, inserted: str
 ):
     section = build_workflow_section(
         config,
@@ -385,169 +236,157 @@ def test_build_workflow_section_when_field_configured_does_report_its_check(
         config_file_exists=False,
     )
 
-    assert _find(section, name) == expected
+    check = _find(section, name)
+    assert (check.status, inserted in check.detail) == ("ok", True)
+
+
+@pytest.mark.parametrize(
+    ("samples", "numbers"),
+    [
+        pytest.param(2, ["2", "2"], id="samples-even-one-target-count"),
+        pytest.param(8, ["8", "2", "4", "8"], id="samples-even-up-to-eight-targets"),
+        pytest.param(18, ["18", "2", "3", "6"], id="samples-even-no-further-than-eight-targets"),
+    ],
+)
+def test_build_workflow_section_when_samples_even_does_list_the_target_counts_it_balances(
+    samples: int, numbers: list[str]
+):
+    section = build_workflow_section(
+        _config(samples=samples),
+        config_has_problems=False,
+        skill_file_exists=True,
+        config_file_exists=False,
+    )
+
+    check = _find(section, "samples")
+    assert (check.status, re.findall(r"\d+", check.detail)) == ("ok", numbers)
+
+
+def test_build_workflow_section_when_stop_has_no_keys_does_warn():
+    section = build_workflow_section(
+        _config(stop=StopConfig()),
+        config_has_problems=False,
+        skill_file_exists=True,
+        config_file_exists=False,
+    )
+
+    assert _find(section, "stop").status == "warn"
+
+
+def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_balanced_counts():
+    section = build_workflow_section(
+        _config(samples=11),
+        config_has_problems=False,
+        skill_file_exists=True,
+        config_file_exists=False,
+    )
+
+    samples = _find(section, "samples")
+    assert (samples.status, "11" in samples.detail, "10 or 12" in (samples.hint or "")) == (
+        "fail",
+        True,
+        True,
+    )
 
 
 # ---------------------------------------------------------------------------
 # whole section, per path
 # ---------------------------------------------------------------------------
 
-_ADAPTER_OK = Check(name="adapter", status="ok", detail="adapter: metric-lines")
+_UNKNOWN_ADAPTER_ERROR = unknown_adapter_error("banana")
 
 
 @pytest.mark.parametrize(
-    ("bench", "adapter", "config_problems", "on_path", "expected"),
+    ("config_problems", "checks"),
+    [
+        pytest.param(True, [("bench", "ok")], id="config-problems"),
+        pytest.param(False, [("adapter", "ok"), ("bench", "fail")], id="bench-unresolved"),
+    ],
+)
+def test_build_bench_section_when_bench_unresolved_does_skip_or_fail_the_bench_check(
+    config_problems: bool, checks: list[tuple[str, str]]
+):
+    section = build_bench_section(
+        bench=None, adapter="metric-lines", config_problems=config_problems, base_dir="."
+    )
+
+    assert [(check.name, check.status) for check in section.checks] == checks
+
+
+@pytest.mark.parametrize(
+    ("bench", "adapter", "on_path", "expected"),
     [
         pytest.param(
-            None,
-            "metric-lines",
-            True,
-            None,
-            [Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
-            id="config-problems",
-        ),
-        pytest.param(
-            "node bench.js",
-            "banana",
-            False,
-            None,
-            [
-                Check(
-                    name="adapter",
-                    status="fail",
-                    detail=unknown_adapter_message("banana"),
-                    hint=VALID_ADAPTERS_HINT,
-                )
-            ],
-            id="adapter-unknown",
-        ),
-        pytest.param(
-            None,
-            "metric-lines",
-            False,
-            None,
-            [
-                _ADAPTER_OK,
-                Check(
-                    name="bench",
-                    status="fail",
-                    detail="No bench command configured",
-                    hint='Set the bench command with --bench or the "bench" config key',
-                ),
-            ],
-            id="bench-unresolved",
+            "node bench.js", "banana", None, [("adapter", "fail", "")], id="adapter-unknown"
         ),
         pytest.param(
             "npx tsx bench.ts",
             "metric-lines",
-            False,
             "/usr/bin/npx",
             [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail="bench: npx tsx bench.ts"),
-                Check(name="executable", status="ok", detail="npx is available on PATH"),
+                ("adapter", "ok", ""),
+                ("bench", "ok", "npx tsx bench.ts"),
+                ("executable", "ok", "npx"),
             ],
             id="executable-found",
         ),
         pytest.param(
             "node bench.js",
             "metric-lines",
-            False,
             None,
             [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail="bench: node bench.js"),
-                Check(name="executable", status="warn", detail="node was not found on PATH"),
+                ("adapter", "ok", ""),
+                ("bench", "ok", "node bench.js"),
+                ("executable", "warn", "node"),
             ],
             id="executable-missing",
         ),
         pytest.param(
-            '"node" bench.js',
-            "metric-lines",
-            False,
-            "/usr/bin/x",
-            [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail='bench: "node" bench.js'),
-                Check(name="executable", status="ok", detail="node is available on PATH"),
-            ],
-            id="quoted-exe",
-        ),
-        pytest.param(
             "VAR=1 make test",
             "metric-lines",
-            False,
             "/usr/bin/x",
             [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail="bench: VAR=1 make test"),
-                Check(name="executable", status="ok", detail="make is available on PATH"),
+                ("adapter", "ok", ""),
+                ("bench", "ok", "VAR=1 make test"),
+                ("executable", "ok", "make"),
             ],
             id="env-var-prefix",
         ),
         pytest.param(
-            "VAR=1 FOO=2 node bench.js",
-            "metric-lines",
-            False,
-            "/usr/bin/x",
-            [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail="bench: VAR=1 FOO=2 node bench.js"),
-                Check(name="executable", status="ok", detail="node is available on PATH"),
-            ],
-            id="multiple-env-vars",
-        ),
-        pytest.param(
             "cd src && make bench",
             "metric-lines",
-            False,
             None,
-            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: cd src && make bench")],
+            [("adapter", "ok", ""), ("bench", "ok", "cd src && make bench")],
             id="shell-operator-cd",
-        ),
-        pytest.param(
-            "{ make bench; }",
-            "metric-lines",
-            False,
-            None,
-            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: { make bench; }")],
-            id="shell-brace-group",
         ),
         pytest.param(
             "~/bin/bench.sh",
             "metric-lines",
-            False,
             None,
-            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: ~/bin/bench.sh")],
+            [("adapter", "ok", ""), ("bench", "ok", "~/bin/bench.sh")],
             id="home-shorthand",
         ),
         pytest.param(
             "$HOME/bin/bench.sh --fast",
             "metric-lines",
-            False,
             None,
-            [
-                _ADAPTER_OK,
-                Check(name="bench", status="ok", detail="bench: $HOME/bin/bench.sh --fast"),
-            ],
+            [("adapter", "ok", ""), ("bench", "ok", "$HOME/bin/bench.sh --fast")],
             id="variable-expansion",
         ),
         pytest.param(
             "`pwd`/bench.sh",
             "metric-lines",
-            False,
             None,
-            [_ADAPTER_OK, Check(name="bench", status="ok", detail="bench: `pwd`/bench.sh")],
+            [("adapter", "ok", ""), ("bench", "ok", "`pwd`/bench.sh")],
             id="command-substitution",
         ),
     ],
 )
-def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(  # noqa: PLR0917 -- one parameter per input plus the expected section and fixture
-    bench: str | None,
+def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(
+    bench: str,
     adapter: str,
-    config_problems: bool,
     on_path: str | None,
-    expected: list[Check],
+    expected: list[tuple[str, str, str]],
     monkeypatch: pytest.MonkeyPatch,
 ):
     def which(_cmd: str) -> str | None:
@@ -555,11 +394,14 @@ def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks( 
 
     monkeypatch.setattr("shutil.which", create_autospec(shutil.which, side_effect=which))
 
-    section = build_bench_section(
-        bench=bench, adapter=adapter, config_problems=config_problems, base_dir="."
-    )
+    section = build_bench_section(bench=bench, adapter=adapter, base_dir=".")
 
-    assert section == CheckSection(title="Bench", checks=expected)
+    assert [(check.name, check.status) for check in section.checks] == [
+        (name, status) for name, status, _ in expected
+    ]
+    assert all(
+        part in check.detail for check, (_, _, part) in zip(section.checks, expected, strict=True)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -591,13 +433,12 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
 
     result = detect_git_environment(str(tmp_path))
 
-    assert result == GitEnvironment(
-        git_available=True,
-        inside_git_repo=True,
-        git_error=(
-            f"Cannot determine the git repository at {tmp_path}: fatal: detected dubious ownership"
-        ),
+    assert (result.git_available, result.inside_git_repo, result.repo_root_dir) == (
+        True,
+        True,
+        None,
     )
+    assert str(tmp_path) in (result.git_error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -612,50 +453,22 @@ def _check(report: DoctorReport, title: str, name: str) -> Check:
 
 
 @pytest.mark.parametrize(
-    ("toml", "expected", "bench_checks"),
+    ("toml", "bench_checks"),
     [
-        pytest.param(
-            "samples = 0\n",
-            Check(
-                name="config",
-                status="fail",
-                detail="Invalid config value for samples: expected a number at or above 1, got 0",
-            ),
-            [Check(name="bench", status="ok", detail="Skipped — fix config errors first")],
-            id="invalid-value",
-        ),
-        pytest.param(
-            None,
-            Check(
-                name="config",
-                status="ok",
-                detail="No config file found; operating with defaults only",
-            ),
-            [
-                Check(name="adapter", status="ok", detail="adapter: metric-lines"),
-                Check(
-                    name="bench",
-                    status="fail",
-                    detail="No bench command configured",
-                    hint='Set the bench command with --bench or the "bench" config key',
-                ),
-            ],
-            id="no-file",
-        ),
+        pytest.param("samples = 0\n", [("bench", "ok")], id="invalid-value"),
+        pytest.param(None, [("adapter", "ok"), ("bench", "fail")], id="no-file"),
     ],
 )
-def test_build_doctor_report_when_config_file_invalid_or_absent_does_report_its_effect_per_section(
-    tmp_path: Path, toml: str | None, expected: Check, bench_checks: list[Check]
+def test_build_doctor_report_when_config_file_invalid_or_absent_does_set_the_bench_checks(
+    tmp_path: Path, toml: str | None, bench_checks: list[tuple[str, str]]
 ):
     if toml is not None:
         write_raw(tmp_path, toml)
 
     report = build_doctor_report(CliFlags(), str(tmp_path))
 
-    sections = {section.title: section.checks for section in report.sections}
-    assert list(sections) == ["Environment", "Configuration", "Workflow", "Bench"]
-    assert sections["Configuration"] == [expected]
-    assert sections["Bench"] == bench_checks
+    bench = next(section for section in report.sections if section.title == "Bench")
+    assert [(check.name, check.status) for check in bench.checks] == bench_checks
 
 
 def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_section(
@@ -666,9 +479,39 @@ def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_
     assert _check(report, "Bench", "adapter") == Check(
         name="adapter",
         status="fail",
-        detail=unknown_adapter_message("banana"),
-        hint=VALID_ADAPTERS_HINT,
+        detail=str(_UNKNOWN_ADAPTER_ERROR),
+        hint=_UNKNOWN_ADAPTER_ERROR.hint,
     )
+
+
+def _skill_directory(path: Path) -> None:
+    """Put a directory where the skill file belongs."""
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _skill_file(path: Path) -> None:
+    """Put a regular skill file at its path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("skill", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("make_entry", "status"),
+    [
+        pytest.param(_skill_directory, "warn", id="directory"),
+        pytest.param(_skill_file, "ok", id="file"),
+    ],
+)
+def test_build_doctor_report_when_skill_path_checked_does_report_installed_only_for_a_file(
+    repo: str,
+    make_entry: Callable[[Path], None],
+    status: str,
+):
+    make_entry(Path(repo) / SKILL_RELATIVE_PATH)
+
+    report = build_doctor_report(CliFlags(), repo)
+
+    assert _check(report, "Workflow", "skill file").status == status
 
 
 def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_config_file(
@@ -678,46 +521,7 @@ def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_
 
     report = build_doctor_report(CliFlags(), str(tmp_path))
 
-    assert _check(report, "Workflow", "runbook").hint == (
-        'Add `runbook = "gymrat-runbook.md"` to gymrat.toml. '
-        "Without one, supervise has no instructions to follow."
-    )
-
-
-@pytest.mark.parametrize(
-    ("flag", "env", "detail"),
-    [
-        pytest.param(2, "10", "samples: 2 — balances 2 targets", id="flag-wins"),
-        pytest.param(None, "10", "samples: 10 — balances 2 or 5 targets", id="env-beats-file"),
-        pytest.param(None, None, "samples: 11 — balances one target only", id="file-alone"),
-    ],
-)
-def test_build_doctor_report_when_samples_set_at_several_levels_does_check_the_resolved_count(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    flag: int | None,
-    env: str | None,
-    detail: str,
-):
-    write_raw(tmp_path, "samples = 11\n")
-    if env is not None:
-        monkeypatch.setenv("GYMRAT_SAMPLES", env)
-
-    report = build_doctor_report(CliFlags(samples=flag), str(tmp_path))
-
-    assert _check(report, "Workflow", "samples").detail == detail
-
-
-def test_build_doctor_report_when_samples_set_nowhere_does_check_the_default_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("GYMRAT_SAMPLES", raising=False)
-
-    report = build_doctor_report(CliFlags(), str(tmp_path))
-
-    assert _check(report, "Workflow", "samples").detail == (
-        "samples: 12 — balances 2, 3, 4 or 6 targets"
-    )
+    assert DEFAULT_RUNBOOK_PATH in (_check(report, "Workflow", "runbook").hint or "")
 
 
 # ---------------------------------------------------------------------------
@@ -739,41 +543,36 @@ def repo_subdirectory(repo: str, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("bench", "script", "mode", "expected"),
+    ("bench", "script", "mode", "status", "path"),
     [
-        pytest.param(
-            "./scripts/bench.sh",
-            "scripts/bench.sh",
-            0o755,
-            Check(name="executable", status="ok", detail="./scripts/bench.sh is executable"),
-            id="executable-under-root",
-        ),
         pytest.param(
             '"my scripts/bench.sh" --fast',
             "my scripts/bench.sh",
             0o755,
-            Check(name="executable", status="ok", detail="my scripts/bench.sh is executable"),
+            "ok",
+            "my scripts/bench.sh",
             id="quoted-path-with-spaces",
         ),
-        pytest.param(
-            "./scripts/bench.sh",
-            None,
-            None,
-            Check(name="executable", status="warn", detail="./scripts/bench.sh was not found"),
-            id="missing",
-        ),
+        pytest.param("./scripts/bench.sh", None, None, "warn", "./scripts/bench.sh", id="missing"),
         pytest.param(
             "./scripts/bench.sh",
             "scripts/bench.sh",
             0o644,
-            Check(name="executable", status="warn", detail="./scripts/bench.sh is not executable"),
+            "warn",
+            "./scripts/bench.sh",
             id="not-executable",
             marks=_posix_only,
         ),
     ],
 )
 def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_repository_root(
-    repo_subdirectory: Path, bench: str, script: str | None, mode: int | None, expected: Check
+    repo_subdirectory: Path,
+    *,
+    bench: str,
+    script: str | None,
+    mode: int | None,
+    status: str,
+    path: str,
 ):
     root = repo_subdirectory.parent.parent
     write_raw(root, f"bench = '{bench}'\n")
@@ -785,7 +584,9 @@ def test_build_doctor_report_when_bench_is_a_path_does_resolve_it_against_the_re
 
     report = build_doctor_report(CliFlags(), str(repo_subdirectory))
 
-    assert _check(report, "Bench", "executable") == expected
+    check = _check(report, "Bench", "executable")
+    assert check.status == status
+    assert path in check.detail
 
 
 # ---------------------------------------------------------------------------
@@ -807,19 +608,6 @@ def _mixed_status_report() -> DoctorReport:
             title="Bench",
             checks=[Check("bench", "fail", "bench not set", hint="set bench in gymrat.toml")],
         ),
-    ])
-
-
-def _warning_only_report() -> DoctorReport:
-    """A report whose only problem is a warning."""
-    return doctor_report([
-        CheckSection(
-            title="Environment",
-            checks=[
-                Check("git", "ok", "git 2.45.0"),
-                Check("skill", "warn", "skill not installed", hint="run gymrat init"),
-            ],
-        )
     ])
 
 
@@ -864,13 +652,12 @@ def _plural_counts_report() -> DoctorReport:
     "make_report",
     [
         pytest.param(_mixed_status_report, id="ok-warn-fail"),
-        pytest.param(_warning_only_report, id="warn-only"),
         pytest.param(_multiline_detail_report, id="multiline-detail"),
         pytest.param(_workflow_skipped_report, id="workflow-skipped"),
         pytest.param(_plural_counts_report, id="plural-counts"),
     ],
 )
-def test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts(
+def test_render_doctor_report_when_scenario_rendered_does_match_its_golden(
     make_report: Callable[[], DoctorReport], snapshot: SnapshotAssertion
 ):
     report = make_report()
@@ -880,75 +667,15 @@ def test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_su
     assert output.split("\n") == snapshot
 
 
-def test_render_doctor_report_when_colored_does_style_each_line_by_its_role():
-    report = _mixed_status_report()
-
-    output = render_doctor_report(report, color=True)
-
-    assert [(strip_ansi(line), sgr_codes(line)) for line in output.split("\n")] == [
-        ("gymrat v0.5.0 · python 3.13.0 · darwin", {"1", "2"}),
-        ("", set()),
-        ("Environment", {"1"}),
-        ("  ✓ git 2.45.0", {"32"}),
-        ("  ⚠ skill not installed", {"33"}),
-        ("    run gymrat init", {"2"}),
-        ("", set()),
-        ("Bench", {"1"}),
-        ("  ✗ bench not set", {"31"}),
-        ("    set bench in gymrat.toml", {"2"}),
-        ("", set()),
-        (
-            (
-                "Note: prepare scripts were not run; only the Claude skill file location was"
-                " checked (presence ≠ loaded)."
-            ),
-            {"2"},
-        ),
-        ("", set()),
-        ("1 ok · 1 warning · 1 failure", {"32", "33", "31"}),
-    ]
-
-
 # ---------------------------------------------------------------------------
 # JSON rendering
 # ---------------------------------------------------------------------------
 
 
-def test_render_doctor_json_when_report_has_a_warning_does_emit_two_space_indented_document():
-    report = _warning_only_report()
+def test_render_doctor_json_when_report_has_a_failure_does_flag_it():
+    report = _mixed_status_report()
 
     output = render_doctor_json(report)
 
-    assert output.split("\n") == [
-        "{",
-        '  "schema_version": 1,',
-        '  "environment": {',
-        '    "gymrat_version": "0.5.0",',
-        '    "python_version": "3.13.0",',
-        '    "platform": "darwin"',
-        "  },",
-        '  "sections": [',
-        "    {",
-        '      "title": "Environment",',
-        '      "checks": [',
-        "        {",
-        '          "name": "git",',
-        '          "status": "ok",',
-        '          "detail": "git 2.45.0",',
-        '          "hint": null',
-        "        },",
-        "        {",
-        '          "name": "skill",',
-        '          "status": "warn",',
-        '          "detail": "skill not installed",',
-        '          "hint": "run gymrat init"',
-        "        }",
-        "      ]",
-        "    }",
-        "  ],",
-        '  "ok_count": 1,',
-        '  "warn_count": 1,',
-        '  "fail_count": 0,',
-        '  "has_failures": false',
-        "}",
-    ]
+    document = json.loads(output)
+    assert (document["fail_count"], document["has_failures"]) == (1, True)

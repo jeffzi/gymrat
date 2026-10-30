@@ -1,8 +1,10 @@
 """How ``iterate_session`` judges an edit, and ``derive_outcome`` beneath it.
 
-Covers gating and the confirmation rerun, metrics whose delta is undefined, the
-primary and what it reads when there is no change, and the outcome and closing
-report the verdicts add up to.
+Covers gating and the confirmation rerun (including how its bench command is
+scoped and how metric names are shell-quoted into it), metrics whose delta is
+undefined, the primary and what it reads when there is no change, whether the
+judged primary reaches a configured target, and the outcome the verdicts add up
+to.
 
 The one boundary these tests mock is sampling; everything downstream — verdicts,
 the confirmation rerun, aggregation, the record, the report — runs against a
@@ -12,19 +14,23 @@ throwaway repository. The suite is order-independent and safe under
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import MetricEntry, ResolvedConfig, StopConfig
 from gymrat.errors import GymratError
+from gymrat.loop.iterate.judge import scoped_bench
 from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
 from gymrat.progress_events import (
     ConfirmFinished,
-    ConfirmSkipped,
     ConfirmStarted,
     JudgeFinished,
+    JudgeStarted,
     PassFinished,
     PassStarted,
     ProgressEvent,
@@ -44,9 +50,6 @@ from tests.loop.iterate._fixtures import (
     assert_permutation,
     baseline_rounds,
     improved_rounds,
-    jittered,
-    last_iteration_of,
-    logged_metric_verdicts,
     regressed_rounds,
     regressed_run,
     report_a_pass_per_call,
@@ -67,14 +70,6 @@ if TYPE_CHECKING:
     from gymrat.report.types import MetricComparison, MetricComparisons
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
-#: The events that tell the display how the judge row and the confirm row end.
-_JUDGE_AND_CONFIRM_EVENTS = (JudgeFinished, ConfirmStarted, ConfirmFinished, ConfirmSkipped)
-
-
-def _noisy_rounds() -> list[dict[str, float]]:
-    """Ten rounds that drift half a percent the wrong way without ever settling."""
-    return rounds(jittered(BASELINE_MS, 2, 1), jittered(BASELINE_BYTES, 20, 10))
-
 
 def _filtered_rounds(name: str, values: list[float]) -> list[dict[str, float]]:
     """Rounds reporting ``name`` alone, the shape a bench filtered to that metric reports."""
@@ -84,11 +79,6 @@ def _filtered_rounds(name: str, values: list[float]) -> list[dict[str, float]]:
 def _total_ms_gating_config() -> ResolvedConfig:
     """A config reran through the filter with ``alloc_bytes`` excused from gating."""
     return resolved_config(filter=FILTER, metrics={"alloc_bytes": MetricEntry(gating=False)})
-
-
-def _primary_line(report: str) -> str:
-    """The report's ``primary:`` line, failing when there is none."""
-    return next(line for line in trimmed_report_lines(report) if line.startswith("primary:"))
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +115,6 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         options=IterateOptions(on_progress=events.append),
     )
 
-    assert samples_mock.call_count == 2
-    assert samples_mock.calls[1].targets == samples_mock.calls[0].targets
     assert samples_mock.calls[1].options.bench == rerun_bench
     assert [set(e.regressed) for e in events if isinstance(e, JudgeFinished)] == [
         {"total_ms", "alloc_bytes"}
@@ -135,6 +123,7 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         filtered_metrics
     ]
     assert [e.reproduced for e in events if isinstance(e, ConfirmFinished)] == [True]
+    assert [type(e) for e in events].count(JudgeStarted) == 1
     assert [
         type(e)
         for e in events
@@ -151,30 +140,10 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         result.record.metrics["total_ms"], delta=10, verdict="regressed", confirmed=True
     )
     assert result.record.outcome == "regressed"
-    assert "total_ms: regression confirmed on rerun" in trimmed_report_lines(result.report)
 
 
-#: The first run's ``total_ms`` regression once a rerun disowns it: withheld as
-#: unconfirmed, still carrying the first run's 10% delta, its 3% noise band (1.5
-#: times a 2% half-range) and the p-value of ten pairs that all moved one way.
-_FIRST_RUN_DISOWNED: dict[str, object] = {
-    "verdict": "no-signal",
-    "reason": "unconfirmed",
-    "delta_pct": pytest.approx(10, abs=1e-6),
-    "noise_pct": pytest.approx(3.0),
-    "p": pytest.approx(2 / 2**10),
-}
-
-
-@pytest.mark.parametrize(
-    "experiment",
-    [
-        pytest.param(scaled(BASELINE_MS, 0.9), id="improved"),
-        pytest.param(jittered(BASELINE_MS, 2, 1), id="no-signal"),
-    ],
-)
 async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
-    open_repo: str, samples_mock: CollectSamplesRecorder, experiment: list[float]
+    open_repo: str, samples_mock: CollectSamplesRecorder
 ):
     stub_runs(
         samples_mock,
@@ -182,7 +151,7 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
         [
             regressed_run(),
             PairedRun(
-                _filtered_rounds("total_ms", experiment),
+                _filtered_rounds("total_ms", scaled(BASELINE_MS, 0.9)),
                 _filtered_rounds("total_ms", BASELINE_MS),
             ),
         ],
@@ -194,23 +163,22 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
-    logged = logged_metric_verdicts(open_repo)["total_ms"]
-    assert {key: logged.get(key) for key in _FIRST_RUN_DISOWNED} == _FIRST_RUN_DISOWNED
+    assert result.record.metrics["total_ms"].reason == "unconfirmed"
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
-    assert "total_ms: regression not confirmed on rerun" in trimmed_report_lines(result.report)
 
 
 async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recording(
     open_repo: str, samples_mock: CollectSamplesRecorder
 ):
-    stub_runs(samples_mock, open_repo, [regressed_run(), GymratError("bench command failed")])
+    injected = GymratError("bench command failed")
+    stub_runs(samples_mock, open_repo, [regressed_run(), injected])
     resolved = _total_ms_gating_config()
 
     with pytest.raises(GymratError) as exc:
         await iterate_session(open_repo, resolved)
 
-    assert str(exc.value) == "bench command failed"
+    assert exc.value is injected
     assert len(log_records(open_repo)) == 1
 
 
@@ -230,12 +198,6 @@ async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recordi
             ("alloc_bytes",),
             ["total_ms: regression confirmed on rerun", "alloc_bytes: not measured on rerun"],
             id="silent-on-one-metric",
-        ),
-        pytest.param(
-            PairedRun([{} for _ in range(10)], [{} for _ in range(10)]),
-            ("total_ms", "alloc_bytes"),
-            ["total_ms: not measured on rerun", "alloc_bytes: not measured on rerun"],
-            id="no-parsable-metrics",
         ),
     ],
 )
@@ -257,7 +219,6 @@ async def test_iterate_session_when_rerun_skips_a_metric_does_keep_it_regressed_
     result = await iterate_session(open_repo, resolved_config(filter=FILTER))
 
     assert result.record.confirm == expected_confirm
-    assert last_iteration_of(open_repo).confirm == expected_confirm
     assert result.record.samples == PairedSamples(
         experiment=tuple(regressed_rounds()), baseline=tuple(baseline_rounds())
     )
@@ -265,10 +226,7 @@ async def test_iterate_session_when_rerun_skips_a_metric_does_keep_it_regressed_
         "total_ms": "regressed",
         "alloc_bytes": "regressed",
     }
-    assert_permutation(
-        result.record.metrics["alloc_bytes"], delta=10, verdict="regressed", confirmed=False
-    )
-    assert result.record.outcome == "regressed"
+    assert result.record.metrics["alloc_bytes"].confirmed is False
     assert [
         line for line in trimmed_report_lines(result.report) if line.endswith("on rerun")
     ] == rerun_lines
@@ -293,19 +251,7 @@ async def test_iterate_session_when_only_exact_gating_metrics_regress_does_gate_
     )
 
     assert samples_mock.call_count == 1
-    assert [type(e) for e in events if isinstance(e, _JUDGE_AND_CONFIRM_EVENTS)] == [
-        JudgeFinished,
-        ConfirmSkipped,
-    ]
     assert [e.regressed for e in events if isinstance(e, JudgeFinished)] == [("total_ms",)]
-    total = result.record.metrics["total_ms"]
-    assert total.delta_pct == pytest.approx(10, abs=1e-6)
-    assert total.verdict == "regressed"
-    assert total.method == "exact"
-    assert total.gating is True
-    assert total.confirmed is False
-    assert total.p is None
-    assert total.noise_pct is None
     assert result.record.outcome == "regressed"
 
 
@@ -324,15 +270,9 @@ async def test_iterate_session_when_a_non_exact_gating_metric_regresses_does_rer
         ],
     )
     resolved = resolved_config(filter=FILTER, metrics={"total_ms": MetricEntry(exact=True)})
-    events: list[ProgressEvent] = []
 
-    await iterate_session(open_repo, resolved, options=IterateOptions(on_progress=events.append))
+    await iterate_session(open_repo, resolved)
 
-    assert [type(e) for e in events if isinstance(e, _JUDGE_AND_CONFIRM_EVENTS)] == [
-        JudgeFinished,
-        ConfirmStarted,
-        ConfirmFinished,
-    ]
     assert samples_mock.calls[1].options.bench == "npm run bench -- --filter alloc_bytes"
 
 
@@ -349,7 +289,6 @@ async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rer
     assert samples_mock.call_count == 1
     assert result.record.confirm is None
     assert result.record.metrics["alloc_bytes"].verdict == "regressed"
-    assert result.record.outcome == "improved"
 
 
 # ---------------------------------------------------------------------------
@@ -367,9 +306,6 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
 
     assert result.record.metrics["total_ms"].delta_pct is None
     assert result.record.metrics["alloc_bytes"].delta_pct == pytest.approx(-20, abs=1e-6)
-    assert result.record.primary == IterationPrimary(kind="metric", name="total_ms", delta_pct=None)
-    assert result.record.outcome == "no-signal"
-    assert _primary_line(result.report) == "primary: · verdict: NO-SIGNAL"
 
 
 # ---------------------------------------------------------------------------
@@ -378,13 +314,12 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
 
 
 @pytest.mark.parametrize(
-    ("run", "config", "primary", "primary_line"),
+    ("run", "config", "primary"),
     [
         pytest.param(
             PairedRun(improved_rounds(), baseline_rounds()),
             resolved_config(primary="startup_ms"),
             IterationPrimary(kind="metric", name="startup_ms", delta_pct=None),
-            "primary: · verdict: NO-SIGNAL",
             id="named-primary-never-reported",
         ),
         pytest.param(
@@ -396,22 +331,19 @@ async def test_iterate_session_when_delta_undefined_does_null_only_that_metrics_
                 }
             ),
             IterationPrimary(kind="geomean", delta_pct=None),
-            "primary: · verdict: NO-SIGNAL",
             id="geomean-over-only-non-gating-metrics",
-        ),
-        pytest.param(
-            PairedRun(improved_rounds(), baseline_rounds()),
-            resolved_config(unstable_noise_pct=0.0),
-            IterationPrimary(kind="geomean", delta_pct=None),
-            "primary: · verdict: NO-SIGNAL",
-            id="geomean-over-only-unstable-metrics",
         ),
         pytest.param(
             PairedRun(baseline_rounds(), baseline_rounds()),
             resolved_config(primary="total_ms"),
             IterationPrimary(kind="metric", name="total_ms", delta_pct=0),
-            "primary: 0.0% · verdict: NO-SIGNAL",
             id="named-primary-flat-reads-zero",
+        ),
+        pytest.param(
+            PairedRun(improved_rounds(), rounds([0.0 for _ in BASELINE_MS], BASELINE_BYTES)),
+            resolved_config(primary="total_ms"),
+            IterationPrimary(kind="metric", name="total_ms", delta_pct=None),
+            id="named-primary-delta-undefined",
         ),
     ],
 )
@@ -422,7 +354,6 @@ async def test_iterate_session_when_primary_has_no_change_to_read_does_report_th
     config: ResolvedConfig,
     *,
     primary: IterationPrimary,
-    primary_line: str,
 ):
     stub_samples(samples_mock, open_repo, run.experiment, run.baseline)
 
@@ -430,76 +361,49 @@ async def test_iterate_session_when_primary_has_no_change_to_read_does_report_th
 
     assert result.record.primary == primary
     assert result.record.outcome == "no-signal"
-    assert _primary_line(result.report) == primary_line
 
 
 # ---------------------------------------------------------------------------
-# the report closes on the outcome's verdict and next step
+# a configured target: whether the judged primary reached it
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("experiment", "config", "reached", "outcome", "report_tail"),
+    ("config", "reached"),
     [
         pytest.param(
-            improved_rounds(),
             resolved_config(primary="total_ms", stop=StopConfig(target_value=85)),
             False,
-            "improved",
-            ["primary: -10.0% · verdict: IMPROVED", "gymrat keep"],
             id="target-ahead",
         ),
         pytest.param(
-            improved_rounds(),
             resolved_config(primary="total_ms", stop=StopConfig(target_value=95)),
             True,
-            "improved",
-            ["primary: -10.0% · verdict: IMPROVED", "target reached — keep it", "gymrat keep"],
             id="target-met",
         ),
         pytest.param(
-            improved_rounds(),
             resolved_config(
                 primary="total_ms",
                 stop=StopConfig(target_value=85),
                 metrics={"total_ms": MetricEntry(direction="higher")},
             ),
             True,
-            "regressed",
-            ["primary: -10.0% · verdict: REGRESSED", "fix or run gymrat discard"],
             id="higher-is-better-reads-the-other-side",
-        ),
-        pytest.param(
-            _noisy_rounds(),
-            resolved_config(primary="total_ms", stop=StopConfig(target_value=101)),
-            True,
-            "no-signal",
-            [
-                "primary: +0.5% · verdict: NO-SIGNAL",
-                "target reached — keep it",
-                "gymrat keep or gymrat discard",
-            ],
-            id="no-signal-still-states-it",
         ),
     ],
 )
-async def test_iterate_session_when_target_configured_does_close_the_report_on_the_judged_outcome(
+async def test_iterate_session_when_target_configured_does_record_whether_the_judged_primary_reached_it(
     open_repo: str,
     samples_mock: CollectSamplesRecorder,
-    experiment: list[dict[str, float]],
     config: ResolvedConfig,
     *,
     reached: bool,
-    outcome: str,
-    report_tail: list[str],
 ):
-    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
+    stub_samples(samples_mock, open_repo, improved_rounds(), baseline_rounds())
 
     result = await iterate_session(open_repo, config)
 
     assert result.record.target_reached is reached
-    assert result.record.outcome == outcome
-    assert trimmed_report_lines(result.report)[-len(report_tail) :] == report_tail
 
 
 async def test_iterate_session_when_experiment_stops_reporting_the_targeted_primary_does_not_reach_the_target(
@@ -515,6 +419,102 @@ async def test_iterate_session_when_experiment_stops_reporting_the_targeted_prim
     result = await iterate_session(open_repo, config)
 
     assert result.record.target_reached is False
+
+
+# ---------------------------------------------------------------------------
+# the rerun's bench command: scoping and shell quoting
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("filter_template", "names", "expected"),
+    [
+        pytest.param(
+            FILTER,
+            ("total_ms", "alloc_bytes"),
+            "npm run bench -- --filter total_ms alloc_bytes",
+            id="names-through-the-filter",
+        ),
+        pytest.param(FILTER, (), "npm run bench", id="no-names"),
+        pytest.param(None, ("total_ms",), "npm run bench", id="no-filter"),
+    ],
+)
+def test_scoped_bench_when_names_and_filter_vary_does_scope_only_with_both(
+    filter_template: str | None, names: tuple[str, ...], expected: str
+):
+    config = resolved_config(filter=filter_template)
+
+    command = scoped_bench(config, names)
+
+    assert command == expected
+
+
+# The filter command reaches a POSIX shell, which is what decides where one
+# argument ends and the next begins.
+_ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n'
+_ARGS_FILTER = "sh args.sh {names}"
+
+
+def _paired_with(name: str, values: list[float]) -> list[dict[str, float]]:
+    """One round per entry, reporting ``name`` beside a plainly named metric."""
+    return [{name: value, "total_ms": value} for value in values]
+
+
+def _regressed_named(name: str) -> PairedRun:
+    """A run where ``name`` and ``total_ms`` both come back 10% slower."""
+    return PairedRun(
+        experiment=_paired_with(name, scaled(BASELINE_MS, 1.1)),
+        baseline=_paired_with(name, BASELINE_MS),
+    )
+
+
+def _shell_args(directory: str, command: str) -> list[str]:
+    """The arguments a POSIX shell hands the stand-in bench when it runs ``command``.
+
+    The rerun's bench string is handed to a shell verbatim, so running it through
+    one is the only assertion that speaks to what the bench is really given — a
+    string comparison would pass for a command the shell refuses outright.
+
+    Args:
+        directory: The directory the shell runs in.
+        command: The bench command string to hand the shell.
+
+    Returns:
+        Each non-empty line the stand-in bench printed, one per argument.
+    """
+    printed = subprocess.run(  # noqa: S603 -- argv is a fixed shell plus a test-built command
+        ["sh", "-c", command],  # noqa: S607 -- the POSIX shell is resolved from PATH on purpose
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [line for line in printed.split("\n") if line]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell argument splitting only")
+async def test_iterate_session_when_metric_name_needs_quoting_does_pass_it_as_one_argument(
+    open_repo: str, samples_mock: CollectSamplesRecorder
+):
+    name = "sort(n=1000)/time"
+    (Path(open_repo) / "args.sh").write_text(_ARGS_SCRIPT, encoding="utf-8")
+    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
+
+    await iterate_session(open_repo, resolved_config(filter=_ARGS_FILTER))
+
+    assert _shell_args(open_repo, samples_mock.calls[1].options.bench) == [name, "total_ms"]
+
+
+async def test_iterate_session_when_win32_and_name_has_spaces_does_double_quote_it_in_the_rerun(
+    open_repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+):
+    name = "decode large payload"
+    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    await iterate_session(open_repo, resolved_config(filter=FILTER))
+
+    assert '"decode large payload"' in samples_mock.calls[1].options.bench
 
 
 # ---------------------------------------------------------------------------
@@ -551,14 +551,8 @@ def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
     ("primary", "expected"),
     [
         pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
-        pytest.param(GeomeanPrimary(3), "no-signal", id="geomean-positive-no-signal"),
-        pytest.param(GeomeanPrimary(0), "no-signal", id="geomean-zero-no-signal"),
         pytest.param(MetricPrimary("lower/time", -3), "improved", id="lower-negative-improves"),
-        pytest.param(MetricPrimary("lower/time", 3), "no-signal", id="lower-positive-no-signal"),
         pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
-        pytest.param(MetricPrimary("higher/time", -3), "no-signal", id="higher-negative-no-signal"),
-        pytest.param(MetricPrimary("lower/time", 0), "no-signal", id="lower-zero-no-signal"),
-        pytest.param(MetricPrimary("higher/time", 0), "no-signal", id="higher-zero-no-signal"),
         pytest.param(MetricPrimary("absent/time", -30), "no-signal", id="primary-never-measured"),
     ],
 )

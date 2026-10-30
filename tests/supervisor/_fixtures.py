@@ -66,10 +66,8 @@ FOLLOW_UP_TIMEOUT_S = 5
 #: A step delay long enough that only an end or a cap, never the script, cuts it short.
 _BLOCKED_MS = 60_000
 
-#: The line a reply closes on when the agent's last command was still running.
-WAIT_FINISHED_LINE = (
-    "The command you left running has finished; its record, if any, is in the session log."
-)
+#: The cwd ``make_prompt`` gives a session, which the driver summarizes paths against.
+PROMPT_CWD = "/tmp/test"
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +134,7 @@ def read_log_lines(log_path: str | Path) -> list[dict[str, object]]:
 def make_prompt(
     *,
     kickoff: str = "do the thing",
-    cwd: str = "/tmp/test",
+    cwd: str = PROMPT_CWD,
     system_prompt_append: str = "follow the runbook",
     model: str | None = None,
     effort: Effort | None = None,
@@ -721,6 +719,11 @@ def follow_ups_with_action(events: list[SessionEvent], action: str) -> list[Foll
 def follow_up_actions(events: list[SessionEvent]) -> list[str]:
     """Return the action of every ``FollowUpEvent`` in ``events``, in order."""
     return [e.action for e in events_of(events, FollowUpEvent)]
+
+
+def follow_up_reasons(events: Sequence[SessionEvent]) -> list[tuple[str, str | None]]:
+    """Return the ``(action, reason)`` pair of every ``FollowUpEvent`` in ``events``, in order."""
+    return [(e.action, e.reason) for e in events_of(events, FollowUpEvent)]
 
 
 def cap_actions(events: list[SessionEvent]) -> list[tuple[str, str]]:

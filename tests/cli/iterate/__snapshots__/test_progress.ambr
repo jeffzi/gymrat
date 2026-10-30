@@ -1,35 +1,4 @@
 # serializer version: 1
-# name: test_frame_when_before_hook_running_does_show_spinner
-  '''
-  iterate #1 · session test-session · 0s elapsed
-  ⠋ before hook
-  ○ prepare
-  ○ passes
-  ○ judge (3 metrics · geomean primary)
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_both_worktrees_prepared_does_show_elapsed
-  '''
-  iterate #1 · session test-session · 5s elapsed
-  ✓ prepared 5s
-  ○ passes
-  ○ judge (3 metrics · geomean primary)
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_confirm_finished_does_show_summary_on_node_line
-  '''
-  iterate #1 · session test-session · 15s elapsed
-  ○ prepare
-  ○ passes
-  ✓ judged +2.0% on geomean · 1 regressed: x
-  ✓ confirmed 4/4 · regressions reproduced 14s
-  ○ record
-  '''
-# ---
 # name: test_frame_when_confirm_runs_after_an_alerting_judge_does_show_its_progress_row
   '''
   iterate #1 · session test-session · 1s elapsed
@@ -50,16 +19,6 @@
   ✓ recorded regressed suggested
   '''
 # ---
-# name: test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta
-  '''
-  iterate #1 · session test-session · 10s elapsed
-  ✓ prepared
-  ⠧ sampling · baseline                                           0/10 00:03/--:--
-  ○ judge (3 metrics · geomean primary)
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
 # name: test_frame_when_initial_does_show_all_nodes_pending
   '''
   iterate #3 · session abc-123
@@ -67,25 +26,6 @@
   ○ passes
   ○ judge (4 metrics · geomean primary)
   ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_judge_finished_after_started_does_show_elapsed
-  '''
-  iterate #1 · session test-session · 10s elapsed
-  ✓ prepared
-  ✓ sampled 2 passes 5s
-  ✓ judged -3.2% on geomean · 1 regressed: latency 4s
-  ○ confirm (only if a gating metric regresses)
-  ○ record
-  '''
-# ---
-# name: test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row
-  '''
-  iterate #1 · session test-session · 6s elapsed
-  ✓ prepared
-  ✓ sampled 2 passes 5s
-  ✓ judged -2.0% on geomean · no gating regression
   ○ record
   '''
 # ---
@@ -107,16 +47,6 @@
   ○ judge (3 metrics · geomean primary)
   ○ confirm (only if a gating metric regresses)
   ○ record
-  '''
-# ---
-# name: test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep
-  '''
-  iterate #3 · session test-session · 0s elapsed
-  ○ prepare
-  ○ passes
-  ○ judge (3 metrics · geomean primary)
-  ○ confirm (only if a gating metric regresses)
-  ✓ recorded unsettled suggested — checks (npm run check && npm test) run at gymrat keep
   '''
 # ---
 # name: test_frame_when_worktree_preparing_does_name_its_target

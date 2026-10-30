@@ -2,7 +2,8 @@
 
 The ``plan_sections`` function groups metrics into kind sections.  Group
 membership derives from ``gymrat.metric_name.parse`` applied to the full metric
-name (the dict key), not from the ``short_name`` field.
+name (the dict key), not from the ``short_name`` field. ``plan_body`` turns those
+sections into body lines, tagging a non-gating kind from the run's config.
 """
 
 from __future__ import annotations
@@ -10,7 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gymrat.report.table.grid import GroupBlock, MetricBlock, plan_sections
+from gymrat.config import KindEntry
+from gymrat.report.table.grid import (
+    GroupBlock,
+    MetricBlock,
+    TitleLine,
+    plan_body,
+    plan_sections,
+    section_annotation,
+)
 from tests.report._verdicts import metric_meta
 
 if TYPE_CHECKING:
@@ -84,3 +93,22 @@ def test_plan_sections_when_group_spans_kinds_does_open_one_block_per_section():
         [GroupBlock(group="entity", metrics=[_Row(name="entity/spawn#time", group="entity")])],
         [GroupBlock(group="entity", metrics=[_Row(name="entity/spawn#memory", group="entity")])],
     ]
+
+
+# ---------------------------------------------------------------------------
+# plan_body — a single kind's informational tag
+# ---------------------------------------------------------------------------
+
+
+def test_plan_body_when_sole_kind_switched_off_in_config_does_tag_it_from_that_config():
+    layout = plan_sections(
+        {"decode#time": _FakeMetric(meta=metric_meta("decode", kind="time", gating=False))},
+        _measure,
+    )
+    config_kinds = {"time": KindEntry(gating=False)}
+
+    body = plan_body(layout, None, config_kinds)
+
+    title = body[0]
+    assert isinstance(title, TitleLine)
+    assert title.text == section_annotation(layout.sections[0], config_kinds)

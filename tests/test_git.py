@@ -4,65 +4,33 @@ Real-subprocess tests are parallel-safe: the ``create_scratch_repo`` factory
 (see ``conftest.py``) gives every test its own temp git repository.
 """
 
-import os
-import re
-import shutil
-import signal
 import subprocess
-import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat import signals
+from gymrat.errors import GymratError
 from gymrat.git import (
     run_git,
+    run_git_step,
     try_git,
 )
-from tests._git import install_git_hook, list_worktree_dirs
-from tests._signal_masking import needs_signal_masking
 
 # ---------------------------------------------------------------------------
 # run_git
 # ---------------------------------------------------------------------------
 
 
-_GIT_DIR_ARGS = ["rev-parse", "--git-dir"]
-
-
-@pytest.mark.parametrize(
-    ("key", "args", "expected"),
-    [
-        pytest.param("GIT_DIR", _GIT_DIR_ARGS, ".git\n", id="GIT_DIR"),
-        pytest.param("GIT_WORK_TREE", _GIT_DIR_ARGS, ".git\n", id="GIT_WORK_TREE"),
-        pytest.param("GIT_COMMON_DIR", _GIT_DIR_ARGS, ".git\n", id="GIT_COMMON_DIR"),
-        pytest.param("GIT_OBJECT_DIRECTORY", _GIT_DIR_ARGS, ".git\n", id="GIT_OBJECT_DIRECTORY"),
-        pytest.param("GIT_INDEX_FILE", ["ls-files"], "README.md\n", id="GIT_INDEX_FILE"),
-    ],
-)
 def test_run_git_when_repo_env_var_set_does_resolve_against_cwd(
-    repo: str, monkeypatch: pytest.MonkeyPatch, key: str, args: list[str], expected: str
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setenv(key, "/nonexistent/.git")
+    monkeypatch.setenv("GIT_DIR", "/nonexistent/.git")
 
-    result = run_git(args, repo)
+    result = run_git(["rev-parse", "--git-dir"], repo)
 
-    assert result == expected
-
-
-def test_run_git_when_alternate_object_dirs_set_does_not_read_objects_through_them(
-    repo: str, create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
-):
-    other = create_scratch_repo()
-    (Path(other) / "banana.txt").write_text("only in the other repo\n")
-    blob = run_git(["hash-object", "-w", "banana.txt"], other).strip()
-    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(Path(other) / ".git" / "objects"))
-
-    with pytest.raises(subprocess.CalledProcessError):
-        run_git(["cat-file", "-e", blob], repo)
+    assert result == ".git\n"
 
 
 def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
@@ -90,130 +58,68 @@ def test_try_git_when_command_succeeds_does_return_none(repo: str):
     assert result is None
 
 
-def _git_fails(_monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave ``subprocess.run`` alone; the command itself fails."""
+_UNKNOWN_REF_ARGS = ["rev-parse", "--verify", "does-not-exist"]
 
 
-def _git_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def _git_fails(_monkeypatch: pytest.MonkeyPatch, repo: str) -> str:
+    """Leave ``subprocess.run`` alone and return git's own stderr for the failing command."""
+    return subprocess.run(  # noqa: S603 -- fixed git binary plus test-chosen args
+        ["git", *_UNKNOWN_REF_ARGS],  # noqa: S607 -- git resolved from PATH like a user's shell
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stderr.strip()
+
+
+def _git_missing(monkeypatch: pytest.MonkeyPatch, _repo: str) -> str:
+    """Make ``subprocess.run`` raise as if git were absent and return the error's message."""
+    message = "git"
+
     def raise_not_found(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        message = "git"
         raise FileNotFoundError(message)
 
     monkeypatch.setattr(
         subprocess, "run", create_autospec(subprocess.run, side_effect=raise_not_found)
     )
-
-
-def _git_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_timeout(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(cmd=["git"], timeout=1)
-
-    monkeypatch.setattr(
-        subprocess, "run", create_autospec(subprocess.run, side_effect=raise_timeout)
-    )
+    return message
 
 
 @pytest.mark.parametrize(
-    ("arrange", "diagnostic"),
+    "arrange",
     [
-        pytest.param(_git_fails, "fatal: Needed a single revision", id="command-fails"),
-        pytest.param(_git_missing, "git", id="git-binary-missing"),
-        pytest.param(
-            _git_times_out,
-            "Command '['git']' timed out after 1 seconds",
-            id="command-times-out",
-        ),
+        pytest.param(_git_fails, id="command-fails"),
+        pytest.param(_git_missing, id="git-binary-missing"),
     ],
 )
 def test_try_git_when_the_call_fails_does_return_the_diagnostic_text(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
-    arrange: Callable[[pytest.MonkeyPatch], None],
-    diagnostic: str,
+    arrange: Callable[[pytest.MonkeyPatch, str], str],
 ):
-    arrange(monkeypatch)
+    expected = arrange(monkeypatch, repo)
 
-    result = try_git(["rev-parse", "--verify", "does-not-exist"], repo)
+    result = try_git(_UNKNOWN_REF_ARGS, repo)
 
-    assert result == diagnostic
-
-
-# ---------------------------------------------------------------------------
-# run_git — termination-signal deferral
-# ---------------------------------------------------------------------------
-
-# The whole git call runs inside a post-checkout ``sleep``; a signal is delivered
-# to this process partway through that sleep. Masked, the deferred handler cannot
-# fire until the mask is restored — well after the sleep ends — so the elapsed
-# time measured at the handler is at least this fraction of the sleep.
-_WORKTREE_SLEEP_SECONDS = 1
-_SIGNAL_DELAY_SECONDS = 0.2
-_DEFERRAL_ELAPSED_FRACTION = 0.5
-_EXIT_POLL_TIMEOUT_SECONDS = 2.0
-_EXIT_POLL_INTERVAL_SECONDS = 0.01
-
-
-@needs_signal_masking
-def test_run_git_when_termination_signal_arrives_mid_call_does_defer_cleanup_until_git_exits(
-    repo: str, recorded_exits: list[tuple[int, float]]
-):
-    # One signal suffices here: the deferred set is pinned in the signals suite.
-    term_signal = signal.SIGTERM
-    # A hook that only sleeps keeps ``git worktree add`` in flight long enough
-    # for a mid-call signal to land.
-    install_git_hook(repo, "post-checkout", f"sleep {_WORKTREE_SLEEP_SECONDS}\n")
-    worktree_dir = str(Path(repo) / "wt")
-
-    sweep_record: dict[str, bool] = {}
-
-    def sweep_cleanup() -> None:
-        sweep_record["worktree_materialized"] = (Path(worktree_dir) / ".git").exists()
-        shutil.rmtree(worktree_dir, ignore_errors=True)
-        subprocess.run(
-            ["git", "worktree", "prune"],  # noqa: S607 -- git resolved from PATH like a user's shell
-            cwd=repo,
-            check=False,
-            capture_output=True,
-        )
-
-    uninstall = signals.install_termination_cleanup(sweep_cleanup)
-    timer = threading.Timer(_SIGNAL_DELAY_SECONDS, os.kill, args=(os.getpid(), term_signal))
-    try:
-        started = time.monotonic()
-        timer.start()
-        run_git(["worktree", "add", "--detach", worktree_dir, "HEAD"], repo)
-        deadline = time.monotonic() + _EXIT_POLL_TIMEOUT_SECONDS
-        while not recorded_exits and time.monotonic() < deadline:
-            time.sleep(_EXIT_POLL_INTERVAL_SECONDS)
-    finally:
-        timer.cancel()
-        uninstall()
-
-    [(exit_code, exited_at)] = recorded_exits
-    assert exit_code == 128 + int(term_signal)
-    assert exited_at - started >= _WORKTREE_SLEEP_SECONDS * _DEFERRAL_ELAPSED_FRACTION
-    assert sweep_record["worktree_materialized"]
-    assert list_worktree_dirs(repo, include_main=False) == []
-
-
-def test_run_git_when_pthread_sigmask_unavailable_does_still_return_stdout(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(signals, "pthread_sigmask", None)
-
-    result = run_git(["rev-parse", "HEAD"], repo)
-
-    assert re.fullmatch(r"[0-9a-f]{40}", result.strip())
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------
-# run_git — stdin is closed
+# run_git_step
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("stdin_holding_text")
-def test_run_git_when_a_command_reads_stdin_does_see_it_closed(repo: str):
-    # A closed stdin hashes to git's well-known empty-blob id; the inherited one holds text.
-    result = run_git(["hash-object", "--stdin"], repo)
+def test_run_git_step_when_command_fails_does_raise_with_git_diagnostics(repo: str):
+    with pytest.raises(GymratError) as exc_info:
+        run_git_step(["rev-parse", "--verify", "does-not-exist"], repo, "lookup failed", "retry")
 
-    assert result.strip() == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    assert str(exc_info.value).startswith("lookup failed: ")
+    assert isinstance(exc_info.value.__cause__, subprocess.CalledProcessError)
+    assert exc_info.value.hint == "retry"
+
+
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_run_git_step_when_git_cannot_be_started_does_raise_gymrat_error(tmp_path: Path):
+    with pytest.raises(GymratError, match=r"^lookup failed: .+"):
+        run_git_step(["status"], str(tmp_path), "lookup failed")

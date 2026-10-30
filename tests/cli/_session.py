@@ -12,17 +12,15 @@ import pytest
 from gymrat.loop.finalize import finalize_session
 from gymrat.session.records import SessionLogRecord, SessionRecord
 from tests._config import resolved_config
-from tests.cli._command_stubs import stub_probe_measure
 from tests.config._toml import write_config
 from tests.loop._probe import BASELINE_SAMPLES
 from tests.loop._settle import (
-    CHECKS,
     commit_and_keep,
     edit_experiment,
     keep_iteration,
     start_with,
 )
-from tests.loop.iterate._fixtures import write_iterate_session, write_outlasted_session
+from tests.loop.iterate._fixtures import write_iterate_session
 from tests.session._budget import install_budget
 from tests.session.records._fixtures import (
     baseline_record,
@@ -71,12 +69,6 @@ def open_probe_session(repo: str, **config: object) -> None:
     write_bench_config(repo, **config)
 
 
-def open_stubbed_probe_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a probe-ready session and stub the measurement engine: an arrange-table row."""
-    open_probe_session(repo)
-    stub_probe_measure(monkeypatch)
-
-
 def start_edited_session(
     root: str,
     history: tuple[SessionLogRecord, ...] = (iteration_record(seq=1),),
@@ -93,12 +85,6 @@ def start_edited_session(
     start_with(root, history)
     edit_experiment(root)
     write_bench_config(root, **config)
-
-
-def open_unedited_session(root: str) -> None:
-    """Open a session with one unsettled iteration and configured checks, and edit nothing."""
-    start_with(root, (iteration_record(seq=1),))
-    write_bench_config(root, checks=CHECKS)
 
 
 def open_session(repo: str) -> None:
@@ -142,12 +128,6 @@ def open_capped_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch)
     """Open a session at its iteration cap, under a live budget."""
     write_capped_session(repo)
     install_budget(repo, monkeypatch)
-
-
-def open_outlasted_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a settled session whose last iteration outlasts the 5 minutes the budget has left."""
-    write_outlasted_session(repo, monkeypatch)
-    write_bench_config(repo)
 
 
 def open_hooked_iterate_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> Path:

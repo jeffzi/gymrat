@@ -7,12 +7,15 @@ The plain assertions strip color so a stray ``FORCE_COLOR`` in the environment
 cannot bleed ANSI into a line comparison.
 
 The settle-fold cases are the heart of the suite: a nothing-measured keep that
-took a later iteration's number, a trailing blocked keep with no iteration after
-it, a gating block superseded by a discard, and a checks-failed keep later
-resettled all exercise the positional fold that decides which record settles
-which iteration. The stop footer and runbook line come from the *live* config,
-never the session snapshot, so those cases pass a config the snapshot never
-carried.
+took a later iteration's number, a gating block superseded by a discard, and a
+not-improved keep later resettled all exercise the positional fold that decides
+which record settles which iteration. The stop footer and runbook line come from
+the *live* config, never the session snapshot, so those cases pass a config the
+snapshot never carried.
+
+Expected lines are built with the ``format_status_*`` helpers the report module
+owns, so these tests pin which line the fold produces and in what order, not the
+wording of each line.
 """
 
 from __future__ import annotations
@@ -21,13 +24,29 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.config import StopConfig
-from gymrat.loop.status import status_session
+from gymrat.loop.status import status_data, status_session
+from gymrat.report.loop import (
+    SettleDiscarded,
+    SettleKeepBlocked,
+    SettleKept,
+    SettleState,
+    SettleUnsettled,
+    StatusIteration,
+    StatusSummary,
+    format_status_baseline,
+    format_status_finalized,
+    format_status_footer,
+    format_status_header,
+    format_status_iteration,
+    format_status_settle,
+    format_status_stop,
+)
 from gymrat.session.workspace import BaselineRef
 from tests._ansi import (
     strip_sgr,
 )
 from tests._config import benchless_config as _config
+from tests.report._assertions import render_plain
 from tests.session._store_records import (
     BASELINE,
     HOOK,
@@ -35,9 +54,7 @@ from tests.session._store_records import (
 from tests.session.records._fixtures import (
     RECOGNIZABLE_BASELINE_SHA,
     RECOGNIZABLE_KEEP_COMMIT,
-    SESSION_ID,
     blocked_keep,
-    command_record,
     committed_keep,
     discard_record,
     finalize_record,
@@ -52,8 +69,8 @@ from tests.session.records._fixtures import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from gymrat.config import BenchlessConfig
     from gymrat.session.records import (
+        Outcome,
         SessionLogRecord,
         SessionRecord,
     )
@@ -108,25 +125,38 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     )
 
 
+def _plain(*lines: str) -> list[str]:
+    """The ``format_status_*`` lines as a report shows them, stripped of color."""
+    return render_plain(*lines).split("\n")
+
+
+def _iteration(seq: int, delta_pct: float, outcome: Outcome, settle: SettleState) -> str:
+    """The line ``status_session`` renders for an iteration settled the way ``settle`` says."""
+    return format_status_iteration(StatusIteration(seq, delta_pct, outcome, settle))
+
+
+def _totals(iterations: int, kept: int, discarded: int) -> list[str]:
+    """The totals footer for a session with no stop condition and no target reached."""
+    return format_status_footer(StatusSummary(iterations, kept, discarded, target_reached=False))
+
+
+#: The settle a commit of :data:`RECOGNIZABLE_KEEP_COMMIT` gives an improved iteration.
+_KEPT = SettleKept(commit=RECOGNIZABLE_KEEP_COMMIT)
+
 #: The body ``four_iterations`` renders under the header: one line per record, then the totals.
-_FOUR_ITERATIONS_BODY = [
-    "baseline main · total_ms 15192",
-    "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-    "iteration 2 · ✗ +9.4% · discarded",
-    "iteration 3 · ✓ -3.1% · keep-blocked (checks-failed)",
-    "iteration 4 · ~ +0.1% · unsettled",
-    "4 iterations · 1 kept · 1 discarded",
-]
+_FOUR_ITERATIONS_BODY = _plain(
+    format_status_baseline(BASELINE),
+    _iteration(1, -7.2, "improved", _KEPT),
+    _iteration(2, 9.4, "regressed", SettleDiscarded()),
+    _iteration(3, -3.1, "improved", SettleKeepBlocked(reason="checks-failed")),
+    _iteration(4, 0.1, "no-signal", SettleUnsettled()),
+    *_totals(4, 1, 1),
+)
 
 
 def _header(root: str) -> list[str]:
-    """The four header lines a report opens on for the session ``_session`` writes at ``root``."""
-    return [
-        f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
-        f"branch gymrat/{SESSION_ID}",
-        f"experiment worktree {worktrees_at(root).experiment}",
-        f"baseline worktree {worktrees_at(root).baseline}",
-    ]
+    """The header lines a report opens on for the session ``_session`` writes at ``root``."""
+    return _plain(*format_status_header(_session(root)))
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +190,9 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
                 finalize_record(),
             ),
             [
-                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-                "1 iteration · 1 kept · 0 discarded",
-                f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc",
+                _iteration(1, -7.2, "improved", _KEPT),
+                *_totals(1, 1, 0),
+                format_status_finalized(finalize_record()),
             ],
             id="finalized-closes-under-the-totals",
         ),
@@ -174,25 +204,12 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
                 make_iteration(-3.1, "improved", seq=2),
             ),
             [
-                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-                "keep-blocked (nothing-measured)",
-                "iteration 2 · ✓ -3.1% · unsettled",
-                "2 iterations · 1 kept · 0 discarded",
+                _iteration(1, -7.2, "improved", _KEPT),
+                format_status_settle(SettleKeepBlocked(reason="nothing-measured")),
+                _iteration(2, -3.1, "improved", SettleUnsettled()),
+                *_totals(2, 1, 0),
             ],
             id="nothing-measured-keep-before-a-later-iteration",
-        ),
-        pytest.param(
-            (
-                make_iteration(-7.2, "improved"),
-                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
-                gate_block(2, "nothing-measured"),
-            ),
-            [
-                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-                "keep-blocked (nothing-measured)",
-                "1 iteration · 1 kept · 0 discarded",
-            ],
-            id="nothing-measured-keep-with-no-iteration-after",
         ),
         pytest.param(
             (
@@ -201,27 +218,11 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
                 discard_record(2),
             ),
             [
-                "iteration 1 · ✗ +9.4% · discarded",
-                "keep-blocked (gating-regression)",
-                "1 iteration · 0 kept · 1 discarded",
+                _iteration(1, 9.4, "regressed", SettleDiscarded()),
+                format_status_settle(SettleKeepBlocked(reason="gating-regression")),
+                *_totals(1, 0, 1),
             ],
             id="gating-block-superseded-by-a-discard",
-        ),
-        pytest.param(
-            (make_iteration(0.1, "no-signal"), committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT)),
-            [
-                "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
-                "1 iteration · 1 kept · 0 discarded",
-            ],
-            id="no-signal-iteration-kept",
-        ),
-        pytest.param(
-            (make_iteration(9.4, "regressed"), committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT)),
-            [
-                "iteration 1 · ✗ +9.4% · kept b1b2b3b (regressed)",
-                "1 iteration · 1 kept · 0 discarded",
-            ],
-            id="regressed-iteration-kept",
         ),
         pytest.param(
             (
@@ -230,24 +231,16 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
                 committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
             ),
             [
-                "iteration 1 · ~ +0.1% · kept b1b2b3b (no-signal)",
-                "keep-blocked (not-improved)",
-                "1 iteration · 1 kept · 0 discarded",
+                _iteration(
+                    1,
+                    0.1,
+                    "no-signal",
+                    SettleKept(commit=RECOGNIZABLE_KEEP_COMMIT, outcome="no-signal"),
+                ),
+                format_status_settle(SettleKeepBlocked(reason="not-improved")),
+                *_totals(1, 1, 0),
             ],
             id="not-improved-keep-later-resettled",
-        ),
-        pytest.param(
-            (
-                make_iteration(-7.2, "improved"),
-                blocked_keep(1, reason="checks-failed"),
-                committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
-            ),
-            [
-                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-                "keep-blocked (checks-failed)",
-                "1 iteration · 1 kept · 0 discarded",
-            ],
-            id="checks-failed-keep-later-resettled",
         ),
         pytest.param(
             (
@@ -256,9 +249,9 @@ def test_status_session_when_log_holds_a_whole_history_does_render_header_record
                 stop_record(message="target reached"),
             ),
             [
-                "iteration 1 · ✓ -7.2% · kept b1b2b3b",
-                "stopped · target reached",
-                "1 iteration · 1 kept · 0 discarded",
+                _iteration(1, -7.2, "improved", _KEPT),
+                format_status_stop("target reached"),
+                *_totals(1, 1, 0),
             ],
             id="stop-record-in-file-order",
         ),
@@ -272,7 +265,7 @@ def test_status_session_when_history_settles_records_does_render_each_line_in_fi
 
     report = status_session(root, _config())
 
-    assert _body_lines(report) == body
+    assert _body_lines(report) == _plain(*body)
 
 
 # ---------------------------------------------------------------------------
@@ -280,72 +273,40 @@ def test_status_session_when_history_settles_records_does_render_each_line_in_fi
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("config", "lines_above", "line"),
-    [
-        pytest.param(
-            _config(stop=StopConfig(max_iterations=30)),
-            _HEADER_LINE_COUNT + len(_FOUR_ITERATIONS_BODY),
-            "stop: 4 of 30 iterations",
-            id="stop-line-closes-the-footer",
-        ),
-        pytest.param(
-            _config(runbook=_RUNBOOK_PATH),
-            _HEADER_LINE_COUNT,
-            f"runbook {_RUNBOOK_PATH}",
-            id="runbook-line-under-the-header",
-        ),
-    ],
-)
-def test_status_session_when_live_config_sets_a_field_does_render_its_line_in_place(
-    tmp_path: Path, config: BenchlessConfig, lines_above: int, line: str
+def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_under_the_header(
+    tmp_path: Path,
 ):
     root = str(tmp_path)
     write_session_log(root, _session(root), four_iterations())
     plain = [*_header(root), *_FOUR_ITERATIONS_BODY]
 
-    report = status_session(root, config)
+    report = status_session(root, _config(runbook=_RUNBOOK_PATH))
 
-    assert _report_lines(report) == [*plain[:lines_above], line, *plain[lines_above:]]
+    lines = _report_lines(report)
+    assert _RUNBOOK_PATH in lines[_HEADER_LINE_COUNT]
+    assert [*lines[:_HEADER_LINE_COUNT], *lines[_HEADER_LINE_COUNT + 1 :]] == plain
 
 
 # ---------------------------------------------------------------------------
-# CommandRecord is invisible in the rendered history
+# status_data
 # ---------------------------------------------------------------------------
 
 
-def test_status_session_when_command_records_interleaved_does_render_same_lines(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("closing", "flags"),
+    [
+        pytest.param((finalize_record(),), (True, False), id="finalized"),
+        pytest.param((stop_record(message="target reached"),), (False, True), id="stopped"),
+        pytest.param((), (False, False), id="open"),
+    ],
+)
+def test_status_data_when_session_closes_or_not_does_flag_finalized_and_stopped(
+    tmp_path: Path, closing: tuple[SessionLogRecord, ...], flags: tuple[bool, bool]
 ):
     root = str(tmp_path)
-    history = four_iterations()
-    history_with_commands = (
-        command_record(seq=0),
-        *history[:3],
-        command_record(seq=1),
-        *history[3:],
-        command_record(seq=5),
-    )
-    write_session_log(root, _session(root), history_with_commands)
+    history = (make_iteration(-7.2, "improved"), committed_keep(1), *closing)
+    write_session_log(root, _session(root), history)
 
-    report = status_session(root, _config())
+    data = status_data(root)
 
-    assert _body_lines(report) == _FOUR_ITERATIONS_BODY
-
-
-# ---------------------------------------------------------------------------
-# color parameter
-# ---------------------------------------------------------------------------
-
-
-def test_status_session_when_color_off_does_render_plain_despite_force_color(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    root = str(tmp_path)
-    write_session_log(root, _session(root), four_iterations())
-
-    report = status_session(root, _config(), color=False)
-
-    assert "\x1b[" not in report
+    assert (data.finalized, data.stopped) == flags

@@ -90,6 +90,22 @@ def run_cli(
         raise AssertionError(detail) from error
 
 
-def err_text(result: Result) -> str:
-    """The combined stdout and stderr of a ``CliRunner`` run, stripped of color."""
+def combined_output(result: Result) -> str:
+    """The combined stdout and stderr of a ``CliRunner`` run, stripped of color.
+
+    For failure messages and for checks that something reached neither stream;
+    a check that an error was reported reads :func:`stderr_text` instead.
+
+    Args:
+        result: The finished ``CliRunner`` run.
+
+    Returns:
+        Its stdout followed by its stderr, ANSI escapes removed; a missing
+        stream counts as empty.
+    """
     return strip_ansi((result.stdout or "") + (result.stderr or ""))
+
+
+def stderr_text(result: Result) -> str:
+    """The stderr of a ``CliRunner`` run, stripped of color."""
+    return strip_ansi(result.stderr or "")

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import dataclasses
 import os
+import shlex
 import signal
 import sys
 from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
@@ -222,41 +223,41 @@ def _argv_grandchild(pid_file: Path) -> tuple[str, ...]:
     return (sys.executable, "-c", script)
 
 
+def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str:
+    """Build a shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and exits.
+
+    Args:
+        pid_file: Where the ``sleep`` writes its pid.
+        detached: Send all three of the ``sleep``'s streams to ``/dev/null``;
+            otherwise it holds the shell's stderr open.
+
+    Returns:
+        The shell command line.
+    """
+    redirects = "</dev/null >/dev/null 2>&1" if detached else ">/dev/null"
+    return f"sleep 30 {redirects} & echo $! > {shlex.quote(str(pid_file))}; exit 0"
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class Runner:
-    """One entry point and the arguments a shared test hands it.
+    """One entry point and the grandchild-spawning arguments a shared test hands it.
 
     Attributes:
         run: The entry point.
-        sleeper: Arguments for a child that sleeps for 30 s without writing.
-        partial_output: Arguments for a child that writes ``line 1``, then
-            sleeps for 10 s.
         grandchild: Builds the arguments for a child that starts a sleeping
             grandchild, writes the grandchild's pid to the given file, then
             sleeps for 30 s itself.
     """
 
     run: ExecRun
-    sleeper: str | tuple[str, ...]
-    partial_output: str | tuple[str, ...]
     grandchild: Callable[[Path], str | tuple[str, ...]]
 
 
-RUNNERS = [
-    pytest.param(
-        Runner(run_shell, "sleep 30", "echo 'line 1'; sleep 10", shell_grandchild),
-        id="exec",
-    ),
-    pytest.param(
-        Runner(
-            run_argv,
-            SLEEPER_ARGV,
-            (sys.executable, "-c", "import time; print('line 1', flush=True); time.sleep(10)"),
-            _argv_grandchild,
-        ),
-        id="exec_argv",
-    ),
-]
+SHELL_RUNNER = Runner(run_shell, shell_grandchild)
+"""``exec`` with a shell command line."""
+
+ARGV_RUNNER = Runner(run_argv, _argv_grandchild)
+"""``exec_argv`` with a program and its arguments."""
 
 
 # ---------------------------------------------------------------------------
@@ -264,18 +265,23 @@ RUNNERS = [
 # ---------------------------------------------------------------------------
 
 
+type ExecAnswer = ExecResult | ExecTimeoutError | Callable[[int], ExecResult | ExecTimeoutError]
+"""A fixed result for every call, or a builder answering the n-th call (1-based)."""
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ExecRecorder:
-    """The calls a stand-in for ``exec`` received and the fixed result it answers with.
+    """The calls a stand-in for ``exec`` received and how it answers them.
 
     Attributes:
-        result: What every call returns.
+        answer: The result every call returns, or a builder handed each
+            call's 1-based number that returns that call's result.
         calls: Each call's command and options, in call order. Tests read it to
             assert a command ran (or never did) and to see the working directory
             and timeout it was handed.
     """
 
-    result: ExecResult | ExecTimeoutError
+    answer: ExecAnswer
     calls: list[tuple[str, ExecOptions]] = dataclasses.field(default_factory=list)
 
     async def record(self, command: str, options: ExecOptions) -> ExecResult | ExecTimeoutError:
@@ -286,16 +292,16 @@ class ExecRecorder:
             options: The options it was handed.
 
         Returns:
-            The recorder's fixed result.
+            The fixed result, or what the builder returns for this call.
         """
         self.calls.append((command, options))
-        return self.result
+        if callable(self.answer):
+            return self.answer(len(self.calls))
+        return self.answer
 
 
-def install_exec(
-    monkeypatch: pytest.MonkeyPatch, target: str, result: ExecResult | ExecTimeoutError
-) -> ExecRecorder:
-    """Replace the ``exec`` a module calls with a stand-in answering ``result``.
+def install_exec(monkeypatch: pytest.MonkeyPatch, target: str, answer: ExecAnswer) -> ExecRecorder:
+    """Replace the ``exec`` a module calls with a stand-in answering with ``answer``.
 
     The stand-in carries the real ``exec`` signature, so a call the real one
     would reject fails the test.
@@ -304,11 +310,12 @@ def install_exec(
         monkeypatch: Patches ``target`` for the duration of the test.
         target: The dotted path of the ``exec`` name to replace, such as
             ``"gymrat.loop.keep.exec"``.
-        result: What every call returns.
+        answer: The result every call returns, or a builder handed each
+            call's 1-based number that returns that call's result.
 
     Returns:
         The recorder holding the calls the stand-in received.
     """
-    recorder = ExecRecorder(result)
+    recorder = ExecRecorder(answer)
     monkeypatch.setattr(target, create_autospec(run_exec, side_effect=recorder.record))
     return recorder

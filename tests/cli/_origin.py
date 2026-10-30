@@ -8,11 +8,7 @@ a test module: it carries no test functions or pytest fixtures of its own.
 
 import pytest
 
-#: The hint every supervised-run refusal attaches, pointing the caller at the tool.
-SUPERVISED_HINT = "Call the tool instead of the command."
 
-
-def set_origin(monkeypatch: pytest.MonkeyPatch, origin: str | None) -> None:
-    """Set ``GYMRAT_COMMAND_ORIGIN`` to ``origin``; None leaves it unset."""
-    if origin is not None:
-        monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", origin)
+def set_origin(monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
+    """Set ``GYMRAT_COMMAND_ORIGIN`` to ``origin``."""
+    monkeypatch.setenv("GYMRAT_COMMAND_ORIGIN", origin)

@@ -58,11 +58,6 @@ class OtlpCollector:
         """Every span received, in arrival order."""
         return [span for export in self.received for span in export.spans]
 
-    @property
-    def span_names(self) -> list[str]:
-        """Names of every span received, in arrival order."""
-        return [span.name for span in self.spans]
-
 
 def _received_spans(body: bytes) -> list[ReceivedSpan]:
     request = ExportTraceServiceRequest()

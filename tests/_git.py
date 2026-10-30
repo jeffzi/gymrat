@@ -12,9 +12,6 @@ import pytest
 
 from gymrat import git
 
-#: A bench script that exits non-zero without reporting a metric.
-FAILING_BENCH = "#!/bin/sh\nexit 1\n"
-
 #: The flags that run the bench ``write_committed_bench`` commits, once.
 BENCH_ONCE_FLAGS = ("--bench", "sh bench.sh", "--samples", "1")
 

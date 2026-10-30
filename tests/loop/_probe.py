@@ -21,22 +21,18 @@ if TYPE_CHECKING:
 
     from gymrat.measure import MeasureOptions
     from gymrat.progress_events import ProgressEvent
-    from gymrat.report.types import MeasurementResult, MetricMeasurement
+    from gymrat.report.types import MeasurementResult
 
 #: The rounds the recorded baseline reports, whose ``total_ms`` median is 100.
 BASELINE_SAMPLES: tuple[dict[str, float], ...] = ({"total_ms": 98.0}, {"total_ms": 102.0})
 
 
-def measurement(
-    metrics: dict[str, MetricMeasurement] | None = None, *, adapter: str = "mitata"
-) -> MeasurementResult:
-    """A measurement of the experiment worktree, reporting ``total_ms`` at 90 by default."""
+def measurement(*, adapter: str = "mitata") -> MeasurementResult:
+    """A measurement of the experiment worktree, reporting ``total_ms`` at 90."""
     return create_measurement_result(
         label="experiment",
         adapter=adapter,
-        metrics=metrics
-        if metrics is not None
-        else {"total_ms": measured_metric(median=90.0, spread=2.0, short_name="total_ms")},
+        metrics={"total_ms": measured_metric(median=90.0, spread=2.0, short_name="total_ms")},
     )
 
 
@@ -47,12 +43,11 @@ class MeasureRecorder:
     script, so it is replaced wholesale. The recorder keeps the options each call
     passed in ``calls``, which is how a test reads the target, bench command, and
     sample count a probe asked for, and what the caller wired its progress
-    callback and warn sink to.
+    callback to.
 
     Args:
         result: The measurement every call hands back.
         progress: Events each call reports through the progress callback it was handed.
-        warnings: Messages each call sends through the warn sink it was handed.
         on_call: Run at the start of each call, before anything is recorded: where
             a test advances a clock to give the measurement a duration.
     """
@@ -61,12 +56,10 @@ class MeasureRecorder:
         self,
         result: MeasurementResult,
         progress: Sequence[ProgressEvent] = (),
-        warnings: Sequence[str] = (),
         on_call: Callable[[], None] | None = None,
     ) -> None:
         self.result = result
         self.progress = tuple(progress)
-        self.warnings = tuple(warnings)
         self.on_call = on_call
         self.calls: list[MeasureOptions] = []
 
@@ -78,8 +71,6 @@ class MeasureRecorder:
         if sampling.on_progress is not None:
             for event in self.progress:
                 sampling.on_progress(event)
-        for message in self.warnings:
-            sampling.warn(message)
         return self.result
 
 
@@ -88,7 +79,6 @@ def install_measure(
     result: MeasurementResult,
     *,
     progress: Sequence[ProgressEvent] = (),
-    warnings: Sequence[str] = (),
     on_call: Callable[[], None] | None = None,
 ) -> MeasureRecorder:
     """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
@@ -100,13 +90,12 @@ def install_measure(
         monkeypatch: The test's monkeypatch fixture.
         result: The measurement every call hands back.
         progress: Events each call reports through the progress callback it was handed.
-        warnings: Messages each call sends through the warn sink it was handed.
         on_call: Run at the start of each call, before anything is recorded.
 
     Returns:
         The installed recorder.
     """
-    recorder = MeasureRecorder(result, progress, warnings, on_call)
+    recorder = MeasureRecorder(result, progress, on_call)
     monkeypatch.setattr(
         "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
     )

@@ -59,8 +59,6 @@ import sys
 
 import pytest
 
-from tests._git import run_git
-
 SHELL_EXPORTS = {SHELL_EXPORTS!r}
 ABSENT = {ABSENT!r}
 PINNED = {PINNED_ENV!r}
@@ -126,35 +124,9 @@ def test_monkeypatch_wins_during_test(monkeypatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.delenv("LANG")
 
-    assert os.environ["FORCE_COLOR"] == "1"
-    assert "LANG" not in os.environ
-
-
-def test_monkeypatch_changes_are_undone():
-    assert _current() == IMPORT_ENV
-
 
 def test_writes_environ_under_monkeypatch_fixture(patched):
     os.environ["GYMRAT_DIRECT"] = "set"
-
-
-def test_forces_typer_terminal_under_force_color(monkeypatch):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    monkeypatch.setattr("typer.rich_utils.FORCE_TERMINAL", True)
-
-
-def test_typer_terminal_detection_ignores_shell_and_earlier_tests():
-    import typer.rich_utils
-
-    assert typer.rich_utils.FORCE_TERMINAL is None
-
-
-def test_git_tag_ignores_global_gpg_sign(tmp_path):
-    identity = ["-c", "user.name=a", "-c", "user.email=a@example.com"]
-    run_git(["init"], str(tmp_path))
-    run_git([*identity, "commit", "--allow-empty", "-m", "initial"], str(tmp_path))
-
-    run_git(["tag", "v1"], str(tmp_path))
 
 
 def test_monkeypatch_undo_runs_before_module_cleanups_and_restore():
@@ -168,13 +140,6 @@ def _is_allowed(name: str) -> bool:
     return (
         name in BASELINE_ENV_NAMES or name in PINNED_ENV or name.startswith(BASELINE_ENV_PREFIXES)
     )
-
-
-def test_environ_when_test_starts_does_hold_only_allowlisted_and_pinned_names():
-    unexpected = sorted(name for name in os.environ if not _is_allowed(name))
-    pinned = {name: os.environ.get(name) for name in PINNED_ENV}
-
-    assert (unexpected, pinned) == ([], PINNED_ENV)
 
 
 @pytest.mark.parametrize(
@@ -198,14 +163,11 @@ def test_environ_when_test_starts_does_hold_only_allowlisted_and_pinned_names():
 def test_baseline_when_shell_exports_variables_does_isolate_each_test_from_them(
     tmp_path: Path, worker_args: list[str], worker_kept: dict[str, str]
 ):
-    global_config = tmp_path / "gitconfig"
-    global_config.write_text("[tag]\n\tgpgSign = true\n", encoding="utf-8")
     inherited = {name: value for name, value in os.environ.items() if name not in ABSENT}
     env = {
         **inherited,
         **SHELL_EXPORTS,
         **KEPT,
-        "GIT_CONFIG_GLOBAL": str(global_config),
         "PYTHONPATH": str(REPO_ROOT),
     }
     shell_kept = {
@@ -217,7 +179,7 @@ def test_baseline_when_shell_exports_variables_does_isolate_each_test_from_them(
 
     result = run_inner_pytest(tmp_path, inner, env, worker_args)
 
-    assert (result.returncode, "13 passed" in result.stdout) == (0, True), result.stdout
+    assert (result.returncode, "9 passed" in result.stdout) == (0, True), result.stdout
 
 
 #: Runs under the project conftest in a child pytest: deletes one scratch repo

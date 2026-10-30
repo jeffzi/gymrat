@@ -2,8 +2,8 @@
 
 Appending a stop record to the session log, with refusals for an unsettled
 iteration, a gating block, and an already-stopped session. The no-session and
-finalized refusals come from the shared session guard, pinned for every loop
-command in ``test_loop_integration``.
+finalized refusals come from the shared session guard, pinned in
+``tests/session/test_store.py``.
 
 Every test drives the real ``stop_session`` against a throwaway repository from
 the shared ``create_scratch_repo`` factory, so the suite is order-independent
@@ -14,7 +14,6 @@ import pytest
 
 from gymrat.loop.stop import stop_session
 from gymrat.session.records import SessionLogRecord, StopRecord
-from gymrat.session.store import settle_first_hint
 from tests.loop._settle import (
     capture_error,
     gating_blocked_history,
@@ -39,25 +38,23 @@ def _record_count(repo: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "history",
-    [
-        pytest.param(settled_history(), id="settled-iteration"),
-        pytest.param((), id="no-iterations"),
-    ],
-)
-def test_stop_session_when_open_does_append_a_stop_record(
-    repo: str, history: tuple[SessionLogRecord, ...]
-):
-    start_with(repo, history)
+def test_stop_session_when_open_does_append_a_stop_record(repo: str):
+    start_with(repo, settled_history())
 
-    result = stop_session(repo, "switched to a different approach\nsecond line")
+    stop_session(repo, "switched to a different approach\nsecond line")
 
     record = settling_record_of(repo)
     assert isinstance(record, StopRecord)
     assert record.message == "switched to a different approach\nsecond line"
-    assert record.at > 0
-    assert result.report == "Stopped: switched to a different approach"
+
+
+def test_stop_session_when_message_multiline_does_report_only_its_first_line(repo: str):
+    start_with(repo, settled_history())
+
+    result = stop_session(repo, "switched to a different approach\nsecond line")
+
+    assert "switched to a different approach" in result.report
+    assert "second line" not in result.report
 
 
 # ---------------------------------------------------------------------------
@@ -65,47 +62,21 @@ def test_stop_session_when_open_does_append_a_stop_record(
 # ---------------------------------------------------------------------------
 
 
-_SETTLE_FIRST = settle_first_hint("stopping")
-
-
 @pytest.mark.parametrize(
-    ("history", "message", "hint", "reason"),
+    ("history", "reason"),
     [
-        pytest.param(
-            gating_blocked_history(),
-            "Iteration 1 is blocked by a gating regression",
-            _SETTLE_FIRST,
-            "gating-block",
-            id="gating-block-stands",
-        ),
-        pytest.param(
-            (*settled_history(), stop_record()),
-            "Already stopped",
-            "Run iterate, keep, or discard to continue.",
-            "already-stopped",
-            id="already-stopped",
-        ),
+        pytest.param(gating_blocked_history(), "gating-block", id="gating-block-stands"),
+        pytest.param((*settled_history(), stop_record()), "already-stopped", id="already-stopped"),
+        pytest.param((iteration_record(seq=1),), "unsettled", id="last-iteration-unsettled"),
     ],
 )
-def test_stop_session_when_nothing_is_left_to_stop_cleanly_does_refuse_writing_no_record(
-    repo: str, history: tuple[SessionLogRecord, ...], message: str, hint: str, reason: str
+def test_stop_session_when_session_cannot_be_stopped_does_refuse_writing_no_record(
+    repo: str, history: tuple[SessionLogRecord, ...], reason: str
 ):
     start_with(repo, history)
     before = _record_count(repo)
 
     error = capture_error(lambda: stop_session(repo, "done"))
 
-    assert (str(error), error.hint, error.reason) == (message, hint, reason)
-    assert _record_count(repo) == before
-
-
-def test_stop_session_when_last_iteration_unsettled_does_refuse_with_the_settle_first_hint(
-    repo: str,
-):
-    start_with(repo, (iteration_record(seq=1),))
-    before = _record_count(repo)
-
-    error = capture_error(lambda: stop_session(repo, "done"))
-
-    assert (error.hint, error.reason) == (_SETTLE_FIRST, "unsettled")
+    assert error.reason == reason
     assert _record_count(repo) == before

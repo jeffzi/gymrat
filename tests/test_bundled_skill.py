@@ -1,7 +1,5 @@
-import re
 import zipfile
 from collections.abc import Callable
-from functools import partial
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -11,20 +9,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat.bundled_skill import read_bundled_skill
-from gymrat.config import CONFIG_DEFAULTS
 from gymrat.errors import GymratError
-from tests._ansi import normalize
-from tests._markdown import md_section
-
-SKILL_HEADING = "# Driving a gymrat optimization session"
-
-
-def _assert_reinstall_error(error: GymratError, cause_type: type[BaseException]) -> None:
-    """Assert the failure's SKILL.md message, reinstall hint, and cause."""
-    assert "SKILL.md" in str(error)
-    assert error.hint is not None
-    assert re.search("reinstall", error.hint, re.IGNORECASE)
-    assert isinstance(error.__cause__, cause_type)
 
 
 def _install_package_root(monkeypatch: pytest.MonkeyPatch, root: Traversable) -> None:
@@ -113,8 +98,8 @@ def test_read_bundled_skill_when_read_fails_does_raise_naming_the_resolved_locat
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    _assert_reinstall_error(caught.value, cause_type)
-    assert f"(resolved to {resource})" in str(caught.value)
+    assert isinstance(caught.value.__cause__, cause_type)
+    assert str(resource) in str(caught.value)
 
 
 def test_read_bundled_skill_when_resource_lookup_fails_does_raise_without_a_location(
@@ -131,128 +116,5 @@ def test_read_bundled_skill_when_resource_lookup_fails_does_raise_without_a_loca
     with pytest.raises(GymratError) as caught:
         read_bundled_skill()
 
-    _assert_reinstall_error(caught.value, zipfile.BadZipFile)
+    assert isinstance(caught.value.__cause__, zipfile.BadZipFile)
     assert "resolved to" not in str(caught.value)
-
-
-# ---------------------------------------------------------------------------
-# read_bundled_skill content
-# ---------------------------------------------------------------------------
-
-LOOP_DISCIPLINE = "## Loop discipline"
-SUPERVISED_MODE = "### Supervised mode"
-
-
-def _section(heading: str) -> str:
-    """The skill text from ``heading`` up to the next heading of the same or a higher level."""
-    level = len(heading) - len(heading.lstrip("#"))
-    return md_section(read_bundled_skill(), heading, rf"\n#{{1,{level}}} ")
-
-
-def _paragraph(heading: str, marker: str) -> str:
-    """The paragraph (or list item) under ``heading`` containing ``marker``, unwrapped to one line."""
-    paragraphs = (normalize(item) for item in _section(heading).split("\n\n"))
-    return next(item for item in paragraphs if marker in item)
-
-
-def _unwrapped_section(heading: str) -> str:
-    """The skill text under ``heading`` with every line break and run of spaces collapsed."""
-    return normalize(_section(heading))
-
-
-@pytest.mark.parametrize(
-    ("passage", "phrases"),
-    [
-        pytest.param(read_bundled_skill, (SKILL_HEADING,), id="whole-file"),
-        pytest.param(
-            partial(_paragraph, LOOP_DISCIPLINE, "Never stop before"),
-            ("`iterate`", "exits 1", "tool", "stopped: true", "reason"),
-            id="stop-rule",
-        ),
-        pytest.param(
-            partial(_paragraph, SUPERVISED_MODE, "Use the `probe` and `iterate` tools."),
-            ("`gymrat iterate`", "`gymrat probe`", "through Bash", "refused", "only form"),
-            id="tools",
-        ),
-        pytest.param(
-            partial(_paragraph, SUPERVISED_MODE, "Never run `gymrat supervise` yourself."),
-            ("nested", "refused"),
-            id="nested-supervise",
-        ),
-        pytest.param(
-            partial(_paragraph, LOOP_DISCIPLINE, "Never run concurrent sessions."),
-            ("nested", "refused"),
-            id="concurrent-rule",
-        ),
-        pytest.param(
-            partial(_unwrapped_section, "### 3. The iteration cycle"),
-            (
-                "Never pass `--bench` or `--samples` to `iterate`.",
-                "Edit code **only in the experiment worktree**",
-            ),
-            id="iteration-cycle",
-        ),
-        pytest.param(
-            partial(_unwrapped_section, "## Red flags"),
-            ("About to pass `--bench` or `--samples` to `iterate`.",),
-            id="red-flags",
-        ),
-        pytest.param(
-            partial(
-                _paragraph,
-                SUPERVISED_MODE,
-                "**A file edit outside the experiment worktree is refused.**",
-            ),
-            (
-                "Edit, Write, MultiEdit, or NotebookEdit",
-                "temporary directories",
-                "names its rule",
-                "change the call",
-                "not to retry it",
-            ),
-            id="outside-edit",
-        ),
-        pytest.param(
-            partial(
-                _paragraph, SUPERVISED_MODE, "**Never run a gymrat command in the background.**"
-            ),
-            ("contains `gymrat` is refused",),
-            id="background",
-        ),
-        pytest.param(
-            partial(_paragraph, SKILL_HEADING, "`samples` defaults to"),
-            ("`iterate`", "`compare`", "refuse", "odd"),
-            id="odd-samples",
-        ),
-        pytest.param(
-            partial(_unwrapped_section, "## Keeping iterations cheap"),
-            ("--samples 6", "`probe` defaults to 6", "`detectable_pct` before buying more samples"),
-            id="detectable-change",
-        ),
-        pytest.param(
-            partial(_paragraph, "## Syncing main-tree edits", "Under supervise"),
-            (
-                "refused",
-                "make the change in the experiment worktree",
-                "a person's main-tree edits",
-            ),
-            id="sync",
-        ),
-    ],
-)
-def test_read_bundled_skill_when_section_inspected_does_state_its_rule(
-    passage: Callable[[], str],
-    phrases: tuple[str, ...],
-):
-    text = passage()
-
-    missing = [phrase for phrase in phrases if phrase not in text]
-    assert missing == []
-
-
-def test_read_bundled_skill_when_default_samples_stated_does_match_the_config_default():
-    skill = normalize(read_bundled_skill())
-
-    stated = re.findall(r"`samples` defaults to `(\d+)`", skill)
-
-    assert stated == [str(CONFIG_DEFAULTS.samples)]

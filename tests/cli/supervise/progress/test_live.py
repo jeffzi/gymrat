@@ -1,51 +1,45 @@
-"""Live-wiring, render-refresh, warning, and render-failure tests.
+"""Live-wiring, render-refresh, and render-failure tests.
 
-Tests for the ``Live`` construction contract (one frame per second rendering
-through ``get_renderable``, ``transient=True``, rich's stderr redirect left on),
-the single ``refresh()`` an event that changes state triggers, the skipped
-repaint for events that leave state unchanged, the session refresh that re-reads
-the session, keeping the last good read when one fails and repainting only when
-the re-read succeeds, and the suppression scope of ``stop()`` (``OSError`` and a
-closed-stream ``ValueError`` only).
+Tests for the ``Live`` construction contract (the refresh rate derived from the
+refresh interval, rendering through ``get_renderable``), the color flag handed
+to the console factory, the single ``refresh()`` an event that changes state
+triggers, the skipped repaint for events that leave state unchanged, and the
+session refresh that re-reads the session, keeping the last good read when one
+fails and repainting only when the re-read succeeds.
 
-The lifecycle test mounts a real dashboard: a second ``stop()`` writes nothing.
-
-The ``terminal`` fixture makes a sealed terminal console the dashboard's
-console and the process's stderr, with one line kept above the dashboard. The
-warning test patches out the ``Live`` class so no frame is painted, and reads
-what the dashboard printed on a terminal with styling on, so a highlighted
-number or path would show up as escape codes. The zero-width fallback, a
-warning printed while the frame is up, and what a termination signal does to
-the dashboard are tested alongside every other CLI progress renderer, in
-``tests/cli/test_progress.py``.
+The ``terminal`` fixture makes a sealed console writing to a buffer the
+dashboard's console. A
+warning printed while the frame is up is pinned here, on a real live display.
+The zero-width fallback, what a termination signal does to a display, and the
+``stop()`` guards every renderer shares are tested in
+``tests/cli/test_live_display.py`` and ``tests/cli/test_live_display_mixin.py``.
 """
 
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, Literal, override
-from unittest.mock import DEFAULT, MagicMock, Mock
+from typing import TYPE_CHECKING, Any, override
+from unittest.mock import DEFAULT, MagicMock, Mock, patch
 
 import pytest
 
+from gymrat.cli.live_display import ErasableLive
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
-    KEPT_LINE,
     Clock,
-    console_output,
     frame_text,
-    kept_line_terminal,
     sealed_console,
-    stop_tracked,
 )
 from tests.cli.supervise._fixtures import (
     EMPTY_READ,
     FRAME_WIDTH,
     KEPT_READ,
+    LIVE_CLASS_PATH,
     ReporterKit,
     dashboard_console_patch,
     fire_launch_and_iterate_start,
+    launch_event,
     launched,
     make_reporter,
     render_frame,
@@ -61,10 +55,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionEvent
 
-# The terminal the dashboard paints on: wide enough for the golden frame width
-# and tall enough that the frame is never cropped.
+# The terminal the dashboard paints on: wide enough for the golden frame width.
 _SCREEN_WIDTH = FRAME_WIDTH
-_SCREEN_HEIGHT = 40
 
 
 def _repaints_from_now(live_cls: MagicMock) -> Callable[[], int]:
@@ -75,34 +67,16 @@ def _repaints_from_now(live_cls: MagicMock) -> Callable[[], int]:
 
 
 # ---------------------------------------------------------------------------
-# Live color override
+# Live construction — refresh rate and renderable
 # ---------------------------------------------------------------------------
 
 
-def test_create_reporter_when_color_false_does_build_colorless_console(mock_live_cls: MagicMock):
-    make_reporter(mode="live", color=False)
+def test_create_reporter_when_live_mode_does_derive_the_refresh_rate_from_refresh_ms(
+    mock_live_cls: MagicMock,
+):
+    make_reporter(mode="live", refresh_ms=500)
 
-    console = mock_live_cls.call_args.kwargs.get("console")
-    assert console is not None
-    assert console.color_system is None
-
-
-# ---------------------------------------------------------------------------
-# Live construction — refresh rate, transient, renderable, stderr redirect
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_configure_the_live_display(mock_live_cls: MagicMock):
-    kit = make_reporter(mode="live")
-
-    call_kwargs = mock_live_cls.call_args.kwargs
-    assert call_kwargs.get("refresh_per_second") == 1
-    assert frame_text(call_kwargs["get_renderable"](), width=FRAME_WIDTH) == render_frame(
-        kit.reporter
-    )
-    assert call_kwargs.get("transient") is True
-    # rich's stderr redirect is what lands a stray stderr write above the frame
-    assert call_kwargs.get("redirect_stderr", True) is True
+    assert mock_live_cls.call_args.kwargs.get("refresh_per_second") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -168,101 +142,18 @@ def test_refresh_session_when_live_does_show_only_a_successful_reread(
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle — repeated stop
-# ---------------------------------------------------------------------------
-
-
-def test_stop_when_called_again_does_write_nothing_more():
-    console = sealed_console(width=_SCREEN_WIDTH, height=_SCREEN_HEIGHT)
-    with dashboard_console_patch(console):
-        kit = launched(make_reporter(mode="live"))
-    kit.reporter.stop()
-    after_first_stop = console_output(console)
-
-    kit.reporter.stop()
-
-    assert console_output(console) == after_first_stop
-
-
-# ---------------------------------------------------------------------------
-# warn — messages printed verbatim, with no highlighting
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("mock_live_cls")
-@pytest.mark.parametrize("mode", ["live", "plain"])
-def test_warn_when_message_has_numbers_and_a_path_does_print_it_without_highlighting(
-    monkeypatch: pytest.MonkeyPatch, mode: Literal["live", "plain"]
-):
-    message = "cache /tmp/banana/cache.json holds 3 entries"
-    # Built in the test body: pytest re-points sys.stderr between fixture setup
-    # and the test call, and a plain-mode warning is written to sys.stderr.
-    term = StringIO()
-    console = kept_line_terminal(
-        monkeypatch,
-        stream=term,
-        width=_SCREEN_WIDTH,
-        height=_SCREEN_HEIGHT,
-        color_system="standard",
-    )
-    with dashboard_console_patch(console):
-        kit = make_reporter(mode=mode)
-
-    kit.reporter.warn(message)
-
-    assert term.getvalue() == f"{KEPT_LINE}\n{message}\n"
-
-
-# ---------------------------------------------------------------------------
-# stop — suppresses OSError and a closed-stream ValueError only
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(OSError("stderr closed"), id="os-error"),
-        pytest.param(ValueError("I/O operation on closed file"), id="closed-stream-value-error"),
-    ],
-)
-def test_stop_when_live_stop_raises_a_closed_stream_error_does_suppress(
-    mock_live_cls: MagicMock, error: Exception
-):
-    mock_live_cls.return_value.stop.side_effect = error
-    kit = make_reporter(mode="live")
-
-    kit.reporter.stop()
-
-
-def test_stop_when_live_stop_raises_unrelated_value_error_does_propagate(mock_live_cls: MagicMock):
-    mock_live_cls.return_value.stop.side_effect = [ValueError("unexpected"), None]
-    kit = make_reporter(mode="live")
-
-    with pytest.raises(ValueError, match="unexpected"):
-        kit.reporter.stop()
-
-
-# ---------------------------------------------------------------------------
 # Terminal — the stderr the dashboard paints on
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
-    """The stderr terminal the live dashboard paints on, with one line kept above it."""
+def terminal() -> Iterator[StringIO]:
+    """The terminal the live dashboard's console writes to."""
     term = StringIO()
-    console = kept_line_terminal(
-        monkeypatch,
-        stream=term,
-        width=_SCREEN_WIDTH,
-        height=_SCREEN_HEIGHT,
-        color_system=None,
-    )
+    console = sealed_console(width=_SCREEN_WIDTH, color_system=None)
+    console.file = term
     with dashboard_console_patch(console):
         yield term
-        # Stop the dashboards while stderr is still this terminal: a Live stopped
-        # after monkeypatch's undo would re-point sys.stderr at this dead buffer.
-        stop_tracked()
 
 
 # ---------------------------------------------------------------------------
@@ -272,31 +163,31 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[StringIO]:
 # Message of the error the flaky sidecar raises, which the warning names.
 _RENDER_FAILURE = "sidecar unreadable"
 
-# The one warning line a failed render leaves on the terminal.
-_RENDER_FAILURE_WARNING = (
-    f"warning: dashboard frame failed to render: RuntimeError: {_RENDER_FAILURE}"
-)
+
+def _assert_one_warning_naming_the_render_error(terminal: StringIO) -> None:
+    """Assert the terminal holds exactly one warning, naming the render error."""
+    lines = terminal.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].endswith(f"RuntimeError: {_RENDER_FAILURE}")
 
 
 class _FlakySidecar:
     """A sidecar reader a test arms to fail its next reads.
 
-    ``fail_next(count)`` makes the next *count* reads raise; ``fail_next(None)``
-    makes every read from then on raise. The dashboard reads the sidecar on
-    every frame while an iterate call is in flight, so each failed read is a
-    failed render.
+    ``fail_next(count)`` makes the next *count* reads raise. The dashboard reads
+    the sidecar on every frame while an iterate call is in flight, so each failed
+    read is a failed render.
     """
 
     def __init__(self) -> None:
-        self._failures_left: int | None = 0
+        self._failures_left = 0
 
-    def fail_next(self, count: int | None) -> None:
+    def fail_next(self, count: int) -> None:
         self._failures_left = count
 
     def __call__(self, _root: str) -> ProgressSnapshot | None:
-        if self._failures_left is None or self._failures_left > 0:
-            if self._failures_left is not None:
-                self._failures_left -= 1
+        if self._failures_left > 0:
+            self._failures_left -= 1
             raise RuntimeError(_RENDER_FAILURE)
         return None
 
@@ -320,10 +211,8 @@ def test_live_frame_when_frames_keep_failing_does_hold_the_last_good_frame_with_
 
     failed = [frame_text(get_renderable(), width=FRAME_WIDTH) for _ in range(2)]
 
-    assert (failed, terminal.getvalue()) == (
-        [last_good, last_good],
-        f"{KEPT_LINE}\n{_RENDER_FAILURE_WARNING}\n",
-    )
+    assert failed == [last_good, last_good]
+    _assert_one_warning_naming_the_render_error(terminal)
 
 
 @pytest.mark.usefixtures("terminal")
@@ -339,21 +228,6 @@ def test_live_frame_when_failures_stop_does_render_a_fresh_frame(mock_live_cls: 
     recovered = frame_text(get_renderable(), width=FRAME_WIDTH)
 
     assert recovered == render_frame(kit.reporter)
-
-
-def test_stop_when_final_frame_fails_to_render_does_return_normally_with_one_warning(
-    terminal: StringIO, mock_live_cls: MagicMock
-):
-    sidecar = _FlakySidecar()
-    kit = _dashboard_reading(sidecar)
-    get_renderable = mock_live_cls.call_args.kwargs["get_renderable"]
-    # rich renders one final frame as a Live stops.
-    mock_live_cls.return_value.stop.side_effect = get_renderable
-    sidecar.fail_next(None)
-
-    kit.reporter.stop()
-
-    assert terminal.getvalue() == f"{KEPT_LINE}\n{_RENDER_FAILURE_WARNING}\n"
 
 
 class _FailingClock(Clock[int]):
@@ -383,4 +257,40 @@ def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_
 
     make_reporter(mode="live", clock=_FailingClock(), plain_write=plain_lines.append)
 
-    assert (plain_lines, terminal.getvalue()) == ([], f"{KEPT_LINE}\n{_RENDER_FAILURE_WARNING}\n")
+    assert plain_lines == []
+    _assert_one_warning_naming_the_render_error(terminal)
+
+
+# ---------------------------------------------------------------------------
+# Warnings — printed through the dashboard's console while the frame is up
+# ---------------------------------------------------------------------------
+
+
+def test_warn_when_live_mode_does_print_through_the_console_while_the_frame_is_up(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    console = sealed_console()
+    lives: list[ErasableLive] = []
+
+    def build_live(**kwargs: Any) -> ErasableLive:
+        lives.append(ErasableLive(**kwargs))
+        return lives[-1]
+
+    with (
+        dashboard_console_patch(console),
+        patch(LIVE_CLASS_PATH, autospec=True, side_effect=build_live),
+    ):
+        kit = make_reporter(mode="live", plain_write=lambda _line: None)
+    kit.reporter.observer(launch_event(1000))
+    printed: list[tuple[str, bool]] = []
+    real_print = console.print
+
+    def recording_print(*objects: object, **kwargs: Any) -> None:
+        printed.extend((text, lives[0].is_started) for text in objects if isinstance(text, str))
+        real_print(*objects, **kwargs)
+
+    monkeypatch.setattr(console, "print", recording_print)
+
+    kit.reporter.warn("warning: lat:100:p99 disk full")
+
+    assert printed == [("warning: lat:100:p99 disk full", True)]

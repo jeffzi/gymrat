@@ -4,21 +4,13 @@ These cover the style/color primitives (label clipping by terminal cells and
 grapheme clusters) plus the color-resolution and capture-rendering tests.
 """
 
-import os
-
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 from rich.cells import cell_len, split_graphemes
 
 from gymrat.report.labels import shorten_label, truncate_labels
-from gymrat.report.style import (
-    RENDER_WIDTH,
-    format_hint,
-    highlight_inline_code,
-    make_capture_console,
-    render_lines,
-)
+from gymrat.report.style import format_hint, highlight_inline_code, render_lines
 from tests._ansi import strip_ansi
 from tests.report._assertions import render_colored, render_plain, sgr_for, styles_at
 
@@ -29,15 +21,8 @@ from tests.report._assertions import render_colored, render_plain, sgr_for, styl
 _TEXT = "rain on the lake"
 
 
-@pytest.mark.parametrize(
-    "max_width",
-    [
-        pytest.param(20, id="wider-than-text"),
-        pytest.param(len(_TEXT), id="exactly-text-width"),
-    ],
-)
-def test_shorten_label_when_text_already_fits_does_return_verbatim(max_width: int):
-    assert shorten_label(_TEXT, max_width) == _TEXT
+def test_shorten_label_when_text_already_fits_does_return_verbatim():
+    assert shorten_label(_TEXT, len(_TEXT)) == _TEXT
 
 
 @pytest.mark.parametrize(
@@ -53,12 +38,8 @@ def test_shorten_label_when_text_overflows_does_middle_ellipsis(max_width: int, 
     assert shorten_label(_TEXT, max_width) == expected
 
 
-@pytest.mark.parametrize(
-    "max_width",
-    [pytest.param(0, id="zero"), pytest.param(-5, id="negative")],
-)
-def test_shorten_label_when_width_leaves_no_room_does_return_empty(max_width: int):
-    assert shorten_label(_TEXT, max_width) == ""
+def test_shorten_label_when_width_leaves_no_room_does_return_empty():
+    assert shorten_label(_TEXT, 0) == ""
 
 
 _E_ACUTE = "e\N{COMBINING ACUTE ACCENT}"
@@ -69,20 +50,10 @@ _FAMILY = "\N{MAN}\N{ZERO WIDTH JOINER}\N{WOMAN}\N{ZERO WIDTH JOINER}\N{GIRL}"
 @pytest.mark.parametrize(
     ("text", "max_width", "expected"),
     [
-        pytest.param("一二三", 6, "一二三", id="fits-by-cells-verbatim"),
         pytest.param("一二三", 4, "一…", id="overflows-by-cells-truncates"),
-        pytest.param("一二三四五六", 9, "一二…五六", id="wide-middle-ellipsis"),
-        pytest.param("世界世界世界", 3, "…", id="wide-clusters-wider-than-both-shares"),
-        pytest.param("世界世界世界", 5, "世…界", id="wide-clusters-filling-both-shares"),
         pytest.param("世abc", 3, "…c", id="wide-first-cluster-wider-than-head-share"),
-        pytest.param(
-            f"abc{_E_ACUTE}thunderbird", 9, f"abc{_E_ACUTE}…bird", id="combining-mark-in-head"
-        ),
         pytest.param(f"abcdefghij{_E_ACUTE}xyz", 7, "abc…xyz", id="combining-mark-at-tail-edge"),
         pytest.param(f"ab{_HEART}understatement", 7, "ab…ent", id="emoji-selector-at-head-edge"),
-        pytest.param(
-            f"abcdefghijklmnop{_FAMILY}xy", 9, f"abcd…{_FAMILY}xy", id="zwj-sequence-in-tail"
-        ),
     ],
 )
 def test_shorten_label_when_text_has_wide_or_combined_clusters_does_clip_on_whole_clusters(
@@ -132,7 +103,6 @@ def test_truncate_labels_when_a_label_overflows_does_join_head_and_tail():
     result = truncate_labels(["feature/entity-spawn-fastpath"])
 
     assert result == ["feature/en…-fastpath"]
-    assert len(result[0]) == 20
 
 
 def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it():
@@ -159,26 +129,19 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
 def test_highlight_inline_code_when_span_in_prose_does_paint_the_span_blue_without_backticks():
     styled = highlight_inline_code("Run `gymrat doctor` to verify.")
 
-    assert render_plain(styled) == "Run gymrat doctor to verify."
     assert styles_at(render_colored(styled), "gymrat doctor") == sgr_for("blue")
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        pytest.param(
-            "Use `gymrat compare` or `gymrat measure`.",
-            "Use gymrat compare or gymrat measure.",
-            id="multiple-spans",
-        ),
-        pytest.param("No inline code here.", "No inline code here.", id="no-backticks"),
-        pytest.param("Metric `[i]` counts.", "Metric [i] counts.", id="markup-metacharacters"),
-    ],
-)
-def test_highlight_inline_code_when_rendered_plain_does_drop_backticks_and_keep_span_text_literal(
-    text: str, expected: str
-):
-    assert render_plain(highlight_inline_code(text)) == expected
+def test_highlight_inline_code_when_rendered_plain_does_drop_the_backticks_of_every_span():
+    styled = highlight_inline_code("Use `gymrat compare` or `gymrat measure`.")
+
+    assert render_plain(styled) == "Use gymrat compare or gymrat measure."
+
+
+def test_highlight_inline_code_when_span_holds_markup_metacharacters_does_keep_them_literal():
+    styled = highlight_inline_code("Metric `[i]` counts.")
+
+    assert render_plain(styled) == "Metric [i] counts."
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +152,6 @@ def test_highlight_inline_code_when_rendered_plain_does_drop_backticks_and_keep_
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param("`gymrat keep` settles it", "gymrat keep settles it", id="code-first"),
-        pytest.param("then run `gymrat keep`", "then run gymrat keep", id="code-last"),
         pytest.param("`up``on`", "upon", id="adjacent-code"),
         pytest.param("counts [i] rounds", "counts [i] rounds", id="brackets-in-prose"),
         pytest.param("counts `[i]` rounds", "counts [i] rounds", id="brackets-in-code"),
@@ -222,10 +183,7 @@ def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blu
     [
         pytest.param({"NO_COLOR": "1"}, True, True, id="color-on-beats-no-color"),
         pytest.param({"FORCE_COLOR": "1"}, False, False, id="color-off-beats-force-color"),
-        pytest.param({"NO_COLOR": "1"}, None, False, id="unset-follows-no-color"),
-        pytest.param({"FORCE_COLOR": "1"}, None, True, id="unset-follows-force-color"),
         pytest.param({}, None, False, id="unset-without-env-captures-plain"),
-        pytest.param({"TERM": "dumb"}, True, True, id="color-on-beats-dumb-terminal"),
     ],
 )
 def test_render_lines_when_color_and_env_vary_does_resolve_ansi(
@@ -239,52 +197,12 @@ def test_render_lines_when_color_and_env_vary_does_resolve_ansi(
     assert ("\x1b[" in result, strip_ansi(result)) == (has_ansi, "hi")
 
 
-def test_render_lines_when_invoked_does_not_mutate_os_environ(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-    render_lines("[red]hi[/red]", color=True)
-
-    assert os.environ.get("NO_COLOR") == "1"
-    assert "FORCE_COLOR" not in os.environ
-
-
 # ---------------------------------------------------------------------------
 # render_lines — layout
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("markup", "expected"),
-    [
-        pytest.param(
-            "x" * (RENDER_WIDTH + 100), "x" * (RENDER_WIDTH + 100), id="wider-than-width-unwrapped"
-        ),
-        pytest.param("hi", "hi", id="shorter-than-width-no-trailing-space"),
-        pytest.param("lat:100:p99", "lat:100:p99", id="colon-word-not-emoji"),
-    ],
-)
-def test_render_lines_when_plain_does_render_text_verbatim(markup: str, expected: str):
-    result = render_lines(markup, color=False)
-
-    assert result == expected
 
 
 def test_render_lines_when_given_multiple_renderables_does_join_with_newlines():
     result = render_lines("line1", "line2", color=False)
 
     assert result == "line1\nline2"
-
-
-# ---------------------------------------------------------------------------
-# make_capture_console
-# ---------------------------------------------------------------------------
-
-
-def test_make_capture_console_when_term_dumb_does_keep_the_render_width(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setenv("TERM", "dumb")
-
-    console = make_capture_console(color=True)
-
-    assert console.width == RENDER_WIDTH

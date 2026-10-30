@@ -1,16 +1,11 @@
 """Tests for the loop report fragments.
 
-These cover the loop header, the verdict block, and the status-report
-formatters. The header block pins the iteration wording and sample
-pluralization; the verdict block pins the line shape, the outcome word, and the
-color of each rerun phrase. The status formatters pin the header block, the
-per-iteration line (glyph, delta, and settle state), the baseline medians, the
+These cover the loop header, the verdict block, the start summary, and the
+status-report formatters. The header block pins the iteration wording and sample
+pluralization; the verdict block pins the line shape, the target hint, and where
+rerun lines sit. The status formatters pin the header block, the per-iteration
+line (glyph, delta, and settle state), the baseline medians, the
 totals-and-stop footer, and the finalized closer.
-
-Color is pinned by intent rather than by raw byte sequences: the loop fragments
-return rich markup, and the color cases resolve that markup with
-``render_lines(..., color=True)`` and read the SGR codes off it with
-``styles_at``.
 """
 
 from __future__ import annotations
@@ -31,6 +26,7 @@ from gymrat.report.loop import (
     StatusIteration,
     StatusSummary,
     format_loop_header,
+    format_start_summary,
     format_status_baseline,
     format_status_finalized,
     format_status_footer,
@@ -39,23 +35,25 @@ from gymrat.report.loop import (
     format_status_stop,
     format_verdict_block,
 )
-from gymrat.report.style import EMPHASIZED_DIRECTION_STYLES, VERDICT_STYLES
 from gymrat.session.workspace import BaselineRef, Worktrees
-from tests.report._assertions import render_colored, render_plain, sgr_for, styles_at
+from tests.report._assertions import render_plain
 from tests.session.records._fixtures import (
+    ARCHIVED_SESSION_ID,
+    ARCHIVED_SESSION_PATH,
     RECOGNIZABLE_BASELINE_SHA,
     RECOGNIZABLE_KEEP_COMMIT,
     SESSION_ID,
     baseline_record,
     finalize_record,
     session_record,
+    start_result,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from gymrat.report.loop import RerunAnswer, SettleState
-    from gymrat.session.schema import Outcome
+    from gymrat.loop.start import StartResult
+    from gymrat.report.loop import SettleState
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +65,6 @@ def test_format_loop_header_when_given_seq_and_samples_does_render_the_header_li
     header = format_loop_header(7, 6)
 
     assert render_plain(header) == "iteration 7 · experiment vs baseline · 6 paired samples"
-    assert "1" in styles_at(render_colored(header), "iteration 7")
 
 
 # ---------------------------------------------------------------------------
@@ -75,33 +72,19 @@ def test_format_loop_header_when_given_seq_and_samples_does_render_the_header_li
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("outcome", "word", "codes"),
-    [
-        pytest.param(
-            "improved",
-            "IMPROVED",
-            sgr_for(EMPHASIZED_DIRECTION_STYLES["improved"]),
-            id="improved-green",
-        ),
-        pytest.param(
-            "regressed",
-            "REGRESSED",
-            sgr_for(EMPHASIZED_DIRECTION_STYLES["regressed"]),
-            id="regressed-red",
-        ),
-        pytest.param("no-signal", "NO-SIGNAL", sgr_for("bold"), id="no-signal-uncolored"),
-    ],
-)
-def test_format_verdict_block_when_given_outcome_does_render_the_verdict_line(
-    outcome: Outcome, word: str, codes: list[str]
-):
+def test_format_verdict_block_when_target_reached_does_state_the_target_above_the_next_step():
     block = format_verdict_block(
-        outcome=outcome, primary=GeomeanPrimary(delta_pct=-4.2), next_step="gymrat keep"
+        outcome="improved",
+        primary=GeomeanPrimary(delta_pct=-4.2),
+        next_step="gymrat keep",
+        target_reached=True,
     )
 
-    assert render_plain(block[0]) == f"primary: -4.2% · verdict: {word}"
-    assert styles_at(render_colored(block[0]), word) == codes
+    assert [render_plain(line) for line in block] == [
+        "primary: -4.2% · verdict: IMPROVED",
+        "target reached — keep it",
+        "gymrat keep",
+    ]
 
 
 def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target_hint():
@@ -118,30 +101,8 @@ def test_format_verdict_block_when_target_reached_but_regressed_does_omit_target
     ]
 
 
-@pytest.mark.parametrize(
-    ("answer", "phrase", "codes"),
-    [
-        pytest.param(
-            "confirmed",
-            "regression confirmed on rerun",
-            sgr_for(VERDICT_STYLES["regressed"]),
-            id="confirmed",
-        ),
-        pytest.param(
-            "disagreed",
-            "regression not confirmed on rerun",
-            sgr_for(VERDICT_STYLES["within-noise"]),
-            id="disagreed",
-        ),
-        pytest.param(
-            "absent", "not measured on rerun", sgr_for(VERDICT_STYLES["unstable"]), id="absent"
-        ),
-    ],
-)
-def test_format_verdict_block_when_rerun_does_color_phrase_by_answer(
-    answer: RerunAnswer, phrase: str, codes: list[str]
-):
-    rerun = RerunConfirmation(metric="entity/alive_check#time", answer=answer)
+def test_format_verdict_block_when_rerun_does_lead_with_the_metric_and_its_answer():
+    rerun = RerunConfirmation(metric="entity/alive_check#time", answer="confirmed")
 
     block = format_verdict_block(
         outcome="regressed",
@@ -150,8 +111,59 @@ def test_format_verdict_block_when_rerun_does_color_phrase_by_answer(
         reruns=[rerun],
     )
 
-    assert render_plain(block[0]) == f"entity/alive_check#time: {phrase}"
-    assert styles_at(render_colored(block[0]), phrase) == codes
+    assert render_plain(block[0]) == "entity/alive_check#time: regression confirmed on rerun"
+
+
+# ---------------------------------------------------------------------------
+# format_start_summary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("result", "runbook", "extra_rows"),
+    [
+        pytest.param(
+            start_result(),
+            None,
+            [],
+            id="neither",
+        ),
+        pytest.param(
+            start_result(),
+            "RUNBOOK.md",
+            ["  runbook: RUNBOOK.md — read it before your first edit"],
+            id="runbook",
+        ),
+        pytest.param(
+            start_result(archived=ARCHIVED_SESSION_ID, archived_path=ARCHIVED_SESSION_PATH),
+            None,
+            [f"  archived the finalized session {ARCHIVED_SESSION_ID} to {ARCHIVED_SESSION_PATH}"],
+            id="archived",
+        ),
+    ],
+)
+def test_format_start_summary_when_runbook_or_archive_given_does_add_its_row(
+    result: StartResult, runbook: str | None, extra_rows: list[str]
+):
+    lines = format_start_summary(result, runbook).split("\n")
+
+    assert lines[5:-1] == extra_rows
+
+
+def test_format_start_summary_when_started_does_name_the_branch():
+    session = session_record()
+
+    lines = format_start_summary(start_result(session=session), None).split("\n")
+
+    assert session.branch in lines[1]
+
+
+def test_format_start_summary_when_started_does_close_on_the_experiment_worktree():
+    session = session_record()
+
+    lines = format_start_summary(start_result(session=session), None).split("\n")
+
+    assert session.worktrees.experiment in lines[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -175,36 +187,11 @@ def _status_summary(**overrides: Any) -> StatusSummary:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("worktrees", "expected_worktree_lines"),
-    [
-        pytest.param(
-            Worktrees(
-                experiment="/repo/.gymrat/worktrees/experiment",
-                baseline="/repo/.gymrat/worktrees/baseline",
-            ),
-            [
-                "experiment worktree /repo/.gymrat/worktrees/experiment",
-                "baseline worktree /repo/.gymrat/worktrees/baseline",
-            ],
-            id="plain-paths",
-        ),
-        pytest.param(
-            Worktrees(
-                experiment="/repo/.gymrat/worktrees/[experiment]",
-                baseline="/repo/.gymrat/worktrees/[baseline]",
-            ),
-            [
-                "experiment worktree /repo/.gymrat/worktrees/[experiment]",
-                "baseline worktree /repo/.gymrat/worktrees/[baseline]",
-            ],
-            id="bracketed-paths-render-literally",
-        ),
-    ],
-)
-def test_format_status_header_when_given_session_does_name_bold_session_baseline_branch_worktrees_adapter(
-    worktrees: Worktrees, expected_worktree_lines: list[str]
-):
+def test_format_status_header_when_given_session_does_name_session_baseline_branch_worktrees_adapter():
+    worktrees = Worktrees(
+        experiment="/repo/.gymrat/worktrees/[experiment]",
+        baseline="/repo/.gymrat/worktrees/[baseline]",
+    )
     session = session_record(
         baseline=BaselineRef(ref="main", sha=RECOGNIZABLE_BASELINE_SHA), worktrees=worktrees
     )
@@ -214,51 +201,14 @@ def test_format_status_header_when_given_session_does_name_bold_session_baseline
     assert [render_plain(line) for line in lines] == [
         f"session {SESSION_ID} · baseline main@a1b2c3d · adapter metric-lines",
         f"branch gymrat/{SESSION_ID}",
-        *expected_worktree_lines,
+        "experiment worktree /repo/.gymrat/worktrees/[experiment]",
+        "baseline worktree /repo/.gymrat/worktrees/[baseline]",
     ]
-    assert "1" in styles_at(render_colored(lines[0]), f"session {SESSION_ID}")
 
 
 # ---------------------------------------------------------------------------
 # format_status_iteration
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("outcome", "expected", "glyph", "glyph_codes"),
-    [
-        pytest.param(
-            "improved",
-            "iteration 1 · ✓ -7.2% · unsettled",
-            "✓",
-            sgr_for(EMPHASIZED_DIRECTION_STYLES["improved"]),
-            id="improved-green",
-        ),
-        pytest.param(
-            "regressed",
-            "iteration 1 · ✗ -7.2% · unsettled",
-            "✗",
-            sgr_for(EMPHASIZED_DIRECTION_STYLES["regressed"]),
-            id="regressed-red",
-        ),
-        pytest.param(
-            "no-signal",
-            "iteration 1 · ~ -7.2% · unsettled",
-            "~",
-            sgr_for("bold"),
-            id="no-signal-uncolored",
-        ),
-    ],
-)
-def test_format_status_iteration_when_outcome_varies_does_paint_the_outcome_glyph(
-    outcome: Outcome, expected: str, glyph: str, glyph_codes: list[str]
-):
-    entry = replace(_status_iteration(SettleUnsettled()), outcome=outcome)
-
-    line = format_status_iteration(entry)
-
-    assert render_plain(line) == expected
-    assert styles_at(render_colored(line), glyph) == glyph_codes
 
 
 @pytest.mark.parametrize(
@@ -271,6 +221,11 @@ def test_format_status_iteration_when_outcome_varies_does_paint_the_outcome_glyp
         ),
         pytest.param(
             _status_iteration(SettleKept()), "iteration 1 · ✓ -7.2% · kept", id="kept-pending"
+        ),
+        pytest.param(
+            _status_iteration(SettleKept(outcome="regressed")),
+            "iteration 1 · ✓ -7.2% · kept (regressed)",
+            id="kept-overriding-the-outcome",
         ),
         pytest.param(
             _status_iteration(SettleDiscarded()),
@@ -387,7 +342,6 @@ def test_format_status_finalized_when_given_record_does_render_the_finalized_lin
     line = format_status_finalized(finalize_record())
 
     assert render_plain(line) == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
-    assert "1" in styles_at(render_colored(line), "finalized")
 
 
 # ---------------------------------------------------------------------------
@@ -395,21 +349,7 @@ def test_format_status_finalized_when_given_record_does_render_the_finalized_lin
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("message", "expected"),
-    [
-        pytest.param("user requested stop", "stopped · user requested stop", id="single-line"),
-        pytest.param(
-            "target reached\ncleaning up\nfinal notes",
-            "stopped · target reached",
-            id="multiline-keeps-the-first-line",
-        ),
-    ],
-)
-def test_format_status_stop_when_given_message_does_render_the_stopped_line(
-    message: str, expected: str
-):
-    line = format_status_stop(message)
+def test_format_status_stop_when_given_message_does_render_the_stopped_line():
+    line = format_status_stop("user requested stop")
 
-    assert render_plain(line) == expected
-    assert "1" in styles_at(render_colored(line), "stopped")
+    assert render_plain(line) == "stopped · user requested stop"

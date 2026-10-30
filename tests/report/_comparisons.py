@@ -305,6 +305,42 @@ def permutation_candidate(
     )
 
 
+def detecting_candidate(candidate: CandidateMetric, pct: float) -> CandidateMetric:
+    """``candidate`` with its verdict carrying a ``pct`` detectable change.
+
+    Args:
+        candidate: A candidate judged by an approximate method.
+        pct: The smallest change, in percent, the verdict could have detected.
+
+    Returns:
+        The candidate with the detectable change set on its verdict.
+
+    Raises:
+        AssertionError: ``candidate`` has no verdict or an exact one, which carries no
+            detectable change.
+    """
+    if candidate.verdict is None or candidate.verdict.method == "exact":
+        msg = f"no approximate verdict to carry a detectable change on {candidate!r}"
+        raise AssertionError(msg)
+    return replace(candidate, verdict=replace(candidate.verdict, detectable_pct=pct))
+
+
+def detecting_metric(metric: MetricComparison, pct: float) -> MetricComparison:
+    """``metric`` with every candidate's verdict carrying a ``pct`` detectable change.
+
+    Args:
+        metric: A metric whose candidates are all judged by an approximate method.
+        pct: The smallest change, in percent, each verdict could have detected.
+
+    Returns:
+        The metric with the detectable change set on every candidate's verdict.
+
+    Raises:
+        AssertionError: A candidate has no verdict or an exact one.
+    """
+    return replace(metric, candidates=tuple(detecting_candidate(c, pct) for c in metric.candidates))
+
+
 def shared_baseline_metric(
     candidates: Sequence[CandidateMetric], *, name: str = "time"
 ) -> MetricComparison:
@@ -471,25 +507,6 @@ def every_class_metrics() -> MetricComparisons:
     }
 
 
-def single_sample_result() -> ComparisonResult:
-    """A run of one paired sample, where every verdict rests on a single pair.
-
-    One pair leaves the band method no spread to measure, so it collapses to
-    the noise floor and reports no signal whatever the deltas were.
-
-    Returns:
-        The single-sample comparison result.
-    """
-    return create_comparison_result(
-        samples=1,
-        metrics={
-            "decode/time": band_metric(delta=-0.4, noise_pct=0.5, n=1, unit="ns"),
-            "encode/time": band_metric(delta=0.2, noise_pct=0.5, n=1, unit="ns"),
-        },
-        candidates=[create_candidate(kinds=[other_kind(-0.1, 2)])],
-    )
-
-
 def entity_time_metrics() -> MetricComparisons:
     """The ``entity`` group's two ``time`` metrics: ``alive_check`` improved, ``spawn`` regressed."""
     return {
@@ -572,11 +589,6 @@ def two_kind_result(kinds: Sequence[KindAggregate] | None = None) -> ComparisonR
         ],
         config_kinds={"memory": KindEntry(gating=False)},
     )
-
-
-def without_gated_geomean(kind: KindAggregate) -> KindAggregate:
-    """The kind with its gated geomean cleared, as a non-gating kind carries."""
-    return replace(kind, gated_geomean=None)
 
 
 def grouped_comparison() -> ComparisonResult:

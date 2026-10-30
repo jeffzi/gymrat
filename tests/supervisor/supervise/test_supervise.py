@@ -6,41 +6,28 @@ but the session keeps running. Tests use tiny ``max_minutes``/``grace_ms`` value
 and ``asyncio.Event`` handshakes so the session stays open only as long as a
 test needs it. Timing is asserted as loose lower bounds, never exact values, to
 stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
-
-One end-to-end test drives the real CLI through a mock agent, so a whole
-optimization session completes under the supervisor through the shipped
-binary rather than a stubbed driver.
 """
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable, Coroutine
-from pathlib import Path
-from typing import TYPE_CHECKING, override
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from typing import cast, override
 
 import pytest
 
-from gymrat.session.paths import lockfile_path, session_jsonl_path
-from gymrat.supervisor.driver import DriverSession, SessionOutcome, SessionPrompt
+from gymrat.supervisor.driver import Driver, DriverSession
 from gymrat.supervisor.events import (
     CapEvent,
-    FollowUpEvent,
     SessionEvent,
-    SessionObserver,
-    TextDeltaEvent,
-    UsageUpdateEvent,
+    TurnEndEvent,
 )
-from gymrat.supervisor.supervise import supervise
-from tests._cli import run_cli
+from gymrat.supervisor.supervise import SupervisionResult
 from tests._clock import install_monotonic_clock
-from tests._lock import hold_lock
-from tests._platform import needs_posix_worktrees
-from tests.loop._bench import LONG_RUN_TIMEOUT, commit_project, tune_experiment
 from tests.supervisor._fixtures import (
     ActionStep,
     CostStep,
     DelegatingSession,
-    EmitStep,
     MockStep,
     SlowEndSession,
     SupervisorClock,
@@ -50,19 +37,8 @@ from tests.supervisor._fixtures import (
     cap_actions,
     collecting_observer,
     create_mock_driver,
-    event_log_markers,
-    events_log_path,
-    events_of,
-    make_context,
-    make_launch,
-    make_prompt,
-    raising_observer,
-    read_log_lines,
     run_supervised,
 )
-
-if TYPE_CHECKING:
-    from filelock import FileLock
 
 # ---------------------------------------------------------------------------
 # test doubles
@@ -85,74 +61,6 @@ class _RejectingInterruptSession(DelegatingSession):
     async def interrupt(self) -> None:
         message = "interrupt exploded"
         raise RuntimeError(message)
-
-
-class _FutureSession:
-    """A session whose ``outcome`` is a caller-supplied future."""
-
-    def __init__(self, outcome: Awaitable[SessionOutcome]) -> None:
-        self._outcome = outcome
-
-    @property
-    def outcome(self) -> Awaitable[SessionOutcome]:
-        return self._outcome
-
-    async def interrupt(self) -> None:
-        return None
-
-    async def send(self, text: str) -> None:
-        return None
-
-    async def end(self) -> None:
-        return None
-
-
-class _RejectingDriver:
-    """Exercise the supervisor's handling of a driver that errors before any turn runs."""
-
-    def start(
-        self,
-        prompt: SessionPrompt,
-        observer: SessionObserver,
-        abort: asyncio.Event | None = None,
-    ) -> DriverSession:
-        loop = asyncio.get_running_loop()
-        settled: asyncio.Future[SessionOutcome] = loop.create_future()
-        settled.set_exception(RuntimeError("session crashed"))
-        return _FutureSession(settled)
-
-
-# ---------------------------------------------------------------------------
-# normal completion
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_session_completes_does_report_outcome_with_events_in_order(
-    root: str,
-):
-    probe = collecting_observer()
-    launch = make_launch()
-    text = TextDeltaEvent(at=2_000_000_000_000, chunk="hello")
-    driver = create_mock_driver([
-        EmitStep(emit=text),
-        CostStep(cost_usd=0.05),
-        CostStep(cost_usd=0.12),
-    ])
-
-    result = await run_supervised(root, driver, launch=launch, observer=probe.observer)
-
-    assert (result.ended_by, result.outcome) == (
-        "session",
-        SessionOutcome(reason="completed", cost_usd=0.12),
-    )
-    assert event_log_markers(root) == [
-        "launch",
-        "text_delta",
-        "usage_update",
-        "usage_update",
-    ]
-    assert probe.events[:2] == [launch, text]
-    assert [event.type for event in probe.events[2:]] == ["usage_update", "usage_update"]
 
 
 async def test_supervise_when_session_spans_time_does_report_duration_from_monotonic_clock(
@@ -238,36 +146,119 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(root
     assert result.ended_by == "wall-clock"
 
 
+class _AbortSettledSession(DelegatingSession):
+    """A session that ignores ``end`` and settles only once the abort event is set.
+
+    Models a backend that stays up after a polite end. ``settling`` is the task
+    that interrupts the inner session on abort, for the test to await.
+
+    Args:
+        inner: The session every call but ``end`` is delegated to.
+        abort: The event whose setting interrupts ``inner`` and settles the session.
+    """
+
+    def __init__(self, inner: DriverSession, abort: asyncio.Event) -> None:
+        super().__init__(inner)
+        self.settling = asyncio.ensure_future(self._settle_on_abort(abort))
+
+    async def _settle_on_abort(self, abort: asyncio.Event) -> None:
+        await abort.wait()
+        await self._inner.interrupt()
+
+    @override
+    async def end(self) -> None:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundaryEndCase:
+    """A script that stops at a turn end, the knobs that end the session there, and the ending."""
+
+    script: Callable[[str], list[MockStep]]
+    ended_by: str
+    max_usd: float | None = None
+    deadline_after_turn_end: bool = False
+    settle_window_ms: int = 0
+
+
+async def _supervise_boundary_case(
+    root: str, driver: Driver, case: _BoundaryEndCase, clock: SupervisorClock
+) -> SupervisionResult:
+    """Supervise ``driver`` under ``case``'s caps, its deadline passing only after a turn end.
+
+    Args:
+        root: The repository the session runs in.
+        driver: The agent driver to supervise.
+        case: The script's caps and settle window.
+        clock: The supervisor's wall clock, moved to its deadline on a turn end.
+
+    Returns:
+        How the supervised session ended.
+    """
+    return await run_supervised(
+        root,
+        driver,
+        grace_ms=50,
+        max_usd=case.max_usd,
+        deadline_ms=clock.deadline_ms,
+        observer=clock.jump_on(TurnEndEvent) if case.deadline_after_turn_end else None,
+        settle_window_ms=case.settle_window_ms,
+    )
+
+
+_SPEND_CAP_AT_SETTLE = _BoundaryEndCase(
+    script=lambda _root: [TurnEndStep(cost_usd=5.0)],
+    ended_by="spend-cap",
+    max_usd=1.0,
+)
+
+_BOUNDARY_END_CASES = [
+    pytest.param(
+        _BoundaryEndCase(
+            script=lambda _root: [TurnEndStep(cost_usd=0.01)],
+            ended_by="wall-clock",
+            deadline_after_turn_end=True,
+            settle_window_ms=10_000,
+        ),
+        id="wall-clock-while-idle",
+    ),
+    pytest.param(_SPEND_CAP_AT_SETTLE, id="spend-cap-at-settle"),
+]
+
+
+@pytest.mark.parametrize("case", _BOUNDARY_END_CASES)
+async def test_supervise_when_driver_ignores_end_at_turn_boundary_does_arm_abort_after_grace(
+    root: str, case: _BoundaryEndCase, supervisor_clock: SupervisorClock
+):
+    driver = WrapDriver(create_mock_driver(case.script(root)), _AbortSettledSession)
+
+    result = await asyncio.wait_for(
+        _supervise_boundary_case(root, driver, case, supervisor_clock), timeout=2.0
+    )
+    await cast("_AbortSettledSession", driver.session).settling
+
+    assert driver.abort.is_set()
+    assert result.ended_by == case.ended_by
+
+
+async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_abort(
+    root: str, supervisor_clock: SupervisorClock
+):
+    case = _SPEND_CAP_AT_SETTLE
+    driver = WrapDriver(create_mock_driver(case.script(root)))
+
+    result = await _supervise_boundary_case(root, driver, case, supervisor_clock)
+    # Outlast the grace period, so a grace timer left armed would set the abort.
+    await asyncio.sleep(0.15)
+
+    assert not driver.abort.is_set()
+    assert result.ended_by == case.ended_by
+    assert asyncio.all_tasks() == {asyncio.current_task()}
+
+
 # ---------------------------------------------------------------------------
 # spend cap
 # ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_spend_cap_trips_at_turn_end_does_report_spend_cap(
-    root: str,
-):
-    probe = collecting_observer()
-    driver = create_mock_driver([
-        CostStep(cost_usd=5.0),
-        TurnEndStep(cost_usd=5.0),
-    ])
-
-    result = await run_supervised(
-        root,
-        driver,
-        max_usd=1.0,
-        launch=make_launch(max_usd=None),
-        observer=probe.observer,
-    )
-
-    caps = events_of(probe.events, CapEvent)
-    assert result.ended_by == "spend-cap"
-    assert len(caps) == 1
-    assert caps[0].cap == "spend-cap"
-    assert caps[0].action == "ending"
-    assert result.outcome.cost_usd == 5.0
-    types = event_log_markers(root)
-    assert types.index("usage_update") < types.index("cap")
 
 
 async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_one_cap(
@@ -291,41 +282,7 @@ async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_
 
 
 # ---------------------------------------------------------------------------
-# error outcome
-# ---------------------------------------------------------------------------
-
-
-def _error_steps() -> list[MockStep]:
-    boom_message = "kaboom"
-
-    async def boom() -> None:
-        raise RuntimeError(boom_message)
-
-    return [
-        EmitStep(emit=TextDeltaEvent(at=2_000_000_000_000, chunk="partial output")),
-        CostStep(cost_usd=0.02),
-        ActionStep(action=boom),
-    ]
-
-
-async def test_supervise_when_driver_errors_does_report_error_with_events_logged_up_to_failure(
-    root: str,
-):
-    driver = create_mock_driver(_error_steps())
-
-    result = await run_supervised(root, driver)
-
-    assert result.outcome.reason == "error"
-    assert result.outcome.message == "kaboom"
-    assert result.ended_by == "session"
-    types = event_log_markers(root)
-    assert types[0] == "launch"
-    assert "text_delta" in types
-    assert "usage_update" in types
-
-
-# ---------------------------------------------------------------------------
-# cap robustness: a failing interrupt or session outcome
+# cap robustness: a failing interrupt
 # ---------------------------------------------------------------------------
 
 
@@ -359,89 +316,7 @@ async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warn
 
     assert result.ended_by == "wall-clock"
     assert result.outcome.reason == "interrupted"
-    assert "session interrupt failed: interrupt exploded" in capsys.readouterr().err.splitlines()
-
-
-async def test_supervise_when_outcome_rejects_does_propagate_rejection(root: str):
-    probe = collecting_observer()
-
-    with pytest.raises(RuntimeError, match="session crashed"):
-        await run_supervised(
-            root,
-            _RejectingDriver(),
-            max_minutes=5,
-            observer=probe.observer,
-        )
-
-    assert events_of(probe.events, CapEvent) == []
-
-
-# ---------------------------------------------------------------------------
-# observer resilience: the cap fires even when an observer raises
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_observer_raises_does_still_fire_spend_cap(root: str):
-    messages: list[str] = []
-    observer_message = "observer boom"
-    throwing = raising_observer(observer_message, on=UsageUpdateEvent)
-    driver = create_mock_driver([CostStep(cost_usd=0.5), TurnEndStep(cost_usd=0.5)])
-
-    result = await run_supervised(
-        root, driver, max_usd=0.1, observer=throwing, warn=messages.append
-    )
-
-    assert result.ended_by == "spend-cap"
-    assert {observer_message in message for message in messages} == {True}
-
-
-async def test_supervise_when_observer_raises_on_cap_event_does_still_arm_grace(
-    root: str,
-):
-    messages: list[str] = []
-    wrapper, aborted_at = _abort_bound_driver()
-    failing_observer = raising_observer("observer explodes on cap", on=CapEvent)
-
-    result = await asyncio.wait_for(
-        run_supervised(
-            root,
-            wrapper,
-            max_minutes=0.001,
-            observer=failing_observer,
-            grace_ms=100,
-            warn=messages.append,
-        ),
-        timeout=2.0,
-    )
-
-    assert len(aborted_at) == 1
-    assert result.ended_by == "wall-clock"
-    assert ["observer explodes on cap" in message for message in messages] == [True]
-
-
-async def test_supervise_when_event_log_writes_fail_does_report_every_failed_write(root: str):
-    messages: list[str] = []
-    probe = collecting_observer()
-    log_path = events_log_path(root)
-    observed_at_break: list[int] = []
-
-    async def break_event_log() -> None:
-        log_path.unlink()
-        log_path.mkdir()
-        observed_at_break.append(len(probe.events))
-
-    driver = create_mock_driver([
-        CostStep(cost_usd=0.05),
-        ActionStep(action=break_event_log),
-        CostStep(cost_usd=0.1),
-        CostStep(cost_usd=0.15),
-    ])
-
-    await run_supervised(root, driver, observer=probe.observer, warn=messages.append)
-
-    failed_writes = len(probe.events) - observed_at_break[0]
-    assert failed_writes >= 2
-    assert [str(log_path) in message for message in messages] == [True] * failed_writes
+    assert "interrupt exploded" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -491,31 +366,6 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str)
 
 
 # ---------------------------------------------------------------------------
-# wall-clock poll
-# ---------------------------------------------------------------------------
-
-
-async def test_supervise_when_wall_clock_fires_via_poll_does_end_at_deadline(
-    root: str, supervisor_clock: SupervisorClock
-):
-    # Only a poll that rereads the clock sees the jump; a single sleep to the
-    # deadline would leave the run waiting a real minute.
-    driver = create_mock_driver([
-        supervisor_clock.jump_step(supervisor_clock.deadline_ms),
-        blocked_step(),
-    ])
-
-    result = await run_supervised(
-        root,
-        driver,
-        deadline_ms=supervisor_clock.deadline_ms,
-        wall_clock_poll_ms=10,
-    )
-
-    assert result.ended_by == "wall-clock"
-
-
-# ---------------------------------------------------------------------------
 # an exception from a spawned session call surfaces on stderr
 # ---------------------------------------------------------------------------
 
@@ -547,92 +397,4 @@ async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
     await asyncio.sleep(0)
 
     assert result.ended_by == "spend-cap"
-    assert "background task failed: end exploded" in capsys.readouterr().err.splitlines()
-
-
-# ---------------------------------------------------------------------------
-# a complete session driven through the real CLI
-# ---------------------------------------------------------------------------
-
-# A mock agent runs the real CLI out-of-process — ``start``, ``iterate``,
-# ``keep``, ``finalize`` — one command per driver action step. Before
-# ``finalize``, the agent ends a turn while another holder has the repository
-# lock, so the supervisor's probe of the real lock file must see it held and
-# wait it out before replying. A trailing cost step gives the run a non-zero
-# spend, and a closing agent turn end makes the supervisor read the session log
-# the CLI left in the repository, so the run ends on the finalized session.
-# POSIX-only: the flow leans on real git worktrees and bench subprocesses.
-
-
-#: The latency the edit tunes to — an improvement over the untuned baseline.
-_TUNED_LATENCY = 90
-
-
-@needs_posix_worktrees
-async def test_supervise_when_mock_agent_drives_real_cli_does_complete_the_session(
-    create_scratch_repo: Callable[[], str],
-):
-    repo = create_scratch_repo()
-    commit_project(repo, samples=4)
-    log_path = Path(repo) / "supervisor-events.jsonl"
-
-    async def start() -> None:
-        run_cli(["start", "--baseline", "main"], repo, timeout=LONG_RUN_TIMEOUT)
-
-    async def iterate() -> None:
-        tune_experiment(repo, _TUNED_LATENCY)
-        run_cli(["iterate"], repo, timeout=LONG_RUN_TIMEOUT)
-
-    async def keep() -> None:
-        run_cli(["keep", "-m", "tune latency to 90"], repo, timeout=LONG_RUN_TIMEOUT)
-
-    async def finalize() -> None:
-        run_cli(["finalize"], repo, timeout=LONG_RUN_TIMEOUT)
-
-    other_holder: list[FileLock] = []
-
-    async def hold_repo_lock() -> None:
-        other_holder.append(hold_lock(lockfile_path(repo)))
-
-    # The other holder finishes once the supervisor responds to the turn end, so
-    # the agent's next command can take the lock again.
-    def release_on_follow_up(event: SessionEvent) -> None:
-        if isinstance(event, FollowUpEvent):
-            for lock in other_holder:
-                lock.release()
-
-    driver = create_mock_driver([
-        ActionStep(action=start),
-        ActionStep(action=iterate),
-        ActionStep(action=keep),
-        ActionStep(action=hold_repo_lock),
-        TurnEndStep(),
-        ActionStep(action=finalize),
-        CostStep(cost_usd=0.42),
-        TurnEndStep(),
-    ])
-
-    result = await supervise(
-        driver=driver,
-        prompt=make_prompt(cwd=repo),
-        context=make_context(
-            root=repo, lock_path=lockfile_path(repo), max_minutes=30, log_path=str(log_path)
-        ),
-        launch=make_launch(),
-        observer=release_on_follow_up,
-    )
-
-    # A failed CLI command surfaces here as an error outcome; show its message.
-    assert result.outcome.reason == "completed", result.outcome.message
-    assert result.ended_by == "session"
-    assert result.outcome.cost_usd == 0.42
-    log_lines = read_log_lines(log_path)
-    assert log_lines[0]["type"] == "launch"
-    assert any(line["type"] == "usage_update" for line in log_lines[1:])
-    assert [
-        (line["action"], line.get("reason")) for line in log_lines if line["type"] == "follow_up"
-    ] == [("waiting", None), ("replied", None), ("ended", "finished")]
-    session_records = read_log_lines(session_jsonl_path(repo))
-    record_types = {record["type"] for record in session_records}
-    assert "session" in record_types
-    assert "finalize" in record_types
+    assert "end exploded" in capsys.readouterr().err

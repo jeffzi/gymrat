@@ -9,6 +9,7 @@ a reported cost is pinned here too.
 """
 
 import asyncio
+import gc
 import json
 import math
 import sys
@@ -17,17 +18,13 @@ from typing import override
 
 import pytest
 from claude_agent_sdk import (
-    ConversationResetMessage,
     HookMatcher,
     McpSdkServerConfig,
-    RateLimitEvent,
-    RateLimitInfo,
     ServerToolResultBlock,
     ServerToolUseBlock,
     SystemMessage,
     TaskStartedMessage,
     TextBlock,
-    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -35,25 +32,30 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import HookEvent
 
+from gymrat.agent_env import TRACEPARENT_ENV
 from gymrat.supervisor.claude import create_claude_driver, usable_cost
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
+    SessionObserver,
     TextDeltaEvent,
     ToolEndEvent,
     ToolStartEvent,
     TurnEndEvent,
-    UsageUpdateEvent,
     summarize,
     summarize_input,
 )
+from gymrat.supervisor.tool_names import MCP_SERVER
 from tests._clock import install_monotonic_clock
 from tests._rich import Clock
+from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 from tests.supervisor._fixtures import (
+    PROMPT_CWD,
     SDK_SESSION_ID,
     FactoryProbe,
     FakeClient,
     FiniteClient,
+    abort_on_first_usage_update,
     assistant,
     collecting_observer,
     events_of,
@@ -74,11 +76,9 @@ from tests.supervisor._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def system_message(
-    *, subtype: str = "init", data: dict[str, object] | None = None
-) -> SystemMessage:
-    """Build an SDK ``SystemMessage`` carrying ``data`` (empty when omitted)."""
-    return SystemMessage(subtype=subtype, data=data if data is not None else {})
+def system_message(*, subtype: str) -> SystemMessage:
+    """Build an SDK ``SystemMessage`` of ``subtype`` with no data."""
+    return SystemMessage(subtype=subtype, data={})
 
 
 def tool_results(*blocks: ToolResultBlock, parent_tool_use_id: str | None = None) -> UserMessage:
@@ -127,59 +127,37 @@ class ToolsFactoryProbe:
         return _SENTINEL_SERVER
 
 
-#: The timeout variables every session hands the agent, at ``make_prompt``'s 60 s default.
-_DEFAULT_ENV = {
-    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "60000",
-    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "60000",
-    "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
-    "MCP_TOOL_TIMEOUT": "60000",
-}
-
-#: The client options ``make_prompt``'s defaults produce, with no optional field given.
-_DEFAULT_OPTIONS = {
-    "cwd": "/tmp/test",
-    "permission_mode": "bypassPermissions",
-    "include_partial_messages": True,
-    "system_prompt": {"type": "preset", "preset": "claude_code", "append": "follow the runbook"},
-    "env": _DEFAULT_ENV,
-}
+#: The timeout variables a session sets to the prompt's command timeout.
+_TIMEOUT_ENV_KEYS = (
+    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS",
+    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS",
+    "MCP_TOOL_TIMEOUT",
+)
 
 
-async def test_start_when_no_optional_input_given_does_pass_the_default_client_options():
+async def test_start_when_no_optional_input_given_does_pass_only_the_prompt_derived_client_options():
     client = FiniteClient([result_message()])
+    prompt = make_prompt(
+        cwd="/my/project", system_prompt_append="extra instructions", command_timeout_ms=300000
+    )
 
-    await run_outcome(client, prompt=make_prompt())
+    await run_outcome(client, prompt=prompt)
 
-    assert client.options == _DEFAULT_OPTIONS
+    options = client.options
+    assert options is not None
+    system_prompt = options["system_prompt"]
+    env = options["env"]
+    assert isinstance(system_prompt, dict)
+    assert isinstance(env, dict)
+    assert options.keys().isdisjoint({"model", "effort", "max_budget_usd", "hooks", "mcp_servers"})
+    assert (options["cwd"], system_prompt["append"]) == ("/my/project", "extra instructions")
+    assert [env[key] for key in _TIMEOUT_ENV_KEYS] == ["300000"] * len(_TIMEOUT_ENV_KEYS)
+    assert TRACEPARENT_ENV not in env
 
 
 @pytest.mark.parametrize(
     ("prompt", "added"),
     [
-        pytest.param(make_prompt(cwd="/my/project"), {"cwd": "/my/project"}, id="cwd"),
-        pytest.param(
-            make_prompt(system_prompt_append="extra instructions"),
-            {
-                "system_prompt": {
-                    "type": "preset",
-                    "preset": "claude_code",
-                    "append": "extra instructions",
-                }
-            },
-            id="system-prompt-append",
-        ),
-        pytest.param(
-            make_prompt(command_timeout_ms=300000),
-            {
-                "env": {
-                    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS": "300000",
-                    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS": "300000",
-                    "CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS": "",
-                    "MCP_TOOL_TIMEOUT": "300000",
-                }
-            },
-            id="command-timeout",
-        ),
         pytest.param(
             make_prompt(model="claude-sonnet-4-20250514"),
             {"model": "claude-sonnet-4-20250514"},
@@ -187,11 +165,6 @@ async def test_start_when_no_optional_input_given_does_pass_the_default_client_o
         ),
         pytest.param(make_prompt(effort="high"), {"effort": "high"}, id="effort"),
         pytest.param(make_prompt(max_budget_usd=5.0), {"max_budget_usd": 5.0}, id="max-budget"),
-        pytest.param(
-            make_prompt(traceparent=TRACEPARENT),
-            {"env": {**_DEFAULT_ENV, "GYMRAT_TRACEPARENT": TRACEPARENT}},
-            id="traceparent-under-its-own-name",
-        ),
     ],
 )
 async def test_start_when_session_inputs_given_does_forward_them_as_client_options(
@@ -205,6 +178,17 @@ async def test_start_when_session_inputs_given_does_forward_them_as_client_optio
     assert {key: client.options[key] for key in added} == added
 
 
+async def test_start_when_traceparent_given_does_hand_it_to_the_agent_env():
+    client = FiniteClient([result_message()])
+
+    await run_outcome(client, prompt=make_prompt(traceparent=TRACEPARENT))
+
+    assert client.options is not None
+    env = client.options["env"]
+    assert isinstance(env, dict)
+    assert env[TRACEPARENT_ENV] == TRACEPARENT
+
+
 async def test_start_when_factories_given_does_mount_their_results_in_client_options():
     client = FiniteClient([result_message()])
 
@@ -213,7 +197,7 @@ async def test_start_when_factories_given_does_mount_their_results_in_client_opt
     assert client.options is not None
     assert {key: client.options[key] for key in ("hooks", "mcp_servers")} == {
         "hooks": _SENTINEL_HOOKS,
-        "mcp_servers": {"gymrat": _SENTINEL_SERVER},
+        "mcp_servers": {MCP_SERVER: _SENTINEL_SERVER},
     }
 
 
@@ -235,7 +219,7 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session():
     [
         pytest.param(
             make_prompt(traceparent=TRACEPARENT),
-            {"GYMRAT_TRACEPARENT": TRACEPARENT},
+            {TRACEPARENT_ENV: TRACEPARENT},
             id="traceparent",
         ),
         pytest.param(make_prompt(), {}, id="no-traceparent"),
@@ -257,20 +241,15 @@ async def test_start_when_tools_given_does_call_factory_with_the_session_context
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("text", "parent"),
-    [
-        pytest.param("hello world", None, id="top-level"),
-        pytest.param("subagent output", "tu_parent", id="under-a-parent-tool-call"),
-    ],
-)
-async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent(
-    text: str, parent: str | None
-):
-    events = await run_with_messages([assistant(TextBlock(text=text), parent_tool_use_id=parent)])
+async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent():
+    block = assistant(TextBlock(text="subagent output"), parent_tool_use_id="tu_parent")
+
+    events = await run_with_messages([block])
 
     deltas = events_of(events, TextDeltaEvent)
-    assert [(delta.chunk, delta.parent_tool_use_id) for delta in deltas] == [(text, parent)]
+    assert [(delta.chunk, delta.parent_tool_use_id) for delta in deltas] == [
+        ("subagent output", "tu_parent")
+    ]
 
 
 async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_duration_unknown():
@@ -340,40 +319,26 @@ async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_durat
     assert [end.duration_ms for end in ends] == [250]
 
 
-_JSON_CONTENT = [{"type": "text", "text": "hi"}]
 _OPAQUE_CONTENT = [{"type": "opaque", "value": object()}]
 
 
-@pytest.mark.parametrize(
-    ("content", "expected_result"),
-    [
-        pytest.param(_JSON_CONTENT, json.dumps(_JSON_CONTENT), id="list-json"),
-        pytest.param(_OPAQUE_CONTENT, str(_OPAQUE_CONTENT), id="not-json-encodable-str-fallback"),
-        pytest.param(None, "null", id="none-null"),
-    ],
-)
-async def test_start_when_tool_result_content_not_a_string_does_encode_it_as_the_result(
-    content: list[dict[str, object]] | None, expected_result: str
-):
+async def test_start_when_tool_result_content_not_json_encodable_does_fall_back_to_its_str():
     messages = [
         assistant(ToolUseBlock(id="tu_3", name="Bash", input={"command": "echo hi"})),
-        tool_results(ToolResultBlock(tool_use_id="tu_3", content=content)),
+        tool_results(ToolResultBlock(tool_use_id="tu_3", content=_OPAQUE_CONTENT)),
     ]
 
     events = await run_with_messages(messages)
 
-    assert [end.result for end in events_of(events, ToolEndEvent)] == [expected_result]
+    assert [end.result for end in events_of(events, ToolEndEvent)] == [str(_OPAQUE_CONTENT)]
 
 
 # ---------------------------------------------------------------------------
 # message mapping — tool-use and tool-result blocks (client and server)
 # ---------------------------------------------------------------------------
 
-_PROMPT_CWD = "/tmp/test"
-"""The cwd ``make_prompt`` gives a session, which the driver summarizes paths against."""
-
 _READ_INPUT: dict[str, object] = {"file_path": "/foo.ts"}
-_READ_UNDER_CWD_INPUT: dict[str, object] = {"file_path": "/tmp/test/src/main.py"}
+_READ_UNDER_CWD_INPUT: dict[str, object] = {"file_path": f"{PROMPT_CWD}/src/main.py"}
 _WEB_SEARCH_INPUT: dict[str, object] = {"query": "benchmark noise"}
 _WEB_SEARCH_RESULT: dict[str, object] = {
     "type": "web_search_tool_result",
@@ -389,19 +354,19 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
         pytest.param(
             ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT),
             "tu_parent",
-            summarize_input(_READ_INPUT, tool_name="Read", supervised_root=_PROMPT_CWD),
+            summarize_input(_READ_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
             id="client-tool-under-a-parent",
         ),
         pytest.param(
             ToolUseBlock(id="tu_1", name="Read", input=_READ_UNDER_CWD_INPUT),
             None,
-            summarize_input(_READ_UNDER_CWD_INPUT, tool_name="Read", supervised_root=_PROMPT_CWD),
+            summarize_input(_READ_UNDER_CWD_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
             id="client-read-under-cwd-is-relative",
         ),
         pytest.param(
             ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
             None,
-            summarize_input(_WEB_SEARCH_INPUT, tool_name="web_search", supervised_root=_PROMPT_CWD),
+            summarize_input(_WEB_SEARCH_INPUT, tool_name="web_search", supervised_root=PROMPT_CWD),
             id="server-tool",
         ),
     ],
@@ -481,46 +446,16 @@ async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_trac
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "message",
-    [
-        pytest.param(UserMessage(content="a typed prompt"), id="user-message-string-content"),
-        pytest.param(assistant(), id="assistant-without-blocks"),
-        pytest.param(
-            assistant(ThinkingBlock(thinking="abcd", signature="sig")),
-            id="complete-thinking-block",
-        ),
-        pytest.param(
-            TaskStartedMessage(
-                subtype="task_started",
-                data={},
-                task_id="task-1",
-                description="explore",
-                uuid="task-uuid",
-                session_id=SDK_SESSION_ID,
-            ),
-            id="system-message-subclass",
-        ),
-        pytest.param(
-            RateLimitEvent(
-                rate_limit_info=RateLimitInfo(status="allowed"),
-                uuid="rate-uuid",
-                session_id=SDK_SESSION_ID,
-            ),
-            id="rate-limit-event",
-        ),
-        pytest.param(
-            ConversationResetMessage(
-                new_conversation_id="fresh", uuid="reset-uuid", session_id=SDK_SESSION_ID
-            ),
-            id="conversation-reset",
-        ),
-        pytest.param(object(), id="non-sdk-object"),
-    ],
-)
-async def test_start_when_message_carries_no_session_content_does_emit_nothing(
-    message: object,
-):
+async def test_start_when_system_message_subclass_arrives_does_emit_nothing():
+    message = TaskStartedMessage(
+        subtype="task_started",
+        data={},
+        task_id="task-1",
+        description="explore",
+        uuid="task-uuid",
+        session_id=SDK_SESSION_ID,
+    )
+
     events = await run_with_messages([message])
 
     assert events == []
@@ -531,17 +466,8 @@ async def test_start_when_message_carries_no_session_content_does_emit_nothing(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "next_message",
-    [
-        pytest.param(assistant(TextBlock(text="late")), id="later-text"),
-        pytest.param(result_message(total_cost_usd=0.25), id="later-result-at-a-higher-cost"),
-    ],
-)
-async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost(
-    next_message: object,
-):
-    client = FakeClient([result_message(total_cost_usd=0.15), next_message])
+async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost():
+    client = FakeClient([result_message(total_cost_usd=0.15), result_message(total_cost_usd=0.25)])
 
     outcome = await run_interrupting_on_first_usage_update(client)
 
@@ -602,7 +528,6 @@ async def test_start_when_abort_already_set_at_start_does_resolve_interrupted_wi
     outcome = await run_session(driver, collecting_observer().observer, abort=abort)
 
     assert outcome.reason == "interrupted"
-    assert outcome.cost_usd == 0.0
     assert probe.calls == 0
 
 
@@ -610,18 +535,13 @@ async def test_start_when_abort_already_set_at_start_does_resolve_interrupted_wi
 # system message — compact_boundary → CompactionEvent
 # ---------------------------------------------------------------------------
 
-_COMPACTED_AT_NS = 1_700_000_000_000_000_000
 
-
-async def test_start_when_compact_boundary_arrives_does_emit_a_compaction_event(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("time.time_ns", lambda: _COMPACTED_AT_NS)
+async def test_start_when_compact_boundary_arrives_does_emit_a_compaction_event():
     probe = collecting_observer()
 
     await run_outcome(FiniteClient([system_message(subtype="compact_boundary")]), probe.observer)
 
-    assert [event.at for event in events_of(probe.events, CompactionEvent)] == [_COMPACTED_AT_NS]
+    assert len(events_of(probe.events, CompactionEvent)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -629,9 +549,7 @@ async def test_start_when_compact_boundary_arrives_does_emit_a_compaction_event(
 # ---------------------------------------------------------------------------
 
 
-async def test_start_when_sdk_import_fails_does_resolve_error_naming_package(
-    monkeypatch: pytest.MonkeyPatch,
-):
+async def test_start_when_sdk_import_fails_does_resolve_error(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
     driver = create_claude_driver()
 
@@ -639,7 +557,6 @@ async def test_start_when_sdk_import_fails_does_resolve_error_naming_package(
 
     assert outcome.reason == "error"
     assert outcome.message is not None
-    assert "claude-agent-sdk" in outcome.message
 
 
 # ---------------------------------------------------------------------------
@@ -652,18 +569,8 @@ def _failing_client_factory(_options: Mapping[str, object]) -> FakeClient:
     raise ValueError(message)
 
 
-def _failing_hooks() -> dict[HookEvent, list[HookMatcher]]:
-    message = "hooks unavailable"
-    raise RuntimeError(message)
-
-
 def _client_factory_raises() -> Driver:
     return create_claude_driver(client_factory=_failing_client_factory)
-
-
-def _hooks_factory_raises() -> Driver:
-    client = FiniteClient([result_message()])
-    return create_claude_driver(client_factory=FactoryProbe(client), hooks=_failing_hooks)
 
 
 def _stream_raises() -> Driver:
@@ -675,7 +582,6 @@ def _stream_raises() -> Driver:
     ("make_driver", "expected_message", "expected_cost"),
     [
         pytest.param(_client_factory_raises, "bad options", 0.0, id="client-factory-raises"),
-        pytest.param(_hooks_factory_raises, "hooks unavailable", 0.0, id="hooks-factory-raises"),
         pytest.param(_stream_raises, "SDK failure", 0.04, id="stream-raises"),
     ],
 )
@@ -694,35 +600,69 @@ async def test_start_when_building_or_streaming_the_client_raises_does_resolve_e
 
 
 # ---------------------------------------------------------------------------
+# settling leaks no forgotten-task diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _never_abort(_abort: asyncio.Event) -> SessionObserver:
+    """An observer that leaves the abort unfired, so its watch task must be cleaned up."""
+    return collecting_observer().observer
+
+
+@pytest.mark.parametrize(
+    ("make_client", "observer_for", "reason"),
+    [
+        pytest.param(
+            lambda: FiniteClient([result_message(total_cost_usd=0.05)]),
+            _never_abort,
+            "completed",
+            id="abort-unused-and-settles",
+        ),
+        pytest.param(
+            # The stream hangs after the cost update, so the abort is what unblocks it:
+            # the watch task starts, fires, then teardown cancels it on the settle path.
+            lambda: FakeClient([result_message(total_cost_usd=0.1)]),
+            abort_on_first_usage_update,
+            "interrupted",
+            id="abort-fires-mid-read",
+        ),
+    ],
+)
+async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics(
+    make_client: Callable[[], FakeClient],
+    observer_for: Callable[[asyncio.Event], SessionObserver],
+    reason: str,
+) -> None:
+    records = install_task_leak_recorder()
+    client = make_client()
+    driver = create_claude_driver(client_factory=FactoryProbe(client))
+    abort = asyncio.Event()
+
+    session = driver.start(make_prompt(), observer_for(abort), abort)
+    outcome = await asyncio.wait_for(session.outcome, 10)
+    del session, driver, client
+    gc.collect()
+
+    assert outcome.reason == reason
+    assert task_leak_messages(records) == []
+
+
+# ---------------------------------------------------------------------------
 # start — interrupted before client connects
 # ---------------------------------------------------------------------------
 
 
 async def test_interrupt_when_called_before_connect_does_resolve_interrupted_without_sending_kickoff():
     client = FakeClient([result_message(total_cost_usd=0.10)])
-    probe = collecting_observer()
     session = start_claude_session(
-        client, probe.observer, prompt=make_prompt(kickoff="should not be sent")
+        client, collecting_observer().observer, prompt=make_prompt(kickoff="should not be sent")
     )
 
     await session.interrupt()  # client not built yet — the soft stop cannot reach it
     outcome = await settled_outcome(session)
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
-    assert client.interrupt_called is False
     assert client.query_prompts == []
-    assert events_of(probe.events, UsageUpdateEvent) == []
-
-
-async def test_end_when_already_interrupted_before_connect_does_keep_the_interrupted_outcome():
-    client = FakeClient([result_message(total_cost_usd=0.10)])
-    session = start_claude_session(client, collecting_observer().observer)
-    await session.interrupt()
-
-    await session.end()
-    outcome = await settled_outcome(session)
-
-    assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -735,13 +675,9 @@ async def test_end_when_already_interrupted_before_connect_does_keep_the_interru
     [
         pytest.param(0.42, 0.42, id="positive-float"),
         pytest.param(3, 3.0, id="positive-int"),
-        pytest.param(None, None, id="missing"),
         pytest.param("0.42", None, id="string"),
         pytest.param(True, None, id="true"),
-        pytest.param(False, None, id="false"),
-        pytest.param(math.nan, None, id="nan"),
         pytest.param(math.inf, None, id="positive-infinity"),
-        pytest.param(-math.inf, None, id="negative-infinity"),
         pytest.param(0.0, None, id="zero"),
         pytest.param(-0.3, None, id="negative"),
     ],

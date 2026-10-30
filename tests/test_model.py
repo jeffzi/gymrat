@@ -4,9 +4,11 @@ from hypothesis import strategies as st
 
 from gymrat.model import (
     BandVerdict,
+    Direction,
     ExactVerdict,
     MetricVerdict,
     PermutationVerdict,
+    is_improvement,
     pair_metric,
     verdict_stats,
 )
@@ -34,60 +36,8 @@ def _round_lists(draw: st.DrawFn) -> list[dict[str, float]]:
 
 
 # ---------------------------------------------------------------------------
-# pair_metric — examples
+# pair_metric
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("left", "right", "metric", "expected"),
-    [
-        pytest.param(
-            [{"t": 1.0}, {"t": 2.0}],
-            [{"t": 10.0}, {"t": 20.0}],
-            "t",
-            ((1.0, 2.0), (10.0, 20.0), 0),
-            id="equal-runs",
-        ),
-        pytest.param(
-            [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}],
-            [{"t": 10.0}, {"t": 20.0}],
-            "t",
-            ((1.0, 2.0), (10.0, 20.0), 0),
-            id="truncates-to-shorter",
-        ),
-        pytest.param(
-            [{"t": 1.0}, {"t": 2.0}, {"t": 3.0}],
-            [{"t": 10.0}, {"other": 99.0}, {"t": 30.0}],
-            "t",
-            ((1.0, 3.0), (10.0, 30.0), 1),
-            id="missing-one-side",
-        ),
-        pytest.param(
-            [{"t": 1.0}, {"other": 5.0}],
-            [{"t": 10.0}, {"other": 50.0}],
-            "t",
-            ((1.0,), (10.0,), 0),
-            id="missing-both-sides",
-        ),
-        pytest.param([{"t": 1.0}], [{"t": 2.0}], "missing", ((), (), 0), id="absent-everywhere"),
-    ],
-)
-def test_pair_metric_when_rounds_given_does_pair_the_rounds_both_sides_measured(
-    left: list[dict[str, float]],
-    right: list[dict[str, float]],
-    metric: str,
-    expected: tuple[tuple[float, ...], tuple[float, ...], int],
-):
-    result = pair_metric(left, right, metric)
-
-    assert (result.left, result.right, result.dropped) == expected
-
-
-# ---------------------------------------------------------------------------
-# pair_metric — property-based invariants
-# ---------------------------------------------------------------------------
-
-_SELF_PAIRED = [{"time": 1.0}, {"time": 2.0}]
 
 _any_rounds = given(
     left=_round_lists(),
@@ -97,7 +47,17 @@ _any_rounds = given(
 
 
 @_any_rounds
-@example(left=_SELF_PAIRED, right=_SELF_PAIRED, metric="time").via("paired against itself")
+@example(
+    left=[{"t": 1.0}, {"t": 2.0}, {"t": 3.0}], right=[{"t": 10.0}, {"t": 20.0}], metric="t"
+).via("truncates to the shorter run")
+@example(
+    left=[{"t": 1.0}, {"t": 2.0}, {"t": 3.0}],
+    right=[{"t": 10.0}, {"other": 99.0}, {"t": 30.0}],
+    metric="t",
+).via("missing on one side")
+@example(left=[{"t": 1.0}, {"other": 5.0}], right=[{"t": 10.0}, {"other": 50.0}], metric="t").via(
+    "missing on both sides"
+)
 def test_pair_metric_when_given_any_rounds_does_drop_unpaired_rounds_preserving_order(
     left: list[dict[str, float]],
     right: list[dict[str, float]],
@@ -112,6 +72,32 @@ def test_pair_metric_when_given_any_rounds_does_drop_unpaired_rounds_preserving_
     assert result.left == tuple(left[index][metric] for index in kept)
     assert result.right == tuple(right[index][metric] for index in kept)
     assert result.dropped == len(exactly_one)
+
+
+# ---------------------------------------------------------------------------
+# is_improvement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("direction", "delta", "expected"),
+    [
+        pytest.param("lower", -1.0, True, id="lower-negative"),
+        pytest.param("lower", 0.0, False, id="lower-zero"),
+        pytest.param("higher", 1.0, True, id="higher-positive"),
+        pytest.param("higher", 0.0, False, id="higher-zero"),
+        pytest.param("lower", float("nan"), False, id="lower-nan"),
+        pytest.param("higher", float("nan"), False, id="higher-nan"),
+    ],
+)
+def test_is_improvement_when_delta_and_direction_vary_does_improve_only_on_a_strict_good_move(
+    direction: Direction,
+    delta: float,
+    expected: bool,
+):
+    result = is_improvement(delta, direction)
+
+    assert result is expected
 
 
 @pytest.mark.parametrize(

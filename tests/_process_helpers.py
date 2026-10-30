@@ -8,6 +8,7 @@ import errno
 import importlib.util
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -46,7 +47,7 @@ _FAKE_JOB_QUERY_CAP = 200
 
 # ``ctypes.WinError`` is bound only on Windows, but the production refusal paths
 # format it into their warning, so the faked platform hands them a stand-in.
-_FAKE_WIN_ERROR = "the host refused the call"
+FAKE_WIN_ERROR = "the host refused the call"
 
 # NTSTATUS codes the faked ``NtResumeProcess`` answers with: ``STATUS_SUCCESS``
 # and the ``STATUS_ACCESS_DENIED`` a locked-down host replies with.
@@ -569,9 +570,21 @@ def capture_spawns(
     return processes
 
 
-def killpg_warnings(recorded: "pytest.WarningsRecorder") -> list[str]:
-    """Return the messages of recorded warnings about a failed group kill."""
-    return [str(w.message) for w in recorded if KILLPG_FAILED in str(w.message)]
+def killpg_warnings(recorded: "pytest.WarningsRecorder", pid: int) -> list[str]:
+    """Return the messages of recorded runtime warnings that name the group ``pid``.
+
+    Args:
+        recorded: The warnings a test recorded.
+        pid: The group whose kill the warnings would report.
+
+    Returns:
+        The messages of the ``RuntimeWarning`` entries naming ``pid``.
+    """
+    return [
+        str(w.message)
+        for w in recorded
+        if issubclass(w.category, RuntimeWarning) and re.search(rf"\b{pid}\b", str(w.message))
+    ]
 
 
 def refuse_resume(_pid: int) -> bool:
@@ -670,17 +683,12 @@ def _refuse_every_signal(_signal_number: int) -> bool:
 class KillpgRefusal:
     """Stand-in ``os.killpg`` that refuses with ``EPERM`` every signal ``refuses`` accepts.
 
-    Each signal it is handed lands in ``signals``. A signal it does not refuse,
-    or any signal once ``refusing`` is cleared, goes to the real ``killpg``, so a
-    test can still tear its run down after the refusal it asserted on.
+    A signal it does not refuse goes to the real ``killpg``, so a test can still
+    tear its run down after the refusal it asserted on.
     """
 
     refuses: Callable[[int], bool] = _refuse_every_signal
     """Whether to refuse a given signal number."""
-    refusing: bool = True
-    """Whether refusals are switched on at all."""
-    signals: list[int] = dataclasses.field(default_factory=list)
-    """Every signal number handed to the stand-in, in call order."""
 
     def __call__(self, group_pid: int, signal_number: int) -> None:
         """Refuse or forward one ``killpg`` call.
@@ -690,10 +698,9 @@ class KillpgRefusal:
             signal_number: The signal to send.
 
         Raises:
-            PermissionError: When refusals are on and ``refuses`` accepts the signal.
+            PermissionError: When ``refuses`` accepts the signal.
         """
-        self.signals.append(signal_number)
-        if self.refusing and self.refuses(signal_number):
+        if self.refuses(signal_number):
             raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
         REAL_KILLPG(group_pid, signal_number)
 
@@ -701,22 +708,14 @@ class KillpgRefusal:
 def refuse_killpg(
     monkeypatch: "pytest.MonkeyPatch",
     refuses: Callable[[int], bool] = _refuse_every_signal,
-    *,
-    refusing: bool = True,
-) -> KillpgRefusal:
+) -> None:
     """Install a :class:`KillpgRefusal` as ``os.killpg``.
 
     Args:
         monkeypatch: The fixture that installs the swap.
         refuses: Whether to refuse a given signal number; refuses every one by default.
-        refusing: Whether refusals start switched on.
-
-    Returns:
-        The installed stand-in, for reading ``signals`` or switching ``refusing``.
     """
-    refusal = KillpgRefusal(refuses=refuses, refusing=refusing)
-    monkeypatch.setattr(os, "killpg", refusal)
-    return refusal
+    monkeypatch.setattr(os, "killpg", KillpgRefusal(refuses=refuses))
 
 
 class ProcessExit(BaseException):
@@ -796,14 +795,11 @@ class FakeJobs:
     queried: list[int] = dataclasses.field(default_factory=list)
     closed: list[int] = dataclasses.field(default_factory=list)
     terminated: list[int] = dataclasses.field(default_factory=list)
-    limited: list[tuple[int, int]] = dataclasses.field(default_factory=list)
-    """Info class and ``BasicLimitInformation.LimitFlags`` of each limits call."""
-
     opened: dict[int, int] = dataclasses.field(default_factory=dict)
     """Pid behind each process handle handed out by ``OpenProcess``."""
 
     assigned: list[tuple[int, int]] = dataclasses.field(default_factory=list)
-    """Job handle and pid of each successful assignment."""
+    """Job handle and pid of each attempted assignment, granted or refused."""
 
     resumed: list[int] = dataclasses.field(default_factory=list)
     """Pid behind the handle of each successful resume."""
@@ -844,22 +840,12 @@ def fake_kernel32(jobs: FakeJobs) -> types.SimpleNamespace:
         jobs.opened[PROCESS_HANDLE] = pid
         return PROCESS_HANDLE
 
-    def set_information_job_object(
-        _job: int,
-        info_class: int,
-        info: Any,
-        *_args: object,
-    ) -> int:
-        # ``ctypes.byref(struct)`` again: ``_obj`` is the struct the production
-        # code filled in before handing it over.
-        jobs.limited.append((info_class, info._obj.BasicLimitInformation.LimitFlags))
+    def set_information_job_object(*_args: object) -> int:
         return 1
 
     def assign_process_to_job_object(job: int, process: int) -> int:
-        if not jobs.assignment_granted:
-            return 0
         jobs.assigned.append((job, jobs.opened[process]))
-        return 1
+        return 1 if jobs.assignment_granted else 0
 
     return types.SimpleNamespace(
         CreateJobObjectW=create_job_object,
@@ -902,7 +888,7 @@ def win32_process_group(monkeypatch: "pytest.MonkeyPatch", jobs: FakeJobs) -> ty
     """
     windll = types.SimpleNamespace(kernel32=fake_kernel32(jobs), ntdll=fake_ntdll(jobs))
     monkeypatch.setattr(ctypes, "windll", windll, raising=False)
-    monkeypatch.setattr(ctypes, "WinError", lambda: OSError(_FAKE_WIN_ERROR), raising=False)
+    monkeypatch.setattr(ctypes, "WinError", lambda: OSError(FAKE_WIN_ERROR), raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
     spec = importlib.util.spec_from_file_location("process_group_win32", process_group.__file__)
     assert spec is not None

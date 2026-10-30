@@ -14,8 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from contextlib import AbstractContextManager
 
-    import pytest
-    from rich.console import Console, RenderableType
+    from rich.console import Console
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
@@ -41,24 +40,20 @@ from gymrat.supervisor.events import (
     ModelPhaseEvent,
     SessionObserver,
     ThinkingUpdateEvent,
+    ToolEndEvent,
     TurnEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
 from gymrat.utils import NS_PER_MS
-from tests._config import resolved_config
 from tests._rich import (
     Clock,
-    console_output,
     frame_text,
     sealed_console,
     track,
 )
-from tests.loop._settle import start_with
-from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     SUPERVISED_SESSION_ID,
-    baseline_record,
     empty_session_state,
     make_iteration,
     session_state,
@@ -68,37 +63,6 @@ from tests.supervisor._fixtures import make_launch, make_turn_end, tool_end_even
 # ---------------------------------------------------------------------------
 # Builders
 # ---------------------------------------------------------------------------
-
-
-def start_open_session(repo: str) -> None:
-    """Start a gymrat session so the experiment worktree and session log exist."""
-    start_with(repo, config=resolved_config())
-
-
-def install_baseline_seam(
-    monkeypatch: pytest.MonkeyPatch, *, on_call: Callable[[], None] | None = None
-) -> list[dict[str, Any]]:
-    """Replace the baseline measurement path so no real bench runs.
-
-    Args:
-        monkeypatch: The fixture that installs the stand-in measurement.
-        on_call: Run at the start of each measurement, to observe state while it runs.
-
-    Returns:
-        A list that records each call's keyword arguments.
-    """
-    calls: list[dict[str, Any]] = []
-
-    async def fake_measure(target: object, run_options: object) -> Any:
-        calls.append({"target": target, "run_options": run_options})
-        if on_call is not None:
-            on_call()
-        record = baseline_record(duration_ms=5000)
-        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
-        return result, record
-
-    monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
-    return calls
 
 
 def session_state_three_iterations(
@@ -198,8 +162,7 @@ def make_supervision_result(
         reason: Outcome reason recorded on the ``SessionOutcome``.
         ended_by: Value recorded on ``SupervisionResult.ended_by``.
         duration_ms: Value recorded on ``SupervisionResult.duration_ms``.
-        cost_usd: Duplicated onto both the ``outcome`` and the top-level
-            result, mirroring the shape ``supervise`` returns.
+        cost_usd: Value recorded on ``SessionOutcome.cost_usd``.
         message: Value recorded on ``SessionOutcome.message``.
         end_reason: Value recorded on ``SupervisionResult.end_reason``.
 
@@ -282,6 +245,18 @@ def thinking_event(
         estimated_tokens=estimated_tokens,
         delta=10,
         parent_tool_use_id=parent_tool_use_id,
+    )
+
+
+def orphan_tool_end_event(at_ms: int = 3000) -> ToolEndEvent:
+    """A ``ToolEndEvent`` whose start was never seen, so its name and duration are unknown."""
+    return ToolEndEvent(
+        at=at_ms * NS_PER_MS,
+        tool_use_id="never-started",
+        tool_name=None,
+        duration_ms=None,
+        result="ok",
+        result_summary="ok",
     )
 
 
@@ -430,7 +405,6 @@ def make_reporter(
     plain_write: Callable[[str], None] | None = None,
     session_id: str = SUPERVISED_SESSION_ID,
     branch: str = f"gymrat/{SUPERVISED_SESSION_ID}",
-    color: bool | None = None,
     tz: tzinfo | None = UTC,
     model: str | None = None,
     effort: Effort | None = None,
@@ -455,11 +429,8 @@ def make_reporter(
         plain_write: Line writer for plain mode, or ``None`` for the standard writer.
         session_id: Session identifier propagated to the frame.
         branch: Git branch name shown in the frame header.
-        color: Tri-state color override: ``True`` forces color, ``False``
-            disables it, ``None`` auto-detects.
         tz: Timezone for wall-clock timestamps. Defaults to ``UTC`` so snapshot
-            tests produce stable timestamps regardless of host timezone; pass
-            ``None`` to exercise the system-local fallback path.
+            tests produce stable timestamps regardless of host timezone.
         model: Model name shown as a labelled row when set.
         effort: Effort level shown as a labelled row when set.
         idle_warn_ms: Milliseconds of inactivity before the liveness line
@@ -490,7 +461,6 @@ def make_reporter(
         max_usd=max_usd,
         read_progress=read_progress,
         plain_write=plain_write,
-        color=color,
         model=model,
         effort=effort,
         idle_warn_ms=idle_warn_ms,
@@ -562,13 +532,6 @@ def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> st
 def color_console(*, width: int = FRAME_WIDTH) -> Console:
     """A sealed console with standard color, *width* columns wide."""
     return sealed_console(width=width, no_color=False, color_system="standard")
-
-
-def render_colored(renderable: RenderableType, *, width: int = FRAME_WIDTH) -> str:
-    """Render ``renderable`` through a sealed console with standard color."""
-    console = color_console(width=width)
-    console.print(renderable)
-    return console_output(console)
 
 
 def row_content(line: str) -> str:

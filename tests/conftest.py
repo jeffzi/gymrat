@@ -287,20 +287,6 @@ def _reset_debug() -> Iterator[None]:
 
 
 @pytest.fixture
-def stdin_holding_text() -> Iterator[None]:
-    """Point this process's stdin at a pipe holding text, so a child inheriting it reads that text."""
-    read_fd, write_fd = os.pipe()
-    os.write(write_fd, b"banana\n")
-    os.close(write_fd)
-    saved_stdin = os.dup(0)
-    os.dup2(read_fd, 0)
-    os.close(read_fd)
-    yield
-    os.dup2(saved_stdin, 0)
-    os.close(saved_stdin)
-
-
-@pytest.fixture
 def stray_process_ids() -> Iterator[list[int]]:
     """Collect PIDs a test spawned and SIGKILL any still alive on teardown."""
     process_ids: list[int] = []

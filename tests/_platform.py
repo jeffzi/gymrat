@@ -25,3 +25,11 @@ needs_named_pipes = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-on
 needs_posix_kill = pytest.mark.skipif(
     sys.platform == "win32", reason="post-checkout SIGKILL is POSIX-only"
 )
+
+needs_posix_process_groups = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only process groups"
+)
+
+needs_posix_signals = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only shell and signals"
+)

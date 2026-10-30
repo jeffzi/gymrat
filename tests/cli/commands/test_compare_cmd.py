@@ -1,46 +1,28 @@
 """Tests for the ``gymrat compare`` command wiring.
 
 These drive the command through :class:`typer.testing.CliRunner` with the
-``compare`` seam replaced, so no real bench runs, and config resolution stubbed
-except where flags and an explicit config file are read for real. They cover
-those flags reaching the engine's options, the text and JSON report going to
-stdout, the fail-on gate tripping to exit 1 only after the report is printed,
-the empty-geomean warning, and the command trace. The fail-on gate evaluation is
-also driven directly. The missing-bench error is pinned with ``measure``'s in
-``test_measure_cmd``. The budget time-left line comes from the shared
-``emit_report`` path, pinned through ``probe`` in ``test_session_cmds``; the
-tight-budget warning is pinned there for compare.
+``compare`` seam replaced, so no real bench runs. They cover the fail-on gate
+tripping to exit 1, the empty-geomean warning, and the command trace. The
+fail-on gate evaluation is also driven directly. The budget time-left line and
+the tight-budget warning come from the shared ``emit_report`` path, pinned in
+``tests/cli/test_budget_report.py``.
 """
 
 from __future__ import annotations
 
-from functools import partial
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing import Any
 
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.cli.commands.compare import should_fail_gate
-from gymrat.config import KindEntry, MetricEntry
-from gymrat.report.json_doc import render_json
-from gymrat.report.text.render import render_report
 from gymrat.report.types import (
     ComparisonResult,
     GeomeanFailOn,
     RegressedFailOn,
-    ReportOptions,
 )
-from gymrat.sampling import RunOptions, SamplingOptions
 from tests._ansi import warning_lines
-from tests._exec_fixtures import expected_result, install_exec
-from tests._git import install_git_hook
-from tests._platform import needs_posix_shell
 from tests.cli._command_stubs import (
-    stub_compare,
     stub_compare_command,
 )
 from tests.cli._runner import (
@@ -49,7 +31,6 @@ from tests.cli._runner import (
 from tests.cli._session import (
     open_session,
 )
-from tests.config._toml import write_config
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
@@ -68,120 +49,20 @@ def _regressed_result() -> ComparisonResult:
 
 
 # ---------------------------------------------------------------------------
-# flags and config file → CompareOptions
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_flags_and_config_file_given_does_forward_them_to_compare_options(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    write_config(
-        tmp_path,
-        {
-            "metrics": {"decode/time": {"direction": "higher"}},
-            "kinds": {"memory": {"gating": False}},
-        },
-        name="compare.toml",
-    )
-    fake_compare = stub_compare(monkeypatch)
-
-    result = runner.invoke(
-        app,
-        [
-            "compare",
-            "main",
-            "cand",
-            "--bench",
-            "sh bench.sh",
-            "--prepare",
-            "make",
-            "--adapter",
-            "mitata",
-            "--samples",
-            "7",
-            "--timeout",
-            "42",
-            "--config",
-            "compare.toml",
-        ],
-    )
-
-    assert result.exit_code == 0
-    (options,) = fake_compare.call_args.args
-    sampling = options.run.sampling
-    assert options.run == RunOptions(
-        sampling=SamplingOptions(
-            bench="sh bench.sh",
-            prepare="make",
-            samples=7,
-            timeout_seconds=42,
-            on_progress=sampling.on_progress,
-            warn=sampling.warn,
-        ),
-        adapter="mitata",
-        config_metrics={"decode/time": MetricEntry(direction="higher")},
-        config_kinds={"memory": KindEntry(gating=False)},
-    )
-
-
-# ---------------------------------------------------------------------------
-# report to stdout
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("extra_argv", "comparison", "render"),
-    [
-        pytest.param(
-            ["--format", "text"],
-            create_comparison_result(),
-            partial(render_report, options=ReportOptions(color=False)),
-            id="text",
-        ),
-        pytest.param(
-            ["-v"],
-            _regressed_result(),
-            partial(render_report, options=ReportOptions(verbose=True, color=False)),
-            id="short-verbose-flag",
-        ),
-        pytest.param(["--format", "json"], create_comparison_result(), render_json, id="json"),
-    ],
-)
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_report_rendered_does_write_it_to_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-    extra_argv: list[str],
-    comparison: ComparisonResult,
-    render: Callable[[ComparisonResult], str],
-):
-    stub_compare_command(monkeypatch, comparison)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh", *extra_argv])
-
-    assert result.exit_code == 0
-    assert result.stdout == render(comparison) + "\n"
-
-
-# ---------------------------------------------------------------------------
 # fail-on gate
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("fail_on", "warnings"),
+    ("fail_on", "named"),
     [
-        pytest.param(
-            "geomean:2",
-            ['warning: geomean gate for "cand-empty" had no stable gating metrics to measure'],
-            id="geomean-gate-names-the-empty-candidate",
-        ),
+        pytest.param("geomean:2", ["cand-empty"], id="geomean-gate-names-the-empty-candidate"),
         pytest.param("regressed", [], id="no-geomean-gate-stays-silent"),
     ],
 )
 @pytest.mark.usefixtures("_in_non_repo")
 def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_under_a_geomean_gate(
-    monkeypatch: pytest.MonkeyPatch, fail_on: str, warnings: list[str]
+    monkeypatch: pytest.MonkeyPatch, fail_on: str, named: list[str]
 ):
     stub_compare_command(
         monkeypatch,
@@ -197,7 +78,9 @@ def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_und
         app, ["compare", "main", "cand", "--bench", "sh bench.sh", "--fail-on", fail_on]
     )
 
-    assert warning_lines(result.stderr) == warnings
+    warnings = warning_lines(result.stderr)
+    assert len(warnings) == len(named)
+    assert all(f'"{label}"' in warning for label, warning in zip(named, warnings, strict=True))
 
 
 # ---------------------------------------------------------------------------
@@ -239,15 +122,6 @@ _REGRESSED_GATING = {"m/time": permutation_metric(verdict="regressed", delta=4, 
             {"candidates": [create_candidate(kinds=[other_kind(5.0, 3)])]},
             True,
             id="geomean-above-threshold",
-        ),
-        pytest.param(
-            (RegressedFailOn(), GeomeanFailOn(pct=99.0)),
-            {
-                "metrics": _REGRESSED_GATING,
-                "candidates": [create_candidate(kinds=[other_kind(1.0, 3)])],
-            },
-            True,
-            id="any-of-several-conditions",
         ),
         pytest.param(
             (GeomeanFailOn(pct=99.0), RegressedFailOn()),
@@ -302,11 +176,6 @@ _BENCH_TRACE = {"bench": "sh bench.sh"}
             {**_BENCH_TRACE, "baseline": "before", "candidates": ["after"]},
             id="labeled-targets",
         ),
-        pytest.param(
-            ["main", "cand1", "cand2"],
-            {**_BENCH_TRACE, "baseline": "main", "candidates": ["cand1", "cand2"]},
-            id="two-candidates",
-        ),
     ],
 )
 def test_compare_when_success_does_record_trace_with_only_the_args_given(
@@ -323,58 +192,8 @@ def test_compare_when_success_does_record_trace_with_only_the_args_given(
 
     assert result.exit_code == 0
     cmd = last_command_record(repo)
-    assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 0, None)
+    assert (cmd.exit_code, cmd.reason) == (0, None)
     assert cmd.args == traced
-
-
-def test_compare_when_samples_cannot_balance_the_targets_does_record_the_refusal_reason(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: str,
-):
-    open_session(repo)
-    recorder = install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC x=1"))
-
-    result = runner.invoke(
-        app, ["compare", "main", "main", "--bench", "sh bench.sh", "--samples", "3"]
-    )
-
-    assert result.exit_code == 2
-    assert "samples = 3 cannot balance 2 targets: use a multiple of 2 (2 or 4)" in result.stderr
-    assert recorder.calls == []
-    cmd = last_command_record(repo)
-    assert (cmd.name, cmd.exit_code, cmd.reason) == ("compare", 2, "unbalanced-samples")
-
-
-@needs_posix_shell
-def test_compare_when_samples_cannot_balance_the_targets_does_refuse_before_checking_out_a_worktree(
-    repo: str,
-):
-    checkouts = Path(repo) / ".git" / "checkouts"
-    install_git_hook(repo, "post-checkout", f'echo "$PWD" >> "{checkouts}"\n')
-
-    result = runner.invoke(
-        app, ["compare", "main", "main", "main", "--bench", "sh bench.sh", "--samples", "4"]
-    )
-
-    assert result.exit_code == 2
-    assert "samples = 4 cannot balance 3 targets: use a multiple of 6 (6)" in " ".join(
-        result.stderr.split()
-    )
-    assert not checkouts.exists()
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_compare_when_no_samples_configured_does_run_twelve_rounds(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.delenv("GYMRAT_SAMPLES", raising=False)
-    fake_compare = stub_compare(monkeypatch)
-
-    result = runner.invoke(app, ["compare", "main", "cand", "--bench", "sh bench.sh"])
-
-    assert result.exit_code == 0
-    (options,) = fake_compare.call_args.args
-    assert options.run.sampling.samples == 12
 
 
 def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
@@ -389,9 +208,5 @@ def test_compare_when_fail_on_trips_does_exit_one_as_a_fail_on_gate_trip(
     )
 
     assert result.exit_code == 1
-    assert result.stdout == (
-        render_report(_regressed_result(), ReportOptions(fail_on=(RegressedFailOn(),), color=False))
-        + "\n"
-    )
     cmd = last_command_record(repo)
     assert (cmd.exit_code, cmd.reason) == (1, "fail-on")

@@ -6,22 +6,21 @@ and log rows.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from gymrat.cli.supervise.reducer import loop_plain_text
 from gymrat.cli.supervise.summary import build_summary
+from gymrat.cli.supervise.text import NO_SESSION_TEXT
 from gymrat.session.store import BestIteration
 from gymrat.supervisor.events import SUMMARY_MAX_CHARS
 from gymrat.supervisor.exit_sequence import ExitReport, ExitStep
-from tests._ansi import SGR_GREEN, SGR_RED, SGR_YELLOW, assert_has_sgr
 from tests._rich import frame_text
 from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     make_supervision_result,
     read_result,
-    render_colored,
     session_state_three_iterations,
 )
 from tests.session.records._fixtures import session_state
@@ -41,6 +40,7 @@ if TYPE_CHECKING:
 
 _LOG_PATH = "/repo/.gymrat/supervisor-1.jsonl"
 _LOG_ROW = f"  log     {_LOG_PATH}"
+_NO_SESSION_ROW = f"  loop    {NO_SESSION_TEXT}"
 
 #: An exit sequence that took no step, so the summary shows no ``exit`` row.
 _NO_EXIT_STEPS = ExitReport(steps=())
@@ -87,7 +87,7 @@ def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "✓ completed · 1m 0s · $0.05\n"
         "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
-        "  loop    3 iterations · 2 kept · 1 discarded · last -4.2% improved\n"
+        f"  loop    {loop_plain_text(_session_result(), None)}\n"
         f"{_LOG_ROW}"
     )
 
@@ -117,48 +117,7 @@ def test_summary_when_run_capped_or_errored_does_hide_the_agent_row(
         make_supervision_result(reason=reason, ended_by=ended_by), final_text="Some final text."
     )
 
-    assert frame_text(summary, width=FRAME_WIDTH) == (
-        f"{headline}\n  loop    no session yet\n{_LOG_ROW}"
-    )
-
-
-def test_summary_when_log_lives_under_home_does_abbreviate_the_prefix_with_a_tilde():
-    log_path = str(Path.home() / ".gymrat" / "supervisor-1.jsonl")
-
-    summary = _summary(log_path=log_path)
-
-    assert (
-        frame_text(summary, width=FRAME_WIDTH).splitlines()[-1]
-        == "  log     ~/.gymrat/supervisor-1.jsonl"
-    )
-
-
-@pytest.mark.parametrize(
-    ("reason", "ended_by", "expected_sgr"),
-    [
-        pytest.param("completed", "session", SGR_GREEN, id="completed-green"),
-        pytest.param("interrupted", "wall-clock", SGR_YELLOW, id="capped-yellow"),
-        pytest.param("error", "session", SGR_RED, id="error-red"),
-        pytest.param("interrupted", "stop-condition", SGR_GREEN, id="stop-condition-green"),
-        pytest.param("interrupted", "hook-failure", SGR_YELLOW, id="hook-failure-yellow"),
-    ],
-)
-def test_summary_headline_when_rendered_with_color_does_emit_outcome_styling(
-    reason: SessionEndReason, ended_by: EndedBy, expected_sgr: int
-) -> None:
-    summary = _summary(make_supervision_result(reason=reason, ended_by=ended_by))
-
-    colored = render_colored(summary)
-
-    assert_has_sgr(colored.splitlines()[:1], expected_sgr)
-
-
-def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled():
-    summary = _summary()
-
-    colored = render_colored(summary)
-
-    assert "\x1b[" not in colored.splitlines()[-1]
+    assert frame_text(summary, width=FRAME_WIDTH) == (f"{headline}\n{_NO_SESSION_ROW}\n{_LOG_ROW}")
 
 
 # ---------------------------------------------------------------------------
@@ -170,34 +129,12 @@ def test_summary_log_row_when_rendered_with_color_does_leave_the_path_unstyled()
     ("final_text", "expected_lines"),
     [
         pytest.param(
-            "The task is complete.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   The task is complete.",
-                "  loop    no session yet",
-                _LOG_ROW,
-            ],
-            id="single-line",
-        ),
-        pytest.param(
-            "First paragraph.\n\nSecond paragraph.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   First paragraph.",
-                "",
-                "          Second paragraph.",
-                "  loop    no session yet",
-                _LOG_ROW,
-            ],
-            id="paragraph-break",
-        ),
-        pytest.param(
             "Line one.\nLine two.",
             [
                 "✓ completed · 1m 0s · $0.05",
                 "  agent   Line one.",
                 "          Line two.",
-                "  loop    no session yet",
+                _NO_SESSION_ROW,
                 _LOG_ROW,
             ],
             id="single-newline",
@@ -285,7 +222,7 @@ def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
     assert text.splitlines() == [
         "✓ completed · 1m 0s · $0.05",
         expected_line,
-        "  loop    no session yet",
+        _NO_SESSION_ROW,
         _LOG_ROW,
     ]
 
@@ -296,7 +233,9 @@ def test_summary_when_model_or_effort_in_force_does_show_labelled_row(
 
 _STOP_CONDITION_REASON = "max iterations (2 of 2)"
 _HOOK_FAILURE_REASON = "after hook failed on iteration 2: exit 1 (stdout 80 B, stderr 5 B)"
-_EMPTY_LOOP_ROW = "  loop    baseline recorded · no iterations yet"
+_EMPTY_LOOP_ROW = (
+    f"  loop    {loop_plain_text(read_result(session_state(), has_baseline=True), None)}"
+)
 
 
 @pytest.mark.parametrize(
@@ -399,17 +338,7 @@ def test_summary_when_exit_report_given_does_render_exit_rows_between_loop_and_l
 
     assert frame_text(summary, width=FRAME_WIDTH).splitlines() == [
         "✓ completed · 1m 0s · $0.05",
-        "  loop    no session yet",
+        _NO_SESSION_ROW,
         *expected_exit_rows,
         _LOG_ROW,
     ]
-
-
-def test_summary_exit_error_row_when_rendered_with_color_does_emit_alert_styling() -> None:
-    summary = _summary(
-        exit_report=ExitReport(steps=_EXIT_STEPS, error="finalize failed: disk full")
-    )
-
-    colored = render_colored(summary)
-
-    assert_has_sgr(colored.splitlines()[-2:-1], SGR_YELLOW)

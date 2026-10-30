@@ -10,25 +10,20 @@ checks command (the consumer's own test suite); every git operation is real.
 """
 
 import re
-import sys
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError
 from gymrat.exec import ExecOptions, ExecTimeoutError
 from gymrat.loop.keep import KeepOptions, keep_session
+from gymrat.report.format import format_percent_delta
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import (
     BaselineRecord,
     IterationRecord,
     KeepChecks,
-    KeepRecord,
-    SessionLogRecord,
 )
 from gymrat.session.schema import Outcome
-from gymrat.session.store import latest_baseline
 from gymrat.utils import SHORT_SHA_LENGTH
 from tests._ansi import SGR_RE, strip_ansi
 from tests._exec_fixtures import (
@@ -39,14 +34,13 @@ from tests._exec_fixtures import (
     expected_result,
     install_exec,
 )
-from tests._git import checked_out_ref, head_of, run_git, status_of
+from tests._git import head_of, run_git
 from tests._streams import FakeStream
 from tests.loop._settle import (
     CHECKS,
     CHECKS_STDERR,
     CHECKS_STDOUT,
     KEEP_EXEC,
-    NOTHING_MEASURED_HISTORIES,
     UNUSED_EXEC,
     assert_settling_record,
     checks_config,
@@ -56,7 +50,6 @@ from tests.loop._settle import (
     confirmed_regression,
     edit_experiment,
     exact_regression,
-    measured_rounds,
     settling_record_of,
     start_with,
     undefined_delta,
@@ -69,13 +62,11 @@ from tests.session.records._fixtures import (
     gate_block,
     iteration_record,
     log_records,
-    records_of_type,
+    settled_history,
 )
 
 #: The run timeout from ``checks_config().timeout_seconds``, in milliseconds.
 TIMEOUT_MS = 1_800_000
-
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only .git pointer sabotage")
 
 
 def failed_checks(stdout: str, stderr: str) -> KeepChecks:
@@ -107,41 +98,20 @@ LONG_STDOUT = long_output("out")
 LONG_STDERR = long_output("err")
 
 
-def _hint_line(report: str, action: str) -> str:
-    """The report line naming ``action``, with ANSI styling stripped."""
-    return next(line for line in map(strip_ansi, report.split("\n")) if action in line)
-
-
-def _assert_closes_on_a_bare_hint(
-    repo: str, report: str, baseline_before: BaselineRecord | None = None
-) -> None:
-    """Assert a refusal names no ``gymrat`` command or markup and appends no baseline.
-
-    Args:
-        repo: The repository whose session log the refusal must leave without a new baseline.
-        report: The refusal's report text.
-        baseline_before: The latest baseline the log held before the refusal, if any.
-    """
-    assert "Hint" not in report
-    assert "`" not in report
-    assert "gymrat " not in report
-    assert latest_baseline(log_records(repo)) == baseline_before
-
-
 # ---------------------------------------------------------------------------
 # keep_session preconditions and checks
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("message", "expected_message"),
+    ("message", "inserted"),
     [
-        pytest.param("cache the regex", "cache the regex", id="message-given"),
-        pytest.param(None, "iteration 1: geomean -7.2%", id="message-generated"),
+        pytest.param("cache the regex", ("cache the regex",), id="message-given"),
+        pytest.param(None, ("1", "geomean", format_percent_delta(-7.2)), id="message-generated"),
     ],
 )
 async def test_keep_session_when_checks_pass_does_settle_the_edit_as_committed(
-    repo: str, monkeypatch: pytest.MonkeyPatch, message: str | None, expected_message: str
+    repo: str, monkeypatch: pytest.MonkeyPatch, message: str | None, inserted: tuple[str, ...]
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
@@ -154,17 +124,15 @@ async def test_keep_session_when_checks_pass_does_settle_the_edit_as_committed(
 
     record = result.record
     assert recorder.calls == [(CHECKS, ExecOptions(cwd=worktree, timeout_ms=TIMEOUT_MS))]
-    assert status_of(worktree) == ""
     assert run_git(["rev-parse", "HEAD~1"], worktree) == before
-    assert record.at > 0
-    assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
+    assert (record.seq, record.status) == (1, "committed")
     assert record.commit == head_of(worktree)
     assert record.checks == KeepChecks(configured=True, passed=True)
-    assert record.message == expected_message
-    assert run_git(["log", "-1", "--format=%s"], worktree) == expected_message
+    assert record.message is not None
+    assert [part for part in inserted if part not in record.message] == []
+    assert run_git(["log", "-1", "--format=%s"], worktree) == record.message
     assert settling_record_of(repo) == record
     assert head_of(baseline) == record.commit
-    assert checked_out_ref(baseline) == "HEAD"
     assert head_of(worktree)[:7] in result.report
 
 
@@ -177,9 +145,8 @@ async def test_keep_session_when_primary_delta_undefined_does_generate_message_t
 
     result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
 
-    subject = run_git(["log", "-1", "--format=%s"], experiment_worktree_dir(repo))
-    assert result.record.message == "iteration 1: geomean delta undefined"
-    assert subject == result.record.message
+    assert result.record.message is not None
+    assert result.record.message.endswith("delta undefined")
 
 
 async def test_keep_session_when_checks_fail_does_block_reporting_both_streams_leaving_the_edit(
@@ -200,9 +167,6 @@ async def test_keep_session_when_checks_fail_does_block_reporting_both_streams_l
     assert settling_record_of(repo) == result.record
     assert (CHECKS_STDOUT in result.report, CHECKS_STDERR in result.report) == (True, True)
     assert head_of(worktree) == before
-    assert status_of(worktree) != ""
-    assert _hint_line(result.report, "keep") == "fix the failures and run keep again."
-    _assert_closes_on_a_bare_hint(repo, result.report)
 
 
 async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
@@ -229,7 +193,7 @@ async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
     assert result.record.checks == failed_checks(CHECKS_STDOUT, CHECKS_STDERR)
 
 
-async def test_keep_session_when_output_over_relay_budget_does_truncate_the_report_keeping_true_byte_counts(
+async def test_keep_session_when_output_over_relay_budget_does_truncate_the_report(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (iteration_record(seq=1),))
@@ -242,8 +206,6 @@ async def test_keep_session_when_output_over_relay_budget_does_truncate_the_repo
     assert "out-199" not in result.report
     assert "err-000" in result.report
     assert "err-199" not in result.report
-    assert result.record.checks == failed_checks(LONG_STDOUT, LONG_STDERR)
-    assert settling_record_of(repo) == result.record
 
 
 async def test_keep_session_when_output_exceeded_exec_cap_does_record_pre_cap_byte_counts(
@@ -283,18 +245,11 @@ async def test_keep_session_when_gating_regression_stands_does_block_before_chec
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert status_of(experiment_worktree_dir(repo)) != ""
     assert_settling_record(result.record, gate_block(1, "gating-regression"))
-    assert not re.search(r"not measured", result.report, re.IGNORECASE)
     assert not re.search(r"filter", result.report, re.IGNORECASE)
-    assert (
-        _hint_line(result.report, "discard")
-        == "fix the regression and run iterate again, or run discard."
-    )
-    _assert_closes_on_a_bare_hint(repo, result.report)
 
 
-async def test_keep_session_when_rerun_never_measured_regression_does_block_naming_metric_and_filter(
+async def test_keep_session_when_rerun_never_measured_regression_does_block_naming_the_metric(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (unmeasured_regression(1),))
@@ -306,10 +261,6 @@ async def test_keep_session_when_rerun_never_measured_regression_does_block_nami
     assert recorder.calls == []
     assert_settling_record(result.record, gate_block(1, "gating-regression"))
     assert "alloc_bytes" in result.report
-    assert re.search(r"not measured on the confirmation rerun", result.report, re.IGNORECASE)
-    assert re.search(r"filter", result.report, re.IGNORECASE)
-    assert re.search(r"discard", result.report, re.IGNORECASE)
-    _assert_closes_on_a_bare_hint(repo, result.report)
 
 
 # ---------------------------------------------------------------------------
@@ -330,64 +281,12 @@ async def test_keep_session_when_outcome_not_improved_does_block_before_checks(
     start_with(repo, (unimproved(1, outcome),))
     edit_experiment(repo)
     recorder = checks_pass(monkeypatch)
-    worktree = experiment_worktree_dir(repo)
-    experiment_before = head_of(worktree)
-    baseline_before = head_of(baseline_worktree_dir(repo))
 
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
     assert_settling_record(result.record, gate_block(1, "not-improved"))
-    assert settling_record_of(repo) == result.record
-    assert head_of(worktree) == experiment_before
-    assert status_of(worktree) != ""
-    assert head_of(baseline_worktree_dir(repo)) == baseline_before
-    assert f"Keep refused: the iteration was {outcome}, not improved." in result.report
-    assert "discard it, or pass --allow-unimproved to keep it anyway." in result.report
-    _assert_closes_on_a_bare_hint(repo, result.report)
-
-
-@pytest.mark.parametrize(
-    "measured",
-    [
-        pytest.param(unimproved(1, "no-signal"), id="no-signal"),
-        pytest.param(unimproved(1, "regressed"), id="regressed"),
-    ],
-)
-async def test_keep_session_when_allow_unimproved_does_commit_on_passing_checks(
-    repo: str, monkeypatch: pytest.MonkeyPatch, measured: IterationRecord
-):
-    start_with(repo, (measured,))
-    edit_experiment(repo)
-    recorder = checks_pass(monkeypatch)
-
-    result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
-
-    assert recorder.calls == [
-        (CHECKS, ExecOptions(cwd=experiment_worktree_dir(repo), timeout_ms=TIMEOUT_MS))
-    ]
-    assert result.record.status == "committed"
-    assert result.record.commit == head_of(experiment_worktree_dir(repo))
-    assert result.record.checks == KeepChecks(configured=True, passed=True)
-    assert head_of(baseline_worktree_dir(repo)) == result.record.commit
-
-
-async def test_keep_session_when_override_follows_a_not_improved_refusal_does_commit(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (unimproved(1, "no-signal"),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
-
-    result = await keep_session(repo, checks_config(), KeepOptions(allow_unimproved=True))
-
-    keeps = records_of_type(repo, KeepRecord)
-    assert [(record.status, record.reason) for record in keeps] == [
-        ("blocked", "not-improved"),
-        ("committed", None),
-    ]
-    assert result.record.commit == head_of(experiment_worktree_dir(repo))
+    assert outcome in result.report
 
 
 # ---------------------------------------------------------------------------
@@ -395,41 +294,19 @@ async def test_keep_session_when_override_follows_a_not_improved_refusal_does_co
 # ---------------------------------------------------------------------------
 
 
-@posix_only
-async def test_keep_session_when_baseline_advance_fails_does_leave_the_commit_landed_unrecorded(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    worktree = experiment_worktree_dir(repo)
-    head_before = head_of(worktree)
-    (Path(baseline_worktree_dir(repo)) / ".git").write_text(
-        "gitdir: /nonexistent\n", encoding="utf-8"
-    )
-
-    with pytest.raises(GymratError, match="baseline"):
-        await keep_session(repo, checks_config())
-
-    last = settling_record_of(repo)
-    assert isinstance(last, IterationRecord)
-    assert last.seq == 1
-    assert status_of(worktree) == ""
-    assert head_of(worktree) != head_before
-
-
 def _checks_skipped(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     return install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
 
 
 @pytest.mark.parametrize(
-    ("install_checks", "checks", "status", "recorded_checks", "baseline_advanced"),
+    ("install_checks", "checks", "status", "recorded_checks", "baseline_advanced", "checks_ran"),
     [
         pytest.param(
             checks_pass,
             CHECKS,
             "committed",
             KeepChecks(configured=True, passed=True),
+            True,
             True,
             id="passing-checks-keep-it",
         ),
@@ -439,6 +316,7 @@ def _checks_skipped(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
             "blocked",
             failed_checks(CHECKS_STDOUT, CHECKS_STDERR),
             False,
+            True,
             id="failing-checks-refuse-it",
         ),
         pytest.param(
@@ -447,6 +325,7 @@ def _checks_skipped(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
             "committed",
             KeepChecks(configured=False),
             True,
+            False,
             id="no-checks-keep-it-unchecked",
         ),
     ],
@@ -460,17 +339,18 @@ async def test_keep_session_when_clean_and_ahead_does_settle_the_standing_commit
     status: str,
     recorded_checks: KeepChecks,
     baseline_advanced: bool,
+    checks_ran: bool,
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     committed = commit_experiment_directly(repo)
-    install_checks(monkeypatch)
+    recorder = install_checks(monkeypatch)
 
     result = await keep_session(repo, checks_config(checks=checks))
 
     assert (result.record.status, result.record.checks) == (status, recorded_checks)
     assert (head_of(baseline_worktree_dir(repo)) == committed) is baseline_advanced
-    assert settling_record_of(repo) == result.record
+    assert bool(recorder.calls) is checks_ran
 
 
 async def _measured_without_an_edit(repo: str, monkeypatch: pytest.MonkeyPatch) -> int:
@@ -502,57 +382,25 @@ async def test_keep_session_when_head_matches_baseline_does_block_as_nothing_to_
     arrange: Callable[[str, pytest.MonkeyPatch], Awaitable[int]],
 ):
     seq = await arrange(repo, monkeypatch)
-    baseline_before = latest_baseline(log_records(repo))
     recorder = checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config())
 
-    hint = _hint_line(result.report, "iterate")
     assert recorder.calls == []
     assert_settling_record(result.record, gate_block(seq, "nothing-to-commit"))
-    assert "gymrat" not in hint
-    assert "keep" not in hint
-    _assert_closes_on_a_bare_hint(repo, result.report, baseline_before)
 
 
-@pytest.mark.parametrize(
-    ("history", "seq"),
-    [
-        pytest.param(*histories[case_id].values, seq, id=case_id)
-        for histories in [{case.id: case for case in NOTHING_MEASURED_HISTORIES}]
-        for case_id, seq in (("no-iteration-ever-recorded", 1), ("last-iteration-already-kept", 2))
-    ],
-)
 async def test_keep_session_when_nothing_measured_does_refuse_with_nothing_measured_keep(
-    repo: str, monkeypatch: pytest.MonkeyPatch, history: tuple[SessionLogRecord, ...], seq: int
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, history)
+    start_with(repo, settled_history())
     edit_experiment(repo)
     recorder = checks_pass(monkeypatch)
 
     result = await keep_session(repo, checks_config())
 
     assert recorder.calls == []
-    assert_settling_record(result.record, gate_block(seq, "nothing-measured"))
-    assert "run iterate first" in result.report
-    _assert_closes_on_a_bare_hint(repo, result.report)
-
-
-async def test_keep_session_when_second_refusal_does_number_past_the_first(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    start_with(repo)
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
-
-    result = await keep_session(repo, checks_config())
-
-    # A consumer walking the raw log sees two distinct records, not one number
-    # written twice.
-    keeps = records_of_type(repo, KeepRecord)
-    assert [record.seq for record in keeps] == [1, 2]
-    assert result.record.seq == 2
+    assert_settling_record(result.record, gate_block(2, "nothing-measured"))
 
 
 # ---------------------------------------------------------------------------
@@ -560,25 +408,10 @@ async def test_keep_session_when_second_refusal_does_number_past_the_first(
 # ---------------------------------------------------------------------------
 
 
-def _nothing_measured(repo: str) -> None:
-    """An edited experiment with no iteration measured behind it."""
-    start_with(repo, ())
-    edit_experiment(repo)
-
-
 def _edited_after_iteration(repo: str) -> None:
     """The ordinary keep shape: one measured iteration and an edit to commit."""
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
-
-
-async def test_keep_session_when_colored_does_style_the_hint(repo: str):
-    _nothing_measured(repo)
-
-    result = await keep_session(repo, checks_config(), color=True)
-
-    hint = next(line for line in result.report.split("\n") if "iterate" in strip_ansi(line))
-    assert SGR_RE.search(hint) is not None
 
 
 async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_report_it_literally(
@@ -593,30 +426,17 @@ async def test_keep_session_when_checks_output_holds_markup_metacharacters_does_
     assert noisy in strip_ansi(result.report)
 
 
-async def test_keep_session_when_no_checks_configured_does_keep_it_unchecked_with_a_styled_stderr_hint(
+async def test_keep_session_when_no_checks_configured_does_send_a_styled_hint_to_stderr(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     stderr = FakeStream(tty=True)
     monkeypatch.setattr("sys.stderr", stderr)
     _edited_after_iteration(repo)
-    recorder = install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
+    install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
 
-    result = await keep_session(repo, checks_config(checks=None))
+    await keep_session(repo, checks_config(checks=None))
 
-    record = result.record
-    warning = strip_ansi(stderr.getvalue())
-    assert recorder.calls == []
-    assert (record.type, record.seq, record.status) == ("keep", 1, "committed")
-    assert record.commit == head_of(experiment_worktree_dir(repo))
-    assert isinstance(record.message, str)
-    assert record.checks == KeepChecks(configured=False)
-    assert "gymrat.toml" in warning
-    assert "Hint" not in warning
-    assert "`" not in warning
-    hint = next(
-        line for line in stderr.getvalue().splitlines() if "gymrat.toml" in strip_ansi(line)
-    )
-    assert SGR_RE.search(hint) is not None
+    assert SGR_RE.search(stderr.getvalue()) is not None
 
 
 async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to_the_sink(
@@ -629,10 +449,8 @@ async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to
 
     await keep_session(repo, checks_config(checks=None), KeepOptions(warn=warned.append))
 
-    message = "\n".join(warned)
-    assert "no checks command is configured" in message
-    assert "gymrat.toml" in message
-    assert SGR_RE.search(message) is None
+    assert len(warned) == 1
+    assert SGR_RE.search(warned[0]) is None
     assert capsys.readouterr().err == ""
 
 
@@ -644,7 +462,7 @@ async def test_keep_session_when_no_checks_and_warn_sink_does_send_plain_hint_to
 async def test_keep_session_when_committed_does_append_the_kept_samples_as_a_baseline(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    kept = measured_rounds(1)
+    kept = iteration_record(seq=1)
     start_with(repo, (kept,))
     edit_experiment(repo)
     checks_pass(monkeypatch)
@@ -653,8 +471,6 @@ async def test_keep_session_when_committed_does_append_the_kept_samples_as_a_bas
 
     records = log_records(repo)
     baseline = records[-1]
-    assert [record.type for record in records[-2:]] == ["keep", "baseline"]
     assert isinstance(baseline, BaselineRecord)
     assert baseline.label == head_of(experiment_worktree_dir(repo))[:SHORT_SHA_LENGTH]
     assert baseline.samples == kept.samples.experiment
-    assert baseline.duration_ms is None

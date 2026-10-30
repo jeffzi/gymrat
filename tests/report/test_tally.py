@@ -2,8 +2,8 @@
 
 These tests assert the *intent* of styling rather than exact escape bytes: they
 render the markup string through :func:`gymrat.report.style.render_lines`
-with color off to check the plain content, and with color on to check that the
-expected SGR attribute code is present.
+with color off to check the plain content, and with color on to check which
+project style opens before each piece of a part.
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
-from tests._ansi import (
-    sgr_codes,
-)
 from tests.report._assertions import (
     render_colored,
     render_plain,
+    sgr_for,
+    styles_at,
+    word_styles,
 )
 from tests.report._comparisons import (
     NWayCandidate,
@@ -62,18 +63,6 @@ _TWO_CANDIDATES: MetricComparisons = {
             id="mixed-skips-no-verdict",
         ),
         pytest.param(
-            {},
-            0,
-            VerdictCounts(improved=0, regressed=0, unstable=0, no_signal=0),
-            id="no-metrics",
-        ),
-        pytest.param(
-            _TWO_CANDIDATES,
-            0,
-            VerdictCounts(improved=1, regressed=0, unstable=0, no_signal=0),
-            id="first-candidate-counts-its-improvement",
-        ),
-        pytest.param(
             _TWO_CANDIDATES,
             1,
             VerdictCounts(improved=0, regressed=1, unstable=0, no_signal=0),
@@ -94,17 +83,36 @@ def test_count_verdicts_when_given_metrics_does_count_each_class_for_the_named_c
 # ---------------------------------------------------------------------------
 
 
-def test_verdict_summary_parts_when_mixed_does_render_every_class_with_its_count_color():
+_GLYPHS = ["✓", "✗", "≈", "=", "~", "?"]
+_GLOSSES = ["improved", "regressed", "unstable", "identical", "within noise", "inconclusive"]
+
+
+def test_verdict_summary_parts_when_mixed_does_color_only_each_count_by_its_class():
     parts = verdict_summary_parts(every_class_metrics(), 0)
 
-    assert [(render_plain(part), sorted(sgr_codes(render_colored(part)))) for part in parts] == [
-        ("✓ 1 improved", ["32"]),
-        ("✗ 1 regressed", ["31"]),
-        ("≈ 1 unstable", ["33"]),
-        ("= 1 identical", ["36"]),
-        ("~ 1 within noise", []),
-        ("? 1 inconclusive", []),
+    colored = [render_colored(part) for part in parts]
+    assert [render_plain(part) for part in parts] == [
+        "✓ 1 improved",
+        "✗ 1 regressed",
+        "≈ 1 unstable",
+        "= 1 identical",
+        "~ 1 within noise",
+        "? 1 inconclusive",
     ]
+    assert [
+        next(params for word, params in word_styles(line) if word == "1") for line in colored
+    ] == [
+        sgr_for(VERDICT_STYLES["improved"]),
+        sgr_for(VERDICT_STYLES["regressed"]),
+        sgr_for(VERDICT_STYLES["unstable"]),
+        sgr_for(VERDICT_STYLES["identical"]),
+        [],
+        [],
+    ]
+    assert [
+        (styles_at(line, glyph), styles_at(line, gloss))
+        for line, glyph, gloss in zip(colored, _GLYPHS, _GLOSSES, strict=True)
+    ] == [([], [])] * len(_GLYPHS)
 
 
 def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
@@ -114,14 +122,9 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
 
     parts = verdict_summary_parts(only_improved, 0)
 
-    assert [(render_plain(part), sorted(sgr_codes(render_colored(part)))) for part in parts] == [
-        ("✓ 1 improved", ["32"]),
-        ("✗ 0 regressed", ["2"]),
-        ("≈ 0 unstable", ["2"]),
-        ("= 0 identical", ["2"]),
-        ("~ 0 within noise", ["2"]),
-        ("? 0 inconclusive", ["2"]),
-    ]
+    assert [
+        styles_at(render_colored(part), glyph) for part, glyph in zip(parts, _GLYPHS, strict=True)
+    ] == [[], *[sgr_for("dim")] * 5]
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

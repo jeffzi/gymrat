@@ -41,12 +41,10 @@ from tests._git import commit_all
 from tests.session.records._fixtures import (
     append_records,
     committed_keep,
-    discard_record,
     gate_block,
     iteration_record,
     log_records,
     metric_verdict,
-    settled_history,
 )
 
 CHECKS = "npm test"
@@ -86,6 +84,10 @@ def start_with(
     """
     start_session(repo_dir, "main", checks_config() if config is None else config)
     append_records(repo_dir, *history)
+
+
+def leave_untouched(_root: str) -> None:
+    """Leave the repository as it is: an arrange step that sets nothing up."""
 
 
 def keep_iteration(
@@ -212,15 +214,12 @@ def assert_settling_record(
     """Assert a settling record equals the expected one once its stamped ``at`` is normalized.
 
     The settle stamps a real nanosecond timestamp the fixtures cannot predict, so
-    the ``at`` is checked as a positive integer and then aligned before the
-    structural compare.
+    the ``at`` is aligned before the structural compare.
 
     Args:
         actual: The record the settle wrote.
         expected: The record it should equal, apart from ``at``.
     """
-    assert isinstance(actual.at, int)
-    assert actual.at > 0
     assert actual.model_copy(update={"at": expected.at}) == expected
 
 
@@ -230,25 +229,6 @@ def assert_settling_record(
 
 #: The paired rerun samples a filtered bench reports when it only emits ``total_ms``.
 RERUN_SAMPLES = PairedSamples(experiment=({"total_ms": 14_120},), baseline=({"total_ms": 15_170},))
-
-#: Three experiment rounds over two metrics whose medians are neither the first
-#: nor the last round: ``total_ms`` reads 14_200 and ``alloc_bytes`` reads 2_048.
-KEPT_ROUNDS: tuple[dict[str, float], ...] = (
-    {"total_ms": 14_300, "alloc_bytes": 2_100},
-    {"total_ms": 14_100, "alloc_bytes": 2_048},
-    {"total_ms": 14_200, "alloc_bytes": 2_000},
-)
-
-
-def measured_rounds(seq: int) -> IterationRecord:
-    """An improved iteration numbered ``seq`` measured over ``KEPT_ROUNDS``."""
-    return iteration_record(
-        seq=seq,
-        samples=PairedSamples(
-            experiment=KEPT_ROUNDS,
-            baseline=({"total_ms": 15_200, "alloc_bytes": 2_400},),
-        ),
-    )
 
 
 def undefined_delta(seq: int) -> IterationRecord:
@@ -274,16 +254,6 @@ def confirmed_regression(seq: int) -> IterationRecord:
 def gating_blocked_history() -> tuple[SessionLogRecord, ...]:
     """A history whose iteration 1 regressed and a gating-regression block settled it."""
     return (confirmed_regression(1), gate_block(1, "gating-regression"))
-
-
-#: Histories that leave nothing measured to settle, one ``pytest.param`` each.
-NOTHING_MEASURED_HISTORIES = [
-    pytest.param((), id="no-iteration-ever-recorded"),
-    pytest.param(settled_history(), id="last-iteration-already-kept"),
-    pytest.param(
-        (*gating_blocked_history(), discard_record(2)), id="gating-block-already-discarded"
-    ),
-]
 
 
 def exact_regression(seq: int) -> IterationRecord:

@@ -1,19 +1,21 @@
-"""Tests for the SGR-inspection helper the rendering tests assert through."""
+"""Tests for the SGR-grouping helper the rendering tests assert through."""
 
 import pytest
 
-from tests._ansi import sgr_codes
+from tests._ansi import sgr_attributes
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("params", "expected"),
     [
-        pytest.param("\x1b[2;34mx\x1b[0m", {"2", "34"}, id="plain-attributes"),
-        pytest.param("\x1b[38;2;1;2;3mx", {"38;2;1;2;3"}, id="truecolor-foreground"),
-        pytest.param("\x1b[1;48;5;2mx", {"1", "48;5;2"}, id="256-color-background"),
+        pytest.param(["2", "34"], ["2", "34"], id="plain-attributes"),
+        pytest.param(["38", "2", "1", "2", "3"], ["38;2;1;2;3"], id="truecolor-foreground"),
+        pytest.param(["1", "48", "5", "2"], ["1", "48;5;2"], id="256-color-background"),
     ],
 )
-def test_sgr_codes_when_text_carries_styles_does_keep_each_extended_color_run_whole(
-    text: str, expected: set[str]
+def test_sgr_attributes_when_params_carry_styles_does_keep_each_extended_color_run_whole(
+    params: list[str], expected: list[str]
 ):
-    assert sgr_codes(text) == expected
+    attributes = sgr_attributes(params)
+
+    assert attributes == expected

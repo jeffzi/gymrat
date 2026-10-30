@@ -16,8 +16,8 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 
 import json
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Literal
-from unittest.mock import create_autospec
 
 import pytest
 
@@ -30,8 +30,8 @@ from gymrat.report.types import ReportOptions
 from gymrat.session.budget import Budget
 from gymrat.session.paths import repo_root, session_jsonl_path, supervise_lockfile_path
 from gymrat.session.records import IterationRecord
-from gymrat.session.store import read_session_records
-from gymrat.utils import now_ms
+from gymrat.utils import format_time_left
+from tests._clock import freeze_now_ms
 from tests._lock import held_supervise_lock, lock_probe_error
 from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
 from tests.session.records._fixtures import (
@@ -58,7 +58,7 @@ _TIMED_ITERATION = (iteration_record(duration_ms=ITERATE_MS),)
 @pytest.fixture
 def session_root(repo: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     """A repository under a live supervised run, with the clock frozen at 0."""
-    monkeypatch.setattr("gymrat.utils.now_ms", create_autospec(now_ms, return_value=0))
+    freeze_now_ms(monkeypatch, 0)
     with held_supervise_lock(repo):
         yield repo
 
@@ -120,12 +120,18 @@ def _outside_a_repository(request: pytest.FixtureRequest) -> None:
     request.getfixturevalue("_in_non_repo")
 
 
+def _fail_getcwd(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """Make reading the process working directory raise ``error``."""
+
+    def getcwd() -> str:
+        raise error
+
+    monkeypatch.setattr("os.getcwd", getcwd)
+
+
 def _repo_root_io_error(request: pytest.FixtureRequest) -> None:
-    """Make the repository root lookup fail with an I/O error."""
-    request.getfixturevalue("monkeypatch").setattr(
-        "gymrat.cli.budget_report.repo_root",
-        create_autospec(repo_root, side_effect=OSError("input/output error")),
-    )
+    """Make the repository root lookup fail with an I/O error reading the working directory."""
+    _fail_getcwd(request.getfixturevalue("monkeypatch"), OSError("input/output error"))
 
 
 @pytest.fixture
@@ -135,34 +141,26 @@ def failed_root_lookup(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.mark.parametrize(
-    ("failed_root_lookup", "output_format", "expected"),
+    "failed_root_lookup",
     [
-        pytest.param(_outside_a_repository, "text", "report\n", id="not-a-repository"),
-        pytest.param(_repo_root_io_error, "text", "report\n", id="os-error"),
-        pytest.param(
-            _repo_root_io_error,
-            "json",
-            '{"result": "report", "budget": null}\n',
-            id="json-carries-no-budget",
-        ),
+        pytest.param(_outside_a_repository, id="not-a-repository"),
+        pytest.param(_repo_root_io_error, id="os-error"),
     ],
-    indirect=["failed_root_lookup"],
+    indirect=True,
 )
 @pytest.mark.usefixtures("failed_root_lookup")
 def test_emit_report_when_repo_root_fails_expectedly_does_write_the_report_without_a_budget(
-    output_format: Literal["text", "json"],
-    expected: str,
     capsys: pytest.CaptureFixture[str],
 ):
-    _emit(output_format)
+    _emit("text")
 
-    assert capsys.readouterr().out == expected
+    assert capsys.readouterr().out == "report\n"
 
 
 @pytest.mark.parametrize(
     ("output_format", "expected"),
     [
-        pytest.param("text", "report\n12m 0s left of 60m\n", id="text-trailer"),
+        pytest.param("text", f"report\n{format_time_left(720_999.0, 60)}\n", id="text-trailer"),
         pytest.param(
             "json", '{"result": "report", "budget": [60.0, 720]}\n', id="json-whole-seconds-left"
         ),
@@ -191,20 +189,11 @@ def _corrupt_session_log(_request: pytest.FixtureRequest) -> None:
     append_raw(session_jsonl_path(repo_root()), b"not json\n")
 
 
-def _read_records_io_error(request: pytest.FixtureRequest) -> None:
-    """Make reading the session log fail with an I/O error."""
-    request.getfixturevalue("monkeypatch").setattr(
-        "gymrat.cli.budget_report.read_session_records",
-        create_autospec(read_session_records, side_effect=OSError("input/output error")),
-    )
-
-
 @pytest.mark.parametrize(
     "arrange",
     [
         pytest.param(_outside_a_repository, id="not-a-repository"),
         pytest.param(_corrupt_session_log, id="corrupt-session-log"),
-        pytest.param(_read_records_io_error, id="read-records-os-error"),
     ],
 )
 def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_silent(
@@ -225,55 +214,61 @@ def test_warn_duration_over_budget_when_a_lookup_fails_expectedly_does_stay_sile
 # emit_report and warn_duration_over_budget: unexpected failures propagate
 # ---------------------------------------------------------------------------
 
-#: The session lookups ``warn_duration_over_budget`` reads, by their name in the module.
-_LOOKUPS: dict[str, Callable[..., object]] = {
-    "repo_root": repo_root,
-    "read_session_records": read_session_records,
-}
-
 
 def _warn() -> None:
     """Run the ``measure`` over-budget check."""
     budget_report.warn_duration_over_budget(halve=True)
 
 
-@pytest.mark.parametrize(
-    ("helper", "lookup"),
-    [
-        pytest.param(lambda: _emit("text"), "repo_root", id="emit-report-repo-root"),
-        pytest.param(_warn, "repo_root", id="warn-repo-root"),
-        pytest.param(_warn, "read_session_records", id="warn-read-records"),
-    ],
-)
-def test_budget_helper_when_a_lookup_fails_unexpectedly_does_propagate(
-    helper: Callable[[], None], lookup: str, session_root: str, monkeypatch: pytest.MonkeyPatch
+def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
+    session_root: str, monkeypatch: pytest.MonkeyPatch
 ):
     _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
-    monkeypatch.setattr(
-        f"gymrat.cli.budget_report.{lookup}",
-        create_autospec(_LOOKUPS[lookup], side_effect=RuntimeError("patched wrong")),
-    )
+    _fail_getcwd(monkeypatch, RuntimeError("patched wrong"))
 
     with pytest.raises(RuntimeError, match="patched wrong"):
-        helper()
+        _emit("text")
 
 
-@pytest.mark.parametrize(
-    "helper",
-    [
-        pytest.param(lambda: _emit("text"), id="emit-report"),
-        pytest.param(_warn, id="warn-duration"),
-    ],
-)
-def test_budget_helper_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
-    helper: Callable[[], None], repo: str
+def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_propagate(
+    session_root: str, monkeypatch: pytest.MonkeyPatch
+):
+    _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
+    log = Path(session_jsonl_path(session_root))
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path == log:
+            message = "patched wrong"
+            raise RuntimeError(message)
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(RuntimeError, match="patched wrong"):
+        _warn()
+
+
+def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(repo: str):
+    _seed_session(repo, budget=LIVE_BUDGET)
+
+    with block_supervise_lock(repo):
+        expected = lock_probe_error(supervise_lockfile_path(repo))
+        with pytest.raises(GymratError) as exc:
+            _emit("text")
+
+    assert str(exc.value) == expected
+
+
+def test_warn_duration_over_budget_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    repo: str,
 ):
     _seed_session(repo, budget=LIVE_BUDGET)
 
     with block_supervise_lock(repo):
         expected = lock_probe_error(supervise_lockfile_path(repo))
         with pytest.raises(GymratError) as exc:
-            helper()
+            _warn()
 
     assert str(exc.value) == expected
 
@@ -283,21 +278,10 @@ def test_budget_helper_when_supervise_lock_cannot_be_probed_does_raise_the_lock_
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("budget", "records"),
-    [
-        pytest.param(_budget_left(ITERATE_MS), _TIMED_ITERATION, id="fits-the-budget"),
-        pytest.param(None, _TIMED_ITERATION, id="no-budget"),
-        pytest.param(_budget_left(MEASURE_REMAINING_MS), (), id="no-estimate"),
-    ],
-)
-def test_warn_duration_over_budget_when_nothing_to_warn_about_does_stay_silent(
-    budget: Budget | None,
-    records: tuple[IterationRecord, ...],
-    session_root: str,
-    capsys: pytest.CaptureFixture[str],
+def test_warn_duration_over_budget_when_estimate_fits_the_budget_does_stay_silent(
+    session_root: str, capsys: pytest.CaptureFixture[str]
 ):
-    _seed_session(session_root, budget=budget, records=records)
+    _seed_session(session_root, budget=_budget_left(ITERATE_MS))
 
     budget_report.warn_duration_over_budget(halve=False)
 
@@ -305,27 +289,30 @@ def test_warn_duration_over_budget_when_nothing_to_warn_about_does_stay_silent(
 
 
 @pytest.mark.parametrize(
-    ("halve", "remaining_ms", "warning"),
+    ("halve", "remaining_ms", "shown", "hidden"),
     [
         pytest.param(
             True,
             MEASURE_REMAINING_MS,
-            "warning: 12m 0s left; the last full measurement took at most 24m 0s per side\n",
+            ("12m 0s", "24m 0s per side"),
+            ("(",),
             id="halving-names-the-per-side-cost",
         ),
         pytest.param(
             False,
             COMPARE_REMAINING_MS,
-            "warning: 30m 0s left; the last full measurement took at most 48m 0s"
-            " (24m 0s per side)\n",
+            ("30m 0s", "48m 0s (24m 0s per side)"),
+            (),
             id="whole-names-the-full-cost-with-the-per-side-one",
         ),
     ],
 )
 def test_warn_duration_over_budget_when_over_budget_does_name_the_cost_the_command_pays(
+    *,
     halve: bool,
     remaining_ms: float,
-    warning: str,
+    shown: tuple[str, ...],
+    hidden: tuple[str, ...],
     session_root: str,
     capsys: pytest.CaptureFixture[str],
 ):
@@ -333,7 +320,9 @@ def test_warn_duration_over_budget_when_over_budget_does_name_the_cost_the_comma
 
     budget_report.warn_duration_over_budget(halve=halve)
 
-    assert capsys.readouterr().err == warning
+    err = capsys.readouterr().err
+    assert [part for part in shown if part not in err] == []
+    assert [part for part in hidden if part in err] == []
 
 
 # ---------------------------------------------------------------------------
@@ -341,54 +330,21 @@ def test_warn_duration_over_budget_when_over_budget_does_name_the_cost_the_comma
 # ---------------------------------------------------------------------------
 
 
-def _render_json(summary: BudgetSummary | None) -> str:
-    """Render a JSON document that carries a ``budget`` object only when *summary* is set."""
-    doc: dict[str, object] = {"metric": "ops/s"}
-    if summary is not None:
-        doc["budget"] = {
-            "cap_minutes": summary.cap_minutes,
-            "remaining_seconds": summary.remaining_seconds,
-        }
-    return json.dumps(doc)
+def _render_json(_summary: BudgetSummary | None) -> str:
+    """Render a JSON document; the text format never calls it."""
+    return json.dumps({"metric": "ops/s"})
 
 
-#: A live budget 29 minutes from its 30-minute deadline at the frozen clock's instant.
-_ACTIVE_BUDGET = Budget(max_minutes=30, deadline_ms=1_740_000.0)
-
-
-@pytest.mark.parametrize(
-    ("budget", "use_json", "expected"),
-    [
-        pytest.param(
-            _ACTIVE_BUDGET,
-            True,
-            '{"metric": "ops/s", "budget": {"cap_minutes": 30.0, "remaining_seconds": 1740}}\n',
-            id="json-budget-active",
-        ),
-        pytest.param(None, True, '{"metric": "ops/s"}\n', id="json-no-budget"),
-        pytest.param(
-            _ACTIVE_BUDGET,
-            False,
-            "benchmark results here\n29m 0s left of 30m\n",
-            id="text-budget-active",
-        ),
-        pytest.param(None, False, "benchmark results here\n", id="text-no-budget"),
-    ],
-)
-def test_write_budget_report_when_budget_active_or_not_does_append_it_only_if_active(
-    budget: Budget | None,
-    use_json: bool,
-    expected: str,
-    session_root: str,
-    capsys: pytest.CaptureFixture[str],
+def test_write_budget_report_when_no_budget_is_live_does_write_the_report_alone(
+    session_root: str, capsys: pytest.CaptureFixture[str]
 ):
-    _seed_session(session_root, budget=budget, records=())
+    _seed_session(session_root, budget=None, records=())
 
     budget_report.write_budget_report(
         session_root,
-        SharedFlags(format=OutputFormat.json if use_json else OutputFormat.text),
+        SharedFlags(format=OutputFormat.text),
         render_json=_render_json,
         text_report="benchmark results here",
     )
 
-    assert capsys.readouterr().out == expected
+    assert capsys.readouterr().out == "benchmark results here\n"

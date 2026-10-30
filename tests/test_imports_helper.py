@@ -8,8 +8,7 @@ from tests._imports import modules_loaded_after
 
 
 def test_modules_loaded_after_when_statements_raise_does_report_child_stderr():
-    with pytest.raises(
-        subprocess.CalledProcessError,
-        match=r"ModuleNotFoundError: No module named 'banana'",
-    ):
+    with pytest.raises(subprocess.CalledProcessError) as caught:
         modules_loaded_after("import banana")
+
+    assert caught.value.__notes__ == [caught.value.stderr]

@@ -18,6 +18,7 @@ from typing import Any, Literal, Self
 
 from gymrat.loop.iterate.run import HookInvocation
 from gymrat.session.records import HookRecord
+from gymrat.session.schema import HookStage
 from tests.loop.iterate._fixtures import iterate_session_header
 
 #: The output stream a hook script writes to.
@@ -148,3 +149,31 @@ def expected_hook_record(**overrides: Any) -> HookRecord:
     }
     fields.update(overrides)
     return HookRecord(**fields)
+
+
+def labeled_lines(report: str, stage: HookStage) -> list[str]:
+    """The report's lines with their ``[stage]`` label stripped off.
+
+    Every line the runner emits carries the label, so a line without one is a
+    leak of unlabeled hook output rather than something to quietly pass through.
+
+    Args:
+        report: The hook report to split.
+        stage: The stage whose ``[stage]`` label every line must carry.
+
+    Returns:
+        The report's lines without their label; none for an empty report.
+
+    Raises:
+        AssertionError: When a line does not carry the label.
+    """
+    if report == "":
+        return []
+    prefix = f"[{stage}] "
+    lines: list[str] = []
+    for line in report.split("\n"):
+        if not line.startswith(prefix):
+            message = f"expected every hook report line to be labeled {prefix.strip()}: {line}"
+            raise AssertionError(message)
+        lines.append(line[len(prefix) :])
+    return lines

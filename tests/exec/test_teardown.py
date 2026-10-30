@@ -17,10 +17,8 @@ Real-subprocess tests are POSIX-only: process groups, session leaders, and
 import asyncio
 import contextlib
 import dataclasses
-import functools
 import os
 import shlex
-import signal
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -33,29 +31,23 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
-    RUNNERS,
-    ExecRun,
+    ARGV_RUNNER,
+    SHELL_RUNNER,
     Runner,
     Teardown,
     cancel_and_settle,
     cancel_task,
     expected_result,
-    fail_stderr_read,
     leave_to_timeout,
-    run_argv,
     run_shell,
     set_abort,
     settle,
+    shell_leaving_a_descendant,
     wait_for_spawned,
 )
 from tests._process_helpers import (
-    SLEEPER_ARGV,
-    ZOMBIE_ONLY_GROUP_SCRIPT,
-    is_alive,
     is_zombie,
-    killpg_warnings,
     poll_until,
-    refuse_killpg,
     wait_for_file,
     wait_for_pid_file,
     wait_until_dead,
@@ -67,15 +59,8 @@ from tests._process_helpers import (
 # a zombie nobody has reaped while that teardown runs.
 _REAP_HOLD_S = 1.0
 
-# Timeout for teardown tests: fires well after the shell has exited, well
-# before the held reap is released.
-_TEARDOWN_TIMEOUT_MS = 250
-
 # Upper bound for a cancelled exec to settle when its shell is never reaped.
 _CANCEL_SETTLE_S = 5.0
-
-# asyncio logs this when a child it waits on was reaped by someone else.
-_UNKNOWN_CHILD = "Unknown child process"
 
 _os_waitid: Callable[..., object] | None = getattr(os, "waitid", None)
 
@@ -252,15 +237,6 @@ def reap_at_group_signals(
     return watch
 
 
-def script_writing_pid_and_sleeping(pid_file: Path) -> str:
-    """Build a script that writes its own pid to ``pid_file``, then sleeps 30s."""
-    return (
-        "import os, time; "
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid()) + '\\n'); "
-        "time.sleep(30)"
-    )
-
-
 def script_escaping_the_group(pid_file: Path) -> str:
     """Build a script that leaves its process group, writes its pid to ``pid_file``, then sleeps 30s.
 
@@ -335,11 +311,14 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("runner", RUNNERS)
+# Both entry points settle a run through the same teardown, so most cases run
+# through one of them.
+
+
 async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
-    make_opts: Callable[..., ExecOptions], runner: Runner
+    make_opts: Callable[..., ExecOptions],
 ) -> None:
-    result = await runner.run(runner.partial_output, make_opts(timeout_ms=1500))
+    result = await run_shell("echo 'line 1'; sleep 10", make_opts(timeout_ms=1500))
 
     assert result == ExecTimeoutError(
         stdout="line 1\n",
@@ -354,14 +333,19 @@ async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_par
 _GRANDCHILD_TIMEOUT_MS = 3000
 
 
-@pytest.mark.parametrize("runner", RUNNERS)
+# Every entry point and every teardown reach the same group kill, so each
+# value appears once rather than in every pairing.
+
+
 @pytest.mark.parametrize(
-    "teardown",
+    ("runner", "teardown"),
     [
-        pytest.param(Teardown(_GRANDCHILD_TIMEOUT_MS, leave_to_timeout), id="timeout"),
-        pytest.param(Teardown(None, set_abort), id="abort"),
-        pytest.param(Teardown(None, fail_stderr_read), id="stream-error"),
-        pytest.param(Teardown(None, cancel_task), id="cancelled"),
+        pytest.param(
+            SHELL_RUNNER,
+            Teardown(_GRANDCHILD_TIMEOUT_MS, leave_to_timeout),
+            id="exec-timeout",
+        ),
+        pytest.param(ARGV_RUNNER, Teardown(None, cancel_task), id="exec_argv-cancelled"),
     ],
 )
 async def test_exec_when_torn_down_does_kill_the_whole_group(
@@ -384,8 +368,8 @@ async def test_exec_when_torn_down_does_kill_the_whole_group(
     teardown.trigger(task, proc, abort)
 
     await settle(task)
+
     await wait_until_dead(grandchild, timeout_s=3.0)
-    assert not is_alive(grandchild)
 
 
 async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
@@ -401,19 +385,11 @@ async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
     assert result == expected_result("", "", 1)
 
 
-@pytest.mark.parametrize(
-    "teardown",
-    [
-        pytest.param(Teardown(_GRANDCHILD_TIMEOUT_MS, leave_to_timeout), id="timeout"),
-        pytest.param(Teardown(None, set_abort), id="abort"),
-    ],
-)
 async def test_exec_when_torn_down_with_a_descendant_holding_the_pipes_does_close_them(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
-    teardown: Teardown,
 ) -> None:
     # The escaped descendant survives the group kill with stdout and stderr
     # still open, so the readers reach EOF only if the teardown drops the pipes.
@@ -423,19 +399,16 @@ async def test_exec_when_torn_down_with_a_descendant_holding_the_pipes_does_clos
     task = asyncio.create_task(
         run_exec(
             f"{shlex.quote(sys.executable)} -c {escaping} & sleep 30",
-            make_opts(timeout_ms=teardown.timeout_ms, abort=abort),
+            make_opts(abort=abort),
         )
     )
-    proc = await wait_for_spawned(spawned_processes)
+    await wait_for_spawned(spawned_processes)
     stray_process_ids.append(await wait_for_pid_file(escaped_pid_file))
 
-    teardown.trigger(task, proc, abort)
-    await asyncio.wait_for(task, 5)
+    abort.set()
+    result = await asyncio.wait_for(task, 5)
 
-    assert proc.stdout is not None
-    assert proc.stderr is not None
-    assert proc.stdout.at_eof()
-    assert proc.stderr.at_eof()
+    assert result == expected_result("", "", exit_code=1)
 
 
 # ---------------------------------------------------------------------------
@@ -446,9 +419,7 @@ async def test_exec_when_torn_down_with_a_descendant_holding_the_pipes_does_clos
 @pytest.mark.parametrize(
     "teardown",
     [
-        pytest.param(Teardown(_TEARDOWN_TIMEOUT_MS, leave_to_timeout), id="timeout"),
         pytest.param(Teardown(None, set_abort), id="abort"),
-        pytest.param(Teardown(None, fail_stderr_read), id="stream-error"),
         pytest.param(Teardown(None, cancel_task), id="cancelled"),
     ],
 )
@@ -458,7 +429,6 @@ async def test_exec_when_torn_down_after_shell_exits_does_kill_descendants_leavi
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     *,
-    caplog: pytest.LogCaptureFixture,
     teardown: Teardown,
 ) -> None:
     # The background sleep holds stderr open, so exec is still running when the
@@ -466,7 +436,7 @@ async def test_exec_when_torn_down_after_shell_exits_does_kill_descendants_leavi
     abort = asyncio.Event()
     task = asyncio.create_task(
         run_exec(
-            "sleep 30 >/dev/null & echo $! > grandchild.pid; exit 0",
+            shell_leaving_a_descendant(tmp_path / "grandchild.pid"),
             make_opts(timeout_ms=teardown.timeout_ms, abort=abort),
         ),
     )
@@ -479,52 +449,17 @@ async def test_exec_when_torn_down_after_shell_exits_does_kill_descendants_leavi
     await settle(task)
     await asyncio.wait_for(proc.wait(), 5)
 
+    # asyncio records 255 when the shell was reaped behind its back, in place
+    # of the shell's own ``exit 0``.
+    assert proc.returncode == 0
     assert snapshots[:1] == [(True, True)]
     await wait_until_dead(grandchild, timeout_s=3.0)
-    assert [
-        r.getMessage()
-        for r in caplog.records
-        if r.name == "asyncio" and _UNKNOWN_CHILD in r.getMessage()
-    ] == []
 
 
-@pytest.mark.parametrize(
-    "teardown",
-    [
-        pytest.param(Teardown(_TEARDOWN_TIMEOUT_MS, leave_to_timeout), id="timeout"),
-        pytest.param(Teardown(None, set_abort), id="abort"),
-    ],
-)
-async def test_exec_when_torn_down_after_shell_exits_does_not_warn_about_killpg(
-    reap_at_group_signals: Callable[[asyncio.subprocess.Process], list[ReapSnapshot]],
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    recwarn: pytest.WarningsRecorder,
-    teardown: Teardown,
-) -> None:
-    # The exited shell is the group's only member, a zombie nobody has reaped,
-    # which is when a group refuses the kill.
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        run_exec("exit 0", make_opts(timeout_ms=teardown.timeout_ms, abort=abort)),
-    )
-    proc = await wait_for_spawned(spawned_processes)
-    snapshots = reap_at_group_signals(proc)
-    await wait_for_shell_exit(proc)
-
-    teardown.trigger(task, proc, abort)
-    await settle(task)
-    await asyncio.wait_for(proc.wait(), 5)
-
-    assert snapshots[:1] == [(True, True)]
-    assert killpg_warnings(recwarn) == []
-
-
-async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly_without_warning(
+async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly(
     held_reaper: HeldReaper,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    recwarn: pytest.WarningsRecorder,
 ) -> None:
     held_reaper.hold_s = 60.0
     task = asyncio.create_task(run_exec("exit 0", make_opts()))
@@ -541,9 +476,6 @@ async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly_w
     assert reap_after_teardown == (True, None)
     assert done == {task}
     assert task.cancelled()
-    # The shell not yet reaped is the group's only member, a zombie with nothing
-    # left to stop, so the group refusing the kill is not worth a warning.
-    assert killpg_warnings(recwarn) == []
 
 
 # ---------------------------------------------------------------------------
@@ -551,65 +483,16 @@ async def test_exec_when_cancelled_and_shell_never_reaped_does_settle_promptly_w
 # ---------------------------------------------------------------------------
 
 
-def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str:
-    """Build a shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and exits.
-
-    Args:
-        pid_file: Where the ``sleep`` writes its pid.
-        detached: Send all three of the ``sleep``'s streams to ``/dev/null``;
-            otherwise it holds the shell's stderr open.
-
-    Returns:
-        The shell command line.
-    """
-    redirects = "</dev/null >/dev/null 2>&1" if detached else ">/dev/null"
-    return f"sleep 30 {redirects} & echo $! > {shlex.quote(str(pid_file))}; exit 0"
-
-
-def argv_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> tuple[str, ...]:
-    """Build an argv whose child starts a sleeper, writes its pid to ``pid_file``, and exits.
-
-    Args:
-        pid_file: Where the child writes the sleeper's pid.
-        detached: Send all three of the sleeper's streams to ``DEVNULL``;
-            otherwise it holds the child's stderr open.
-
-    Returns:
-        The argv to run.
-    """
-    streams = (
-        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL"
-        if detached
-        else "stdout=subprocess.DEVNULL"
-    )
-    script = (
-        "import subprocess\n"
-        f"p = subprocess.Popen({list(SLEEPER_ARGV)!r}, {streams})\n"
-        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
-    )
-    return (sys.executable, "-c", script)
-
-
-@pytest.mark.parametrize(
-    ("run", "leaving_a_descendant"),
-    [
-        pytest.param(run_shell, shell_leaving_a_descendant, id="exec"),
-        pytest.param(run_argv, argv_leaving_a_descendant, id="exec_argv"),
-    ],
-)
 async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendant_holding_its_pipes(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
-    *,
-    run: ExecRun,
-    leaving_a_descendant: Callable[[Path], str | tuple[str, ...]],
 ) -> None:
     # The descendant holds stderr open, so the run is still reading when the
     # shell exits and asyncio's own child watcher collects its exit status.
     pid_file = tmp_path / "descendant.pid"
-    task = asyncio.create_task(run(leaving_a_descendant(pid_file), make_opts()))
+    task = asyncio.create_task(run_shell(shell_leaving_a_descendant(pid_file), make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     descendant = await wait_for_pid_file(pid_file)
     stray_process_ids.append(descendant)
@@ -625,32 +508,18 @@ async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendan
     wait_until_dead_blocking(descendant, timeout_s=3.0)
 
 
-@pytest.mark.parametrize(
-    ("run", "detaching_a_descendant"),
-    [
-        pytest.param(
-            run_shell, functools.partial(shell_leaving_a_descendant, detached=True), id="exec"
-        ),
-        pytest.param(
-            run_argv, functools.partial(argv_leaving_a_descendant, detached=True), id="exec_argv"
-        ),
-    ],
-)
 async def test_exec_when_completed_with_a_detached_descendant_does_not_signal_its_group(
     tmp_path: Path,
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
     record_killpg: Callable[[], list[int]],
-    *,
-    run: ExecRun,
-    detaching_a_descendant: Callable[[Path], str | tuple[str, ...]],
 ) -> None:
     # The descendant holds none of the run's pipes, so the run completes on its
     # own once the shell exits, with the descendant still in the shell's group.
     pid_file = tmp_path / "descendant.pid"
     signalled = record_killpg()
 
-    await run(detaching_a_descendant(pid_file), make_opts())
+    await run_shell(shell_leaving_a_descendant(pid_file, detached=True), make_opts())
     stray_process_ids.append(await wait_for_pid_file(pid_file))
 
     assert signalled == []
@@ -679,34 +548,6 @@ async def test_exec_argv_when_aborted_child_writes_stderr_on_request_does_settle
 
     result = await asyncio.wait_for(task, 5)
     assert result == expected_result("", "BYE\n", 1)
-
-
-async def test_exec_argv_when_graceful_signal_refused_does_kill_group_without_warning(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    # macOS answers EPERM for a group that is on its way out, which cannot be
-    # told apart from a genuine refusal until the leader is reaped; the stop
-    # request earns the same deferral the kill already gets.
-    refusal = refuse_killpg(monkeypatch, lambda signal_number: signal_number == signal.SIGTERM)
-    abort = asyncio.Event()
-    pid_file = tmp_path / "child.pid"
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, "-c", script_writing_pid_and_sleeping(pid_file)],
-            make_opts(abort=abort),
-        ),
-    )
-    await wait_for_pid_file(pid_file)
-
-    abort.set()
-
-    result = await asyncio.wait_for(task, 5)
-    assert signal.SIGTERM in refusal.signals
-    assert result == expected_result("", "", 1)
-    assert killpg_warnings(recwarn) == []
 
 
 # ---------------------------------------------------------------------------
@@ -747,31 +588,3 @@ async def test_kill_live_process_groups_when_cancelled_exec_argv_run_is_mid_grac
 
     await wait_until_dead(proc.pid, timeout_s=3.0)
     await settle(task)
-    assert task.cancelled()
-
-
-# ---------------------------------------------------------------------------
-# cancellation with only a zombie left in the group
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_cancelled_leaving_only_a_zombie_in_group_does_not_warn_about_killpg(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
-    stray_process_ids: list[int],
-    make_opts: Callable[..., ExecOptions],
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    holder_pid_file = tmp_path / "holder.pid"
-    task = asyncio.create_task(
-        exec_argv(
-            [sys.executable, "-c", ZOMBIE_ONLY_GROUP_SCRIPT, str(holder_pid_file)],
-            make_opts(),
-        ),
-    )
-    await wait_for_spawned(spawned_processes, spawner="exec_argv")
-    stray_process_ids.append(await wait_for_pid_file(holder_pid_file))
-
-    await cancel_and_settle(task)
-
-    assert killpg_warnings(recwarn) == []

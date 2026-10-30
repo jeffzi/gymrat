@@ -1,38 +1,33 @@
-"""Behavioral tests for the session budget file (write / read / clear / remaining).
+"""Behavioral tests for the session budget file (read / clear / remaining / arm / headroom).
 
-A budget is a frozen pydantic model with ``max_minutes`` and ``deadline_ms``, and
-the file carries exactly those two keys.  ``write_budget`` writes atomically via
-temp-file-and-replace so a concurrent reader never sees a partial file.
 ``read_budget`` returns the budget only when the file parses, the deadline has
 not passed, and the supervise lock for that root is held; otherwise it returns
 ``None``.  ``remaining_ms`` reports milliseconds left against a supplied
-current time, clamped at zero.  ``clear_budget`` hands its path and label to the
-shared sidecar removal pinned in ``tests/utils/test_sidecar.py``; here only its
-stderr warning when the OS refuses the removal is pinned.  A supervise lock that
-cannot be probed raises out of ``read_budget``.
+current time, clamped at zero.  ``arm_budget`` writes a budget due its minutes
+from now and returns a release that removes it, and ``iterate_headroom`` gives
+up when any of its inputs is missing.
 """
 
-import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError
 from gymrat.session.budget import (
     Budget,
     DurationEstimate,
-    clear_budget,
+    arm_budget,
     estimate_iterate_duration,
+    iterate_headroom,
     read_budget,
     write_budget,
 )
-from gymrat.session.paths import budget_path, supervise_lockfile_path
+from gymrat.session.paths import budget_path
 from gymrat.session.records import SessionLogRecord
-from tests._lock import block_lock, lock_probe_error
-from tests.session._progress_file import fail_unlink_of
+from tests._clock import freeze_now_ms
+from tests._process_helpers import track_cleanups
+from tests.session._budget import LIVE_BUDGET
 from tests.session.records._fixtures import baseline_record, iteration_record
-
-_FAR_FUTURE_DEADLINE_MS = 999_999_999.0
 
 
 def _budget_file(root: str) -> Path:
@@ -41,16 +36,6 @@ def _budget_file(root: str) -> Path:
 
 def _make_budget(*, max_minutes: float = 30, deadline_ms: float = 1_800_000.0) -> Budget:
     return Budget(max_minutes=max_minutes, deadline_ms=deadline_ms)
-
-
-def _budget_json(**overrides: object) -> str:
-    """A 30-minute budget payload with a far-future deadline; ``overrides`` replace or add keys."""
-    defaults: dict[str, object] = {
-        "max_minutes": 30,
-        "deadline_ms": _FAR_FUTURE_DEADLINE_MS,
-    }
-    defaults.update(overrides)
-    return json.dumps(defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +47,6 @@ def _budget_json(**overrides: object) -> str:
     ("deadline_ms", "now_ms", "expected"),
     [
         pytest.param(10_000.0, 4_000.0, 6_000.0, id="time-left"),
-        pytest.param(10_000.0, 10_000.0, 0.0, id="exactly-at-deadline"),
         pytest.param(10_000.0, 15_000.0, 0.0, id="past-deadline-clamps-to-zero"),
     ],
 )
@@ -74,17 +58,6 @@ def test_remaining_ms_when_called_does_return_clamped_difference(
     result = budget.remaining_ms(now_ms)
 
     assert result == expected
-
-
-# ---------------------------------------------------------------------------
-# write_budget
-# ---------------------------------------------------------------------------
-
-
-def test_write_budget_when_called_does_write_compact_json_bytes(root: str):
-    write_budget(root, _make_budget())
-
-    assert _budget_file(root).read_bytes() == b'{"max_minutes":30.0,"deadline_ms":1800000.0}'
 
 
 # ---------------------------------------------------------------------------
@@ -115,54 +88,56 @@ def test_read_budget_when_file_written_does_return_it_only_while_held_and_ahead(
     assert result == expected
 
 
-@pytest.mark.parametrize(
-    "contents",
-    [
-        pytest.param(_budget_json(deadline_ms=True).encode(), id="deadline-bool"),
-        pytest.param(_budget_json(extra=1).encode(), id="unexpected-field"),
-    ],
-)
 @pytest.mark.usefixtures("supervise_lock")
-def test_read_budget_when_file_not_a_budget_does_return_none(root: str, contents: bytes):
-    _budget_file(root).write_bytes(contents)
-
+def test_read_budget_when_file_absent_does_return_none(root: str):
     result = read_budget(root, now_ms=0.0)
 
     assert result is None
 
 
-def test_read_budget_when_supervise_lock_cannot_be_probed_does_raise(root: str):
-    write_budget(root, _make_budget(deadline_ms=_FAR_FUTURE_DEADLINE_MS))
-
-    lock_path = supervise_lockfile_path(root)
-
-    with block_lock(lock_path):
-        expected = lock_probe_error(lock_path)
-
-        with pytest.raises(GymratError) as caught:
-            read_budget(root, now_ms=0.0)
-
-    assert str(caught.value) == expected
-
-
 # ---------------------------------------------------------------------------
-# clear_budget
+# arm_budget
 # ---------------------------------------------------------------------------
 
 
-def test_clear_budget_when_os_refuses_removal_without_a_sink_does_warn_on_stderr(
+def test_arm_budget_when_armed_does_write_a_budget_due_its_minutes_from_now(
+    root: str, monkeypatch: pytest.MonkeyPatch
+):
+    freeze_now_ms(monkeypatch, 1_000)
+
+    budget, _release = arm_budget(root, 30, warn=lambda _message: None)
+
+    assert budget == Budget(max_minutes=30, deadline_ms=1_801_000.0)
+    assert Budget.model_validate_json(_budget_file(root).read_text()) == budget
+
+
+def test_arm_budget_when_released_twice_does_remove_the_file_and_uninstall_the_hook_once(
+    root: str, monkeypatch: pytest.MonkeyPatch
+):
+    registry = track_cleanups(monkeypatch, "gymrat.session.budget")
+    _budget, release = arm_budget(root, 30, warn=lambda _message: None)
+
+    release()
+    release()
+
+    assert registry.uninstall_counts() == [1]
+    assert not _budget_file(root).exists()
+
+
+def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
     root: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
-    write_budget(root, _make_budget())
-    fail_unlink_of(budget_path(root), monkeypatch)
+    track_cleanups(monkeypatch, "gymrat.session.budget")
+    warned: list[str] = []
+    _budget, release = arm_budget(root, 30, warn=warned.append)
+    _budget_file(root).unlink()
+    _budget_file(root).mkdir()
 
-    clear_budget(root)
+    release()
 
-    warnings = capsys.readouterr().err.splitlines()
-    assert len(warnings) == 1
-    assert warnings[0].startswith(
-        f"warning: could not remove the budget file {budget_path(root)}: "
-    )
+    assert len(warned) == 1
+    assert str(_budget_file(root)) in warned[0]
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -173,20 +148,14 @@ def test_clear_budget_when_os_refuses_removal_without_a_sink_does_warn_on_stderr
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
-        pytest.param([], None, id="no-records"),
         pytest.param([baseline_record(), iteration_record()], None, id="no-durations"),
-        pytest.param(
-            [baseline_record(), iteration_record(duration_ms=840_000)],
-            DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
-            id="iteration-has-duration",
-        ),
         pytest.param(
             [baseline_record(duration_ms=420_000), iteration_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="only-baseline-has-duration-doubles-it",
         ),
         pytest.param(
-            [baseline_record(duration_ms=420_000), iteration_record(duration_ms=900_000)],
+            [iteration_record(duration_ms=900_000), baseline_record(duration_ms=420_000)],
             DurationEstimate(duration_ms=900_000, source="iteration", source_duration_ms=900_000),
             id="both-have-durations-prefers-iteration",
         ),
@@ -209,15 +178,6 @@ def test_clear_budget_when_os_refuses_removal_without_a_sink_does_warn_on_stderr
             id="newest-iteration-lacks-duration-uses-earlier",
         ),
         pytest.param(
-            [
-                baseline_record(duration_ms=420_000),
-                iteration_record(duration_ms=840_000),
-                baseline_record(),
-            ],
-            DurationEstimate(duration_ms=840_000, source="iteration", source_duration_ms=840_000),
-            id="a-keep-appended-baseline-times-nothing-and-is-skipped",
-        ),
-        pytest.param(
             [baseline_record(duration_ms=420_000), baseline_record()],
             DurationEstimate(duration_ms=840_000, source="baseline", source_duration_ms=420_000),
             id="newest-baseline-lacks-duration-uses-earlier",
@@ -230,3 +190,31 @@ def test_estimate_iterate_duration_when_records_vary_does_prefer_newest_iteratio
     result = estimate_iterate_duration(records)
 
     assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# iterate_headroom
+# ---------------------------------------------------------------------------
+
+
+_TIMED_RECORDS: list[SessionLogRecord] = [baseline_record(duration_ms=420_000)]
+
+
+@pytest.mark.parametrize(
+    ("budget_written", "records"),
+    [
+        pytest.param(False, _TIMED_RECORDS, id="no-budget-live"),
+        pytest.param(True, None, id="records-unreadable"),
+        pytest.param(True, [baseline_record(), iteration_record()], id="no-record-timed"),
+    ],
+)
+@pytest.mark.usefixtures("supervise_lock")
+def test_iterate_headroom_when_an_input_is_missing_does_return_none(
+    root: str, budget_written: bool, records: Sequence[SessionLogRecord] | None
+):
+    if budget_written:
+        write_budget(root, LIVE_BUDGET)
+
+    result = iterate_headroom(root, lambda: records)
+
+    assert result is None

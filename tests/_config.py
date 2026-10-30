@@ -3,14 +3,14 @@
 from dataclasses import replace
 from typing import Any
 
-from gymrat.config import BenchlessConfig, ResolvedConfig
+from gymrat.config import CONFIG_DEFAULTS, BenchlessConfig, ResolvedConfig
 
 
 def benchless_config(**overrides: Any) -> BenchlessConfig:
-    """The fully defaulted metric-lines config, with any field overridable.
+    """The project's built-in config defaults, with any field overridable.
 
-    The defaults are what ``inspect_config`` settles on when neither flags nor
-    a config file supply a value.
+    Starts from ``CONFIG_DEFAULTS``, which ``inspect_config`` settles on when
+    neither flags nor a config file supply a value.
 
     Args:
         **overrides: ``BenchlessConfig`` fields to set in place of the defaults.
@@ -18,14 +18,7 @@ def benchless_config(**overrides: Any) -> BenchlessConfig:
     Returns:
         The config with ``overrides`` applied.
     """
-    default = BenchlessConfig(
-        adapter="metric-lines",
-        samples=12,
-        timeout_seconds=1800,
-        unstable_noise_pct=200,
-        primary="geomean",
-    )
-    return replace(default, **overrides)
+    return replace(CONFIG_DEFAULTS, **overrides)
 
 
 def resolved_config(**overrides: Any) -> ResolvedConfig:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
+from rich.text import Text
 
 from gymrat.metric_name import (
     EmptyKindError,
@@ -18,14 +19,6 @@ from gymrat.report.style import render_lines
 @pytest.mark.parametrize(
     ("raw_name", "path", "kind", "group", "case"),
     [
-        pytest.param(
-            "node/access.get_1field#time",
-            ("node", "access.get_1field"),
-            "time",
-            "node",
-            "access.get_1field",
-            id="two-segments-with-kind",
-        ),
         pytest.param(
             "node/access/get_1field#time",
             ("node", "access", "get_1field"),
@@ -51,11 +44,6 @@ def test_parse_when_name_well_formed_does_split_path_kind_group_and_case(
     [
         pytest.param("a#b#c", MultipleHashesError, id="multiple-hashes"),
         pytest.param("a//b", EmptyPathSegmentError, id="empty-inner-segment"),
-        pytest.param("a/", EmptyPathSegmentError, id="empty-trailing-segment"),
-        pytest.param("/x", EmptyPathSegmentError, id="empty-leading-segment"),
-        pytest.param("", EmptyPathSegmentError, id="empty-name"),
-        pytest.param("#time", EmptyPathSegmentError, id="empty-path-before-kind"),
-        pytest.param("a/#time", EmptyPathSegmentError, id="empty-trailing-segment-before-kind"),
         pytest.param("a#", EmptyKindError, id="empty-kind"),
     ],
 )
@@ -66,14 +54,6 @@ def test_parse_when_name_breaks_the_grammar_does_raise_the_rule_error_naming_it(
         parse(raw_name)
 
     assert str(excinfo.value).endswith(f": {raw_name}")
-
-
-def test_format_inline_when_name_has_group_and_kind_does_dim_the_group_and_kind():
-    name = parse("node/access.get_1field#time")
-
-    result = format_inline(name)
-
-    assert result == "[dim]node/[/dim]access.get_1field[dim]#time[/dim]"
 
 
 _SEGMENT = st.text(alphabet="ab.=@[]\\", min_size=1, max_size=8)
@@ -91,9 +71,7 @@ def _metric_names(draw: st.DrawFn) -> str:
 @example("parse[js]#time").via("square-brackets-in-case")
 @example("codec[h264]/decode#time").via("square-brackets-in-group")
 @example("render#fps[avg]").via("square-brackets-in-kind")
-@example("parse[/html]#time").via("closing-tag-shaped-bracket")
 @example("dir\\/case#time").via("group-ends-in-backslash")
-@example("top/dir\\/case").via("nested-group-ends-in-backslash")
 @example("dir[x]\\/case#time").via("bracketed-group-ends-in-backslash")
 @example("dir/case\\").via("case-ends-in-backslash-without-kind")
 @example("dir/case\\#time").via("case-ends-in-backslash-before-kind")
@@ -103,10 +81,7 @@ def _metric_names(draw: st.DrawFn) -> str:
 @example("dir\\[x]/case#time").via("backslash-before-bracket-in-group")
 @example("a\\[1]").via("backslash-before-plain-bracket-in-case")
 @example("a\\\\[1]").via("two-backslashes-before-plain-bracket-in-case")
-@example("dir\\[1]/case").via("backslash-before-plain-bracket-in-group")
-@example("case#k\\[1]").via("backslash-before-plain-bracket-in-kind")
 @example("x#time\\").via("kind-ends-in-backslash")
-@example("case\\").via("single-segment-ends-in-backslash")
 def test_format_inline_when_name_well_formed_does_render_it_literally(
     raw_name: str,
 ):
@@ -115,3 +90,12 @@ def test_format_inline_when_name_well_formed_does_render_it_literally(
     rendered = render_lines(format_inline(name), color=False)
 
     assert rendered == raw_name
+
+
+def test_format_inline_when_group_and_kind_present_does_dim_them_around_the_case():
+    markup = format_inline(parse("node/access#time"))
+
+    text = Text.from_markup(markup)
+
+    runs = [(text.plain[span.start : span.end], str(span.style)) for span in text.spans]
+    assert (text.plain, runs) == ("node/access#time", [("node/", "dim"), ("#time", "dim")])

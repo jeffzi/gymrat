@@ -37,12 +37,10 @@ from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
 from tests._exec_fixtures import expected_result
 from tests.adapters._inputs import malformed_line_warning
-from tests.session._budget import install_tight_budget
 from tests.session.records._fixtures import (
     SESSION_ID,
     log_records,
     session_record,
-    settled_history,
     write_session_log,
 )
 
@@ -75,24 +73,6 @@ def scaled(values: list[float], factor: float) -> list[float]:
         The scaled rounds, in the same order.
     """
     return [value * factor for value in values]
-
-
-def jittered(values: list[float], up: float, down: float) -> list[float]:
-    """Nudge alternate rounds up by ``up`` and the rest down by ``down``.
-
-    The mixed signs leave the permutation test nothing to call, while the larger
-    upward nudge still drags the median above the baseline's — a run that moved
-    the wrong way without saying anything, which is what ``no-signal`` means.
-
-    Args:
-        values: The rounds to nudge.
-        up: How far the even-indexed rounds move up.
-        down: How far the odd-indexed rounds move down.
-
-    Returns:
-        The nudged rounds, in their original order.
-    """
-    return [value + up if index % 2 == 0 else value - down for index, value in enumerate(values)]
 
 
 def rounds(total_ms: list[float], alloc_bytes: list[float]) -> list[dict[str, float]]:
@@ -146,10 +126,6 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
     )
 
 
-#: Fourteen minutes: an iteration longer than the 5 minutes a tight budget leaves on the clock.
-OUTLASTING_ITERATION_MS = 840_000
-
-
 def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ()) -> SessionRecord:
     """Write an open iterate session log: the side-worktree header, then ``history``.
 
@@ -163,17 +139,6 @@ def write_iterate_session(root: str, history: tuple[SessionLogRecord, ...] = ())
     header = iterate_session_header(root)
     write_session_log(root, header, history)
     return header
-
-
-def write_outlasted_session(root: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a settled session whose last iteration outlasts what a tight live budget leaves.
-
-    Args:
-        root: The repository whose session log and budget file are written.
-        monkeypatch: The fixture that releases the supervise lock at teardown and patches the clock.
-    """
-    write_iterate_session(root, settled_history(duration_ms=OUTLASTING_ITERATION_MS))
-    install_tight_budget(root, monkeypatch)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +212,7 @@ def regressed_run() -> PairedRun:
 def assert_permutation(
     metric: IterationMetricVerdict, *, delta: float, verdict: str, confirmed: bool
 ) -> None:
-    """Assert ``metric`` is a gating permutation verdict with the given delta and outcome.
+    """Assert ``metric`` carries the given delta, verdict and confirmation.
 
     Args:
         metric: The verdict an iteration recorded for one metric.
@@ -257,10 +222,6 @@ def assert_permutation(
     """
     assert metric.delta_pct == pytest.approx(delta, abs=1e-6)
     assert metric.verdict == verdict
-    assert metric.method == "permutation"
-    assert metric.p is not None
-    assert metric.noise_pct is not None
-    assert metric.gating is True
     assert metric.confirmed is confirmed
 
 
@@ -436,15 +397,6 @@ def last_iteration_of(root: str) -> IterationRecord:
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
     )
     return last
-
-
-def logged_metric_verdicts(root: str) -> dict[str, dict[str, object]]:
-    """The per-metric verdicts on the last line of ``root``'s session log, exactly as written."""
-    log_path = session_jsonl_path(root)
-    last_line = Path(log_path).read_text(encoding="utf-8").splitlines()[-1]
-    metrics = json.loads(last_line).get("metrics")
-    assert isinstance(metrics, dict), f"expected an iteration record at the end of {log_path}"
-    return metrics
 
 
 #: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.

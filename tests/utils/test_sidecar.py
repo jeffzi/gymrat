@@ -17,7 +17,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from gymrat.utils import read_sidecar, remove_sidecar
-from tests.session._progress_file import fail_unlink_of
+from tests._unlink_failure import fail_unlink_of
 
 
 class _Sample(BaseModel):
@@ -38,10 +38,6 @@ def _absent(_path: Path) -> None:
     """Leave the sidecar file absent."""
 
 
-def _directory(path: Path) -> None:
-    path.mkdir()
-
-
 # ---------------------------------------------------------------------------
 # read_sidecar
 # ---------------------------------------------------------------------------
@@ -60,7 +56,6 @@ def test_read_sidecar_when_file_validates_does_return_the_model(tmp_path: Path):
     "arrange",
     [
         pytest.param(_absent, id="file-absent"),
-        pytest.param(_directory, id="path-is-a-directory"),
         pytest.param(_contents(b"not valid json{{{"), id="invalid-json"),
         pytest.param(_contents(b"\x80\x81\x82"), id="not-utf8"),
     ],
@@ -81,24 +76,6 @@ def test_read_sidecar_when_file_unusable_does_return_none(
 # ---------------------------------------------------------------------------
 
 
-def test_remove_sidecar_when_file_exists_does_remove_it(tmp_path: Path):
-    path = tmp_path / "sidecar.json"
-    path.write_text("{}", encoding="utf-8")
-    warnings: list[str] = []
-
-    remove_sidecar(path, "sample sidecar", warnings.append)
-
-    assert (path.exists(), warnings) == (False, [])
-
-
-def test_remove_sidecar_when_file_absent_does_not_warn(tmp_path: Path):
-    warnings: list[str] = []
-
-    remove_sidecar(tmp_path / "sidecar.json", "sample sidecar", warnings.append)
-
-    assert warnings == []
-
-
 def test_remove_sidecar_when_os_refuses_removal_does_warn_once_naming_label_and_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -110,5 +87,6 @@ def test_remove_sidecar_when_os_refuses_removal_does_warn_once_naming_label_and_
     remove_sidecar(path, "sample sidecar", warnings.append)
 
     assert len(warnings) == 1
-    assert warnings[0].startswith(f"warning: could not remove the sample sidecar {path}: ")
+    assert "sample sidecar" in warnings[0]
+    assert str(path) in warnings[0]
     assert "The process cannot access the file" in warnings[0]

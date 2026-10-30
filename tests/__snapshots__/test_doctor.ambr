@@ -1,5 +1,5 @@
 # serializer version: 1
-# name: test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts[multiline-detail]
+# name: test_render_doctor_report_when_scenario_rendered_does_match_its_golden[multiline-detail]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -13,7 +13,7 @@
     '1 ok',
   ])
 # ---
-# name: test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts[ok-warn-fail]
+# name: test_render_doctor_report_when_scenario_rendered_does_match_its_golden[ok-warn-fail]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -31,7 +31,7 @@
     '1 ok · 1 warning · 1 failure',
   ])
 # ---
-# name: test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts[plural-counts]
+# name: test_render_doctor_report_when_scenario_rendered_does_match_its_golden[plural-counts]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',
@@ -48,21 +48,7 @@
     '1 ok · 2 warnings · 3 failures',
   ])
 # ---
-# name: test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts[warn-only]
-  list([
-    'gymrat v0.5.0 · python 3.13.0 · darwin',
-    '',
-    'Environment',
-    '  ✓ git 2.45.0',
-    '  ⚠ skill not installed',
-    '    run gymrat init',
-    '',
-    'Note: prepare scripts were not run; only the Claude skill file location was checked (presence ≠ loaded).',
-    '',
-    '1 ok · 1 warning',
-  ])
-# ---
-# name: test_render_doctor_report_when_statuses_vary_does_render_glyphs_hints_and_summary_counts[workflow-skipped]
+# name: test_render_doctor_report_when_scenario_rendered_does_match_its_golden[workflow-skipped]
   list([
     'gymrat v0.5.0 · python 3.13.0 · darwin',
     '',

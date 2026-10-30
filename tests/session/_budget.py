@@ -10,14 +10,13 @@ fixtures of its own.
 import contextlib
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import create_autospec
 
 import pytest
 from filelock import FileLock
 
 from gymrat.session.budget import Budget, write_budget
 from gymrat.session.paths import supervise_lockfile_path
-from gymrat.utils import now_ms
+from tests._clock import freeze_now_ms
 from tests._lock import block_lock, hold_supervise_lock
 
 #: A 30-minute budget whose deadline sits far in the future, so it never expires mid-test.
@@ -98,9 +97,7 @@ def install_budget(
     if _SUPERVISE_LOCK.held is None:
         monkeypatch.setattr(_SUPERVISE_LOCK, "held", hold_supervise_lock(repo))
     if frozen_now_ms is not None:
-        monkeypatch.setattr(
-            "gymrat.utils.now_ms", create_autospec(now_ms, return_value=frozen_now_ms)
-        )
+        freeze_now_ms(monkeypatch, frozen_now_ms)
 
 
 def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:

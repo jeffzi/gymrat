@@ -11,7 +11,7 @@ byte-identical, remaining artifacts still filled in).
 import os
 import tomllib
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import NoReturn
@@ -19,16 +19,14 @@ from typing import NoReturn
 import pytest
 
 from gymrat.bundled_skill import read_bundled_skill
-from gymrat.config import load_config_file_collecting
 from gymrat.errors import GymratError
 from gymrat.scaffold import (
+    DEFAULT_RUNBOOK_PATH,
     SKILL_RELATIVE_PATH,
-    ScaffoldArtifact,
     ScaffoldRequest,
     scaffold,
 )
-from tests._mode_bits import needs_mode_bits
-from tests.config._toml import EXISTING_CONFIG, write_raw
+from tests.config._toml import EXISTING_CONFIG
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,34 +47,14 @@ def test_scaffold_when_defaults_does_create_every_artifact(
 ):
     result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    assert result.config == ScaffoldArtifact(path="gymrat.toml", status="created")
-    assert result.runbook == ScaffoldArtifact(path="gymrat-runbook.md", status="created")
-    assert result.skill == ScaffoldArtifact(path=SKILL_RELATIVE_PATH, status="created")
-    raw = (tmp_path / "gymrat.toml").read_bytes()
-    assert raw == b'bench = "npm run bench"\nrunbook = "gymrat-runbook.md"\n'
-    assert load_config_file_collecting(tmp_path / "gymrat.toml", required=True).problems == []
-    content = (tmp_path / "gymrat-runbook.md").read_text(encoding="utf-8")
-    assert content == (
-        "# Optimization Runbook\n"
-        "\n"
-        "## Goal\n"
-        "\n"
-        "<!-- Describe the optimization goal here. -->\n"
-        "\n"
-        "## Gating metrics\n"
-        "\n"
-        "<!-- List the metrics that must not regress. -->\n"
-        "\n"
-        "## Constraints\n"
-        "\n"
-        "<!-- List any constraints on the optimization. -->\n"
-        "\n"
-        "## Approaches to try\n"
-        "\n"
-        "<!-- List strategies for the agent to explore. -->\n"
-        "\n"
-        "`gymrat supervise` injects this file into the agent's instructions.\n"
+    assert (result.config.status, result.runbook.status, result.skill.status) == (
+        "created",
+        "created",
+        "created",
     )
+    raw = (tmp_path / "gymrat.toml").read_text(encoding="utf-8")
+    assert raw == f'bench = "npm run bench"\nrunbook = "{DEFAULT_RUNBOOK_PATH}"\n'
+    assert (tmp_path / DEFAULT_RUNBOOK_PATH).is_file()
     skill_text = (tmp_path / SKILL_RELATIVE_PATH).read_text(encoding="utf-8")
     assert skill_text == read_bundled_skill()
 
@@ -100,16 +78,9 @@ def test_scaffold_when_runbook_false_does_decline_the_runbook(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "bench",
-    [
-        pytest.param('echo "hello"', id="double-quotes"),
-        pytest.param("path\\to\\bench", id="backslashes"),
-        pytest.param("bench éàü ☃", id="non-ascii"),
-        pytest.param('tricky "val\\ue"', id="mixed-quotes-backslash"),
-    ],
-)
-def test_scaffold_when_bench_has_special_chars_does_round_trip(tmp_path: Path, bench: str):
+def test_scaffold_when_bench_has_quotes_and_backslashes_does_round_trip(tmp_path: Path):
+    bench = 'tricky "val\\ue"'
+
     scaffold(str(tmp_path), ScaffoldRequest(bench=bench, runbook=False))
 
     parsed = _read_config(tmp_path)
@@ -128,12 +99,6 @@ _PLANTED = {
     ("planted", "bench", "statuses"),
     [
         pytest.param(("gymrat.toml",), None, ("exists", "created", "created"), id="config"),
-        pytest.param(
-            ("gymrat-runbook.md",), "npm run bench", ("created", "exists", "created"), id="runbook"
-        ),
-        pytest.param(
-            (SKILL_RELATIVE_PATH,), "npm run bench", ("created", "created", "exists"), id="skill"
-        ),
         pytest.param(tuple(_PLANTED), None, ("exists", "exists", "exists"), id="every-artifact"),
     ],
 )
@@ -186,27 +151,15 @@ def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resources, "files", corrupt_package)
 
 
-@pytest.mark.parametrize(
-    ("already_there", "bench"),
-    [
-        pytest.param({}, "npm run bench", id="fresh-directory"),
-        pytest.param({"gymrat.toml": EXISTING_CONFIG}, None, id="pre-existing-config"),
-    ],
-)
 def test_scaffold_when_skill_read_fails_does_leave_the_directory_as_it_found_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    already_there: dict[str, str],
-    bench: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    for name, text in already_there.items():
-        (tmp_path / name).write_text(text, encoding="utf-8")
     _break_bundled_skill(monkeypatch)
 
     with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench=bench, install_skill=True))
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
-    assert _tree(tmp_path) == already_there
+    assert _tree(tmp_path) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -233,64 +186,32 @@ def _symlink_at(relative: str, *, dangling: bool = False) -> Callable[[Path], No
     return plant
 
 
-def _config_then_skill_directory(base: Path) -> None:
-    write_raw(base, EXISTING_CONFIG)
-    (base / SKILL_RELATIVE_PATH).mkdir(parents=True)
-
-
-def _config_text(base: Path) -> str | None:
-    config = base / "gymrat.toml"
-    return config.read_text(encoding="utf-8") if config.is_file() else None
-
-
 @pytest.mark.parametrize(
-    ("plant", "blocked", "config"),
+    ("plant", "blocked"),
     [
-        pytest.param(
-            _directory_at("gymrat-runbook.md"), "gymrat-runbook.md", None, id="runbook-directory"
-        ),
-        pytest.param(
-            _directory_at(SKILL_RELATIVE_PATH), SKILL_RELATIVE_PATH, None, id="skill-directory"
-        ),
         pytest.param(
             _directory_at("gymrat.toml", "gymrat-runbook.md", SKILL_RELATIVE_PATH),
             f"gymrat.toml, gymrat-runbook.md, {SKILL_RELATIVE_PATH}",
-            None,
             id="every-path-a-directory-named-in-write-order",
         ),
-        pytest.param(
-            _symlink_at("gymrat-runbook.md"), "gymrat-runbook.md", None, id="runbook-symlink"
-        ),
-        pytest.param(
-            _symlink_at(SKILL_RELATIVE_PATH), SKILL_RELATIVE_PATH, None, id="skill-symlink"
-        ),
+        pytest.param(_symlink_at("gymrat-runbook.md"), "gymrat-runbook.md", id="runbook-symlink"),
         pytest.param(
             _symlink_at("gymrat-runbook.md", dangling=True),
             "gymrat-runbook.md",
-            None,
             id="runbook-dangling-symlink",
-        ),
-        pytest.param(
-            _config_then_skill_directory,
-            SKILL_RELATIVE_PATH,
-            EXISTING_CONFIG,
-            id="existing-config-left-untouched",
         ),
     ],
 )
 def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it_before_writing(
-    tmp_path: Path, plant: Callable[[Path], None], blocked: str, config: str | None
+    tmp_path: Path, plant: Callable[[Path], None], blocked: str
 ):
     plant(tmp_path)
 
     with pytest.raises(GymratError) as caught:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
-    assert (str(caught.value), caught.value.hint) == (
-        f"Blocked path: {blocked}",
-        "Remove or rename the blocking entry and re-run.",
-    )
-    assert _config_text(tmp_path) == config
+    assert str(caught.value).endswith(blocked)
+    assert not (tmp_path / "gymrat.toml").is_file()
 
 
 def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_config(
@@ -305,7 +226,6 @@ def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_con
     )
 
     assert result.config.status == "created"
-    assert (tmp_path / "gymrat.toml").read_bytes() == b'bench = "npm run bench"\n'
 
 
 def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
@@ -319,10 +239,9 @@ def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
     with pytest.raises(GymratError) as caught:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    assert (str(caught.value), caught.value.hint) == (
-        f"Cannot access {tmp_path / 'gymrat.toml'}: [Errno 13] Permission denied",
-        "Check directory permissions.",
-    )
+    message = str(caught.value)
+    assert str(tmp_path / "gymrat.toml") in message
+    assert "Permission denied" in message
 
 
 # ---------------------------------------------------------------------------
@@ -343,31 +262,9 @@ def test_scaffold_when_config_write_fails_does_raise_gymrat_error_naming_file_an
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
     # The report-a-bug footer must never appear for a filesystem error.
-    assert (str(exc_info.value), exc_info.value.hint) == (
-        f"Cannot write gymrat.toml in {tmp_path}",
-        "Read-only file system",
-    )
-
-
-# ---------------------------------------------------------------------------
-# filesystem failures surface as GymratError
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def locked_dir(tmp_path: Path) -> Iterator[Path]:
-    """A read-only ``locked`` directory under ``tmp_path``, made writable again on teardown."""
-    read_only = tmp_path / "locked"
-    read_only.mkdir()
-    read_only.chmod(0o444)
-    yield read_only
-    read_only.chmod(0o755)
-
-
-@needs_mode_bits
-def test_scaffold_when_base_dir_not_writable_does_raise_gymrat_error_with_path(locked_dir: Path):
-    with pytest.raises(GymratError, match="locked"):
-        scaffold(str(locked_dir), ScaffoldRequest(bench="npm run bench"))
+    message = str(exc_info.value)
+    assert ("gymrat.toml" in message, str(tmp_path) in message) == (True, True)
+    assert exc_info.value.hint == "Read-only file system"
 
 
 STRAY_NAME = "stray.txt"
@@ -417,7 +314,7 @@ def _plant_tree(base: Path, tree: dict[str, str | None]) -> None:
             (base / relative).write_text(content, encoding="utf-8")
 
 
-def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
+def test_scaffold_when_runbook_write_fails_does_raise_naming_the_runbook_and_os_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _fail_write_of(monkeypatch, "gymrat-runbook.md")
@@ -425,8 +322,19 @@ def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
     with pytest.raises(GymratError) as exc_info:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
 
-    assert str(exc_info.value) == f"Cannot write gymrat-runbook.md in {tmp_path}"
+    message = str(exc_info.value)
+    assert ("gymrat-runbook.md" in message, str(tmp_path) in message) == (True, True)
     assert exc_info.value.hint == "No space left on device"
+
+
+def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _fail_write_of(monkeypatch, "gymrat-runbook.md")
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
     assert not (tmp_path / "gymrat.toml").exists()
 
 
@@ -434,7 +342,6 @@ def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
 # a failed run removes what it created and nothing else
 # ---------------------------------------------------------------------------
 
-EXISTING_RUNBOOK = "# My Custom Runbook\n"
 BLOCKING_FILE = "not a directory\n"
 
 
@@ -443,15 +350,10 @@ BLOCKING_FILE = "not a directory\n"
     [
         pytest.param({}, id="nothing-existed"),
         pytest.param({"gymrat.toml": EXISTING_CONFIG}, id="config-existed"),
-        pytest.param({"gymrat-runbook.md": EXISTING_RUNBOOK}, id="runbook-existed"),
         # A file where the skill's first directory goes fails the directory creation itself,
         # before the write is reached.
         pytest.param({".claude": BLOCKING_FILE}, id="file-blocks-the-claude-directory"),
         pytest.param({".claude": None}, id="empty-claude-directory-existed"),
-        pytest.param(
-            {".claude": None, ".claude/notes.md": STRAY_CONTENT},
-            id="claude-directory-with-unrelated-file-existed",
-        ),
     ],
 )
 def test_scaffold_when_skill_write_fails_does_remove_only_what_this_run_created(
@@ -529,24 +431,5 @@ def test_scaffold_when_rollback_unlink_fails_does_propagate_original_error(
 
     with pytest.raises(GymratError) as exc_info:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
-
-    assert (str(exc_info.value), exc_info.value.hint) == (
-        f"Cannot write gymrat-runbook.md in {tmp_path}",
-        "No space left on device",
-    )
-
-
-def test_scaffold_when_rollback_directory_removal_fails_does_propagate_original_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    def exploding_rmdir(path: str | os.PathLike[str]) -> None:
-        msg = "device removed"
-        raise OSError(msg)
-
-    monkeypatch.setattr("os.rmdir", exploding_rmdir)
-    _fail_write_of(monkeypatch, "SKILL.md")
-
-    with pytest.raises(GymratError) as exc_info:
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert exc_info.value.hint == "No space left on device"

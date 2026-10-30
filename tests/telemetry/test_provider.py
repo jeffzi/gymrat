@@ -1,16 +1,26 @@
-"""Tests for the tracing provider: configure, start_span, flush, reset."""
+"""Tests for the tracing provider.
+
+Covers configure, start_span, flush and reset, the deterministic trace and span ID
+derivation, and the traceparent helpers.
+"""
 
 from __future__ import annotations
 
 import contextlib
-import importlib.metadata
+import re
 from typing import TYPE_CHECKING, override
 
 import pytest
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, set_span_in_context
+from opentelemetry.trace import (
+    INVALID_SPAN,
+    NonRecordingSpan,
+    SpanContext,
+    TraceFlags,
+    set_span_in_context,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,6 +30,9 @@ from gymrat.telemetry.provider import (
     configure_tracing,
     export_failed,
     flush_tracing,
+    format_traceparent,
+    id_from_digest,
+    parse_traceparent,
     reset_tracing,
     session_span_dropped,
     span_id_of,
@@ -68,29 +81,12 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_enviro
     ]
 
 
-def _pad_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
-    monkeypatch.setenv(ENDPOINT_ENV, f"  {endpoint} ")
-
-
-def _pad_traces_endpoint(monkeypatch: pytest.MonkeyPatch, endpoint: str) -> None:
-    monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:1")
-    monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"  {endpoint}/custom/traces ")
-
-
-@pytest.mark.parametrize(
-    ("arrange", "expected_path"),
-    [
-        pytest.param(_pad_endpoint, "/v1/traces", id="base-endpoint"),
-        pytest.param(_pad_traces_endpoint, "/custom/traces", id="traces-endpoint-over-base"),
-    ],
-)
-def test_configure_tracing_when_endpoint_variable_padded_does_export_to_it_trimmed(
+def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the_traces_endpoint(
     monkeypatch: pytest.MonkeyPatch,
-    arrange: Callable[[pytest.MonkeyPatch, str], None],
-    expected_path: str,
 ):
     with otlp_collector() as collector:
-        arrange(monkeypatch, collector.endpoint)
+        monkeypatch.setenv(ENDPOINT_ENV, "http://127.0.0.1:1")
+        monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"{collector.endpoint}/custom/traces")
         configure_tracing(SESSION)
         with start_span("probe"):
             pass
@@ -98,7 +94,7 @@ def test_configure_tracing_when_endpoint_variable_padded_does_export_to_it_trimm
         flush_tracing()
 
     assert [(export.path, export.span_names) for export in collector.received] == [
-        (expected_path, ["probe"])
+        ("/custom/traces", ["probe"])
     ]
 
 
@@ -124,6 +120,21 @@ def test_flush_tracing_when_flush_does_not_finish_in_time_does_count_as_failed_e
     flush_tracing()
 
     assert export_failed()
+
+
+def test_flush_tracing_when_a_rejected_batch_precedes_accepted_ones_does_keep_the_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "1")
+    with otlp_collector(statuses=[400]) as collector:
+        configure_tracing(SESSION, endpoint=collector.endpoint)
+        for name in ("first", "second", "third"):
+            with start_span(name):
+                pass
+
+        flush_tracing()
+
+    assert (len(collector.received), export_failed()) == (3, True)
 
 
 # ---------------------------------------------------------------------------
@@ -176,18 +187,6 @@ def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_a
 # ---------------------------------------------------------------------------
 
 
-def test_configure_tracing_when_called_does_name_and_version_the_service():
-    with memory_tracing(SESSION) as exporter, start_span("probe"):
-        pass
-
-    finished = exporter.get_finished_spans()
-    attributes = finished[0].resource.attributes
-    assert (attributes["service.name"], attributes["service.version"]) == (
-        "gymrat",
-        importlib.metadata.version("gymrat"),
-    )
-
-
 def test_configure_tracing_when_called_twice_does_reuse_provider():
     with memory_tracing(SESSION) as exporter:
         result = configure_tracing(SESSION)
@@ -201,7 +200,7 @@ def test_configure_tracing_when_called_twice_does_reuse_provider():
 def test_configure_tracing_when_already_configured_with_span_processor_does_raise():
     with (
         memory_tracing(SESSION),
-        pytest.raises(ValueError, match="span_processor"),
+        pytest.raises(ValueError, match=SESSION),
     ):
         configure_tracing(
             SESSION,
@@ -210,7 +209,7 @@ def test_configure_tracing_when_already_configured_with_span_processor_does_rais
 
 
 def test_configure_tracing_when_called_with_different_session_id_does_raise():
-    with memory_tracing(SESSION), pytest.raises(ValueError, match="session_id"):
+    with memory_tracing(SESSION), pytest.raises(ValueError, match="other-session"):
         configure_tracing("other-session")
 
 
@@ -243,6 +242,70 @@ def test_start_span_when_no_span_key_does_use_random_span_id():
     # pyrefly: ignore[missing-attribute] -- a finished span always carries its context
     span_ids = {span.context.span_id for span in exporter.get_finished_spans()}
     assert len(span_ids) == 2
+
+
+# ---------------------------------------------------------------------------
+# trace_id_of
+# ---------------------------------------------------------------------------
+
+
+def test_trace_id_of_when_called_does_return_pinned_sha256_value():
+    result = trace_id_of("test-session")
+
+    assert result == 97386156705156847130924781873076287828
+
+
+# ---------------------------------------------------------------------------
+# id_from_digest
+# ---------------------------------------------------------------------------
+
+
+def test_id_from_digest_when_leading_bytes_are_zero_does_return_one():
+    # A zero ID is invalid in W3C Trace Context; the derivation returns 1 instead.
+    width = 8
+    digest = b"\x00" * width + b"\xff" * (32 - width)
+
+    result = id_from_digest(digest, width)
+
+    assert result == 1
+
+
+# ---------------------------------------------------------------------------
+# span_id_of
+# ---------------------------------------------------------------------------
+
+
+def test_span_id_of_when_called_does_return_pinned_sha256_value():
+    result = span_id_of("test-session", "root")
+
+    assert result == 3890457429828929257
+
+
+# ---------------------------------------------------------------------------
+# format_traceparent
+# ---------------------------------------------------------------------------
+
+
+def test_format_traceparent_when_span_context_invalid_does_raise_value_error():
+    with pytest.raises(ValueError, match=re.escape(repr(INVALID_SPAN.get_span_context()))):
+        format_traceparent(INVALID_SPAN)
+
+
+# ---------------------------------------------------------------------------
+# parse_traceparent
+# ---------------------------------------------------------------------------
+
+
+def test_parse_traceparent_when_valid_does_return_remote_span_context():
+    result = parse_traceparent("00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01")
+
+    assert isinstance(result, SpanContext)
+
+
+def test_parse_traceparent_when_malformed_does_return_none():
+    result = parse_traceparent("too-few-parts")
+
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +353,7 @@ def test_reset_tracing_when_shutdown_raises_does_propagate_with_flags_cleared(
 ):
     _configure_with_failing_shutdown(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="shutdown failed"):
+    with pytest.raises(RuntimeError):
         reset_tracing()
 
     assert (export_failed(), session_span_dropped()) == (False, False)

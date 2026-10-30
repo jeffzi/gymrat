@@ -14,7 +14,6 @@ import pytest
 
 from gymrat.cli.iterate.state import (
     IterateState,
-    JudgeDetail,
     advance,
     initial_state,
     plain_line,
@@ -31,7 +30,6 @@ from gymrat.progress_events import (
     PrepareFinished,
     PrepareStarted,
 )
-from gymrat.utils import SamplingEta
 from tests._imports import loaded_under, modules_imported_by
 from tests.cli._progress_helpers import iteration_facts
 from tests.cli._progress_helpers import pass_finished as _pass_finished
@@ -48,12 +46,18 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def _state(*, has_before_hook: bool = False, has_after_hook: bool = False) -> IterateState:
+def _state(
+    *,
+    has_before_hook: bool = False,
+    has_after_hook: bool = False,
+    checks_cmd: str | None = None,
+) -> IterateState:
     return initial_state(
         iteration_facts(
             sample_count=1,
             has_before_hook=has_before_hook,
             has_after_hook=has_after_hook,
+            checks_cmd=checks_cmd,
         )
     )
 
@@ -88,19 +92,24 @@ def test_state_module_when_imported_in_a_fresh_interpreter_does_not_load_rich():
 
 
 @pytest.mark.parametrize(
-    ("has_after_hook", "expected"),
+    "has_after_hook",
     [
-        pytest.param(True, "then after hook", id="after-hook"),
-        pytest.param(False, "", id="no-after-hook"),
+        pytest.param(True, id="after-hook"),
+        pytest.param(False, id="no-after-hook"),
     ],
 )
-def test_initial_state_when_after_hook_varies_does_hint_it_on_the_record_row(
+def test_initial_state_when_after_hook_toggled_does_hint_it_only_when_present(
     has_after_hook: bool,
-    expected: str,
 ):
     result = _state(has_after_hook=has_after_hook)
 
-    assert result.nodes.record.hint == expected
+    assert bool(result.nodes.record.hint) is has_after_hook
+
+
+def test_initial_state_when_no_before_hook_does_leave_the_hook_row_out():
+    result = _state(has_before_hook=False)
+
+    assert result.nodes.before_hook not in result.visible_nodes
 
 
 # ---------------------------------------------------------------------------
@@ -108,20 +117,32 @@ def test_initial_state_when_after_hook_varies_does_hint_it_on_the_record_row(
 # ---------------------------------------------------------------------------
 
 
-def test_advance_when_before_hook_finished_does_mark_hook_row_done():
-    state = advance(_state(has_before_hook=True), HookStarted(stage="before", at_ms=0))
+def test_advance_when_before_hook_starts_does_show_a_running_hook_row():
+    result = advance(_state(has_before_hook=True), HookStarted(stage="before", at_ms=1000))
 
-    result = advance(state, HookFinished(stage="before", at_ms=2000))
+    assert result.nodes.before_hook in result.visible_nodes
+    assert result.nodes.before_hook.status == "running"
+
+
+def test_advance_when_before_hook_finished_does_mark_hook_row_done_with_its_elapsed_time():
+    state = advance(_state(has_before_hook=True), HookStarted(stage="before", at_ms=1000))
+
+    result = advance(state, HookFinished(stage="before", at_ms=3000))
 
     assert result.nodes.before_hook.status == "done"
+    assert result.nodes.before_hook.elapsed_ms == 2000
 
 
-def test_advance_when_pass_finishes_does_advance_pass_phase_eta():
-    state = advance(_state(), _FIRST_PASS_STARTED)
+def test_advance_when_after_hook_starts_does_leave_the_state_unchanged():
+    state = _apply(
+        _state(has_before_hook=True, has_after_hook=True),
+        HookStarted(stage="before", at_ms=0),
+        HookFinished(stage="before", at_ms=2000),
+    )
 
-    result = advance(state, _FIRST_PASS_FINISHED)
+    result = advance(state, HookStarted(stage="after", at_ms=5000))
 
-    assert result.pass_phase.eta == SamplingEta(completed=1, total_time_ms=10000, total=2)
+    assert result == state
 
 
 def test_advance_when_final_pass_finishes_does_complete_passes_row():
@@ -133,17 +154,92 @@ def test_advance_when_final_pass_finishes_does_complete_passes_row():
     assert result.nodes.passes.detail == "2 passes"
 
 
-def test_advance_when_judge_finished_does_store_judge_detail_as_data():
-    result = advance(
+def test_advance_when_two_worktrees_prepared_does_sum_their_elapsed_times():
+    state = _apply(
         _state(),
-        JudgeFinished(primary_delta_pct=-3.2, regressed=("latency", "throughput"), at_ms=6000),
+        PrepareStarted(label="baseline", at_ms=0),
+        PrepareFinished(label="baseline", at_ms=3000),
+        PrepareStarted(label="experiment", at_ms=3000),
     )
 
-    assert result.nodes.judge.detail == JudgeDetail(
-        primary_metric="geomean",
-        primary_delta_pct=-3.2,
-        regressed_names=("latency", "throughput"),
+    result = advance(state, PrepareFinished(label="experiment", at_ms=5000))
+
+    assert result.nodes.prepare.elapsed_ms == 5000
+
+
+def test_advance_when_prepare_finished_does_clear_the_target():
+    state = advance(_state(), PrepareStarted(label="baseline", at_ms=0))
+
+    result = advance(state, PrepareFinished(label="baseline", at_ms=3000))
+
+    assert (state.nodes.prepare.target, result.nodes.prepare.target) == ("baseline", "")
+
+
+def test_advance_when_judge_finished_after_started_does_time_the_judge_row():
+    state = advance(_state(), JudgeStarted(at_ms=1000))
+
+    result = advance(state, JudgeFinished(primary_delta_pct=-1.0, regressed=(), at_ms=5000))
+
+    assert result.nodes.judge.elapsed_ms == 4000
+
+
+def test_advance_when_confirm_pass_finished_does_count_it_in_the_confirm_phase():
+    state = _apply(
+        _state(),
+        ConfirmStarted(filtered_metrics=None, at_ms=5000),
+        _pass_started(1, 1, target_count=2, label="baseline", at_ms=5000, phase="confirm"),
     )
+
+    result = advance(
+        state, _pass_finished(1, 1, target_count=2, label="baseline", at_ms=10000, phase="confirm")
+    )
+
+    assert result.confirm_phase.eta.completed == 1
+
+
+def test_advance_when_confirm_finished_does_time_the_confirm_row():
+    state = advance(_state(), ConfirmStarted(filtered_metrics=None, at_ms=5000))
+
+    result = advance(state, ConfirmFinished(reproduced=True, at_ms=20000))
+
+    assert result.nodes.confirm.elapsed_ms == 15000
+
+
+def test_advance_when_confirm_finished_does_settle_the_judge_alert():
+    state = advance(_state(), ConfirmStarted(filtered_metrics=None, at_ms=5000))
+
+    result = advance(state, ConfirmFinished(reproduced=True, at_ms=20000))
+
+    assert (state.nodes.judge.alert, result.nodes.judge.alert) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("setup", "event", "shown"),
+    [
+        pytest.param(
+            (),
+            JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=6000),
+            False,
+            id="nothing-regressed-drops-it",
+        ),
+        pytest.param(
+            (JudgeFinished(primary_delta_pct=-2.0, regressed=("latency",), at_ms=6000),),
+            ConfirmSkipped(at_ms=6000),
+            True,
+            id="skipped-after-a-regression-keeps-it",
+        ),
+    ],
+)
+def test_advance_when_confirm_skipped_does_show_its_row_only_after_a_regression(
+    setup: Sequence[ProgressEvent],
+    event: ProgressEvent,
+    shown: bool,
+):
+    state = _apply(_state(), *setup)
+
+    result = advance(state, event)
+
+    assert (result.nodes.confirm in result.visible_nodes) is shown
 
 
 @pytest.mark.parametrize(
@@ -242,14 +338,18 @@ def test_plain_line_when_milestone_event_does_return_line(
 @pytest.mark.parametrize(
     ("setup", "event"),
     [
-        pytest.param((), HookStarted(stage="before", at_ms=0), id="hook-started"),
-        pytest.param((), HookFinished(stage="before", at_ms=0), id="hook-finished"),
-        pytest.param((), PrepareStarted(label="baseline", at_ms=0), id="prepare-started"),
-        pytest.param((), _FIRST_PASS_STARTED, id="pass-started"),
         pytest.param((_FIRST_PASS_STARTED,), _FIRST_PASS_FINISHED, id="non-final-pass-finished"),
-        pytest.param((), JudgeStarted(at_ms=0), id="judge-started"),
-        pytest.param((), ConfirmStarted(filtered_metrics=None, at_ms=5000), id="confirm-started"),
-        pytest.param((), ConfirmSkipped(at_ms=5000), id="confirm-skipped"),
+        pytest.param(
+            (
+                _FIRST_PASS_STARTED,
+                _FIRST_PASS_FINISHED,
+                _LAST_PASS_STARTED,
+                _LAST_PASS_FINISHED,
+                _pass_started(1, 1, target_count=2, label="baseline", at_ms=20000, phase="confirm"),
+            ),
+            _pass_finished(1, 1, target_count=2, label="baseline", at_ms=30000, phase="confirm"),
+            id="confirm-pass-finished",
+        ),
     ],
 )
 def test_plain_line_when_non_milestone_event_does_return_none(
@@ -260,3 +360,13 @@ def test_plain_line_when_non_milestone_event_does_return_none(
     result = plain_line(before, advance(before, event), event)
 
     assert result is None
+
+
+def test_plain_line_when_recorded_with_checks_cmd_does_name_the_checks_run_at_keep():
+    before = _state(checks_cmd="npm test")
+    event = IterationRecorded(seq=2, outcome="unsettled", at_ms=15000)
+
+    result = plain_line(before, advance(before, event), event)
+
+    assert result is not None
+    assert "npm test" in result

@@ -3,7 +3,6 @@
 import contextlib
 import json
 import os
-import re
 from collections.abc import Generator
 from pathlib import Path
 
@@ -14,9 +13,6 @@ from gymrat.errors import GymratError
 from gymrat.session.lock import is_held, now_iso
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 
-#: The ISO-8601 shape a freshly published holder record stamps into ``at``.
-HOLDER_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-
 #: A fixed, well-formed ``at`` stamp for a planted holder record; its exact
 #: value is immaterial to every test that uses it.
 FIXED_HOLDER_AT = "2026-01-01T00:00:00.000Z"
@@ -25,8 +21,9 @@ FIXED_HOLDER_AT = "2026-01-01T00:00:00.000Z"
 def os_lock_file(lock_path: str) -> str:
     """The OS lock file ``acquire_lock`` takes beside the holder record at ``lock_path``.
 
-    The suffix is stated here rather than imported, so the tests pin the
-    on-disk layout instead of borrowing it from the code under test.
+    The suffix is restated because the production helper is private; tests
+    need the path to inject faults at it and to find it in the messages that
+    name it.
 
     Args:
         lock_path: The holder-record path.

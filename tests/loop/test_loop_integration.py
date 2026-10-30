@@ -2,20 +2,16 @@
 
 These drive the six loop commands against real scratch repositories, real
 worktrees, and real bench subprocesses — nothing about the measurement stack is
-faked. Three flows are covered:
+faked. Two flows are covered:
 
 - A whole session driven command by command, each step a fresh cold-start
   process, so every command has to rebuild the session from the log on disk.
 - Lock contention: a gated bench holds the first ``iterate`` open while a second
   one collides with the repository lock and is refused.
-- The session guard: every loop command refuses to run without an open session,
-  naming what it was about to do in the hint that points at ``gymrat start``.
 
 POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 """
 
-import asyncio
-import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -23,15 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.errors import GymratError
-from gymrat.loop.discard import discard_session
-from gymrat.loop.finalize import finalize_session
-from gymrat.loop.iterate.run import iterate_session
-from gymrat.loop.keep import keep_session
-from gymrat.loop.probe import ProbeOptions, probe_session
-from gymrat.loop.status import status_session
-from gymrat.loop.stop import stop_session
-from gymrat.loop.sync import sync_to_experiment
+from gymrat.report.loop import (
+    SettleKept,
+    StatusIteration,
+    format_status_baseline,
+    format_status_iteration,
+)
 from gymrat.session.lock import read_holder
 from gymrat.session.paths import (
     experiment_worktree_dir,
@@ -50,7 +43,6 @@ from tests._ansi import (
 from tests._cli import ENTRY as _ENTRY
 from tests._cli import no_color_env as _env
 from tests._cli import run_cli
-from tests._config import benchless_config, resolved_config
 from tests._git import run_git as _git
 from tests._git import status_of
 from tests._platform import needs_posix_worktrees
@@ -62,9 +54,8 @@ from tests.loop._bench import (
     commit_project,
     tune_experiment,
 )
-from tests.loop._settle import checks_config, start_with
+from tests.report._assertions import render_plain
 from tests.session.records._fixtures import (
-    finalize_record,
     log_records,
     records_of_type,
 )
@@ -180,9 +171,17 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 
     # status rebuilds the whole session out of the log alone.
     lines = status_report.split("\n")
-    assert f"session {session.session_id}" in lines[0]
-    assert f"baseline main · latency {BASELINE_LATENCY}" in lines
-    assert re.search(rf"^iteration 1 · .* · kept {kept_commit[:7]}$", status_report, re.MULTILINE)
+    assert session.session_id in lines[0]
+    assert render_plain(format_status_baseline(baseline)) in lines
+    kept_line = format_status_iteration(
+        StatusIteration(
+            seq=1,
+            delta_pct=first.primary.delta_pct,
+            outcome=first.outcome,
+            settle=SettleKept(commit=kept_commit, outcome=first.outcome),
+        )
+    )
+    assert render_plain(kept_line) in lines
 
     assert status_of(repo) == ""
 
@@ -246,94 +245,7 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
         first_stdout, first_stderr = first.communicate(timeout=LONG_RUN_TIMEOUT)
 
     assert second.returncode == 2, second.stderr
-    assert second.stderr.startswith(f"Error: Lock held by PID {first.pid} (iterate, started ")
+    assert str(first.pid) in second.stderr
+    assert "iterate" in second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
     assert len(records_of_type(repo, IterationRecord)) == 1
-
-
-# ---------------------------------------------------------------------------
-# the session guard every loop command runs first
-# ---------------------------------------------------------------------------
-
-
-def _iterate(root: str) -> object:
-    return asyncio.run(iterate_session(root, resolved_config()))
-
-
-def _keep(root: str) -> object:
-    return asyncio.run(keep_session(root, benchless_config()))
-
-
-def _probe(root: str) -> object:
-    return asyncio.run(probe_session(root, checks_config(), ProbeOptions()))
-
-
-def _stop(root: str) -> object:
-    return stop_session(root, "done")
-
-
-def _status(root: str) -> object:
-    return status_session(root, benchless_config())
-
-
-def _leave_without_a_session(_root: str) -> None:
-    """Start nothing, so the command finds no session."""
-
-
-def _finalize_a_session(root: str) -> None:
-    """Open a session and finalize it."""
-    start_with(root, (finalize_record(),))
-
-
-#: Every loop command, the verb its refusal names, and whether it also refuses a
-#: finalized session — status reads a closed session's history, so it does not.
-_GUARDED_COMMANDS: list[tuple[str, Callable[[str], object], str, bool]] = [
-    ("iterate", _iterate, "measuring an edit", True),
-    ("keep", _keep, "settling an edit", True),
-    ("discard", discard_session, "settling an edit", True),
-    ("finalize", finalize_session, "closing the session", True),
-    ("stop", _stop, "stopping the session", True),
-    ("status", _status, "asking for its status", False),
-    ("sync", sync_to_experiment, "syncing changes", True),
-    ("probe", _probe, "probing", True),
-]
-
-_GUARD_CASES = [
-    *(
-        pytest.param(
-            command,
-            _leave_without_a_session,
-            "no-session",
-            f"Run gymrat start to open one before {verb}.",
-            id=f"{name}-no-session",
-        )
-        for name, command, verb, _ in _GUARDED_COMMANDS
-    ),
-    *(
-        pytest.param(
-            command,
-            _finalize_a_session,
-            "finalized",
-            f"Run gymrat start to open a new session before {verb}.",
-            id=f"{name}-finalized",
-        )
-        for name, command, verb, refuses_finalized in _GUARDED_COMMANDS
-        if refuses_finalized
-    ),
-]
-
-
-@pytest.mark.parametrize(("command", "arrange", "reason", "hint"), _GUARD_CASES)
-def test_loop_command_when_no_open_session_does_refuse_naming_its_verb(
-    repo: str,
-    command: Callable[[str], object],
-    arrange: Callable[[str], None],
-    reason: str,
-    hint: str,
-):
-    arrange(repo)
-
-    with pytest.raises(GymratError) as excinfo:
-        command(repo)
-
-    assert (excinfo.value.reason, excinfo.value.hint) == (reason, hint)

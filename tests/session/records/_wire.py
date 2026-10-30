@@ -8,7 +8,6 @@ variants from them.
 from tests.session.records._fixtures import (
     AT,
     BASELINE_SHA,
-    COMMIT,
     SESSION_ID,
 )
 
@@ -63,61 +62,9 @@ ITERATION_RECORD: dict[str, object] = {
     "target_reached": False,
 }
 
-CONFIRM: dict[str, object] = {
-    "ran": True,
-    "filtered": ["total_ms"],
-    "absent": ["rss_kb"],
-    "samples": {
-        "experiment": [{"total_ms": 14120}],
-        "baseline": [{"total_ms": 15170}],
-    },
-}
-
-COMMITTED_KEEP_RECORD: dict[str, object] = {
-    "type": "keep",
-    "seq": 1,
-    "at": AT,
-    "status": "committed",
-    "commit": COMMIT,
-    "message": "cache the regex",
-    "checks": {"configured": True, "passed": True},
-}
-
-BLOCKED_KEEP_RECORD: dict[str, object] = {
-    "type": "keep",
-    "seq": 2,
-    "at": AT,
-    "status": "blocked",
-    "reason": "checks-failed",
-    "checks": {"configured": True, "passed": False},
-}
 
 DISCARD_RECORD: dict[str, object] = {"type": "discard", "seq": 3, "at": AT}
 
-HOOK_RECORD: dict[str, object] = {
-    "type": "hook",
-    "at": AT,
-    "stage": "before",
-    "seq": 4,
-    "exit_code": 0,
-    "duration_ms": 120,
-    "stdout_bytes": 80,
-    "timed_out": False,
-}
-
-FINALIZE_RECORD: dict[str, object] = {
-    "type": "finalize",
-    "at": AT,
-    "branch": f"gymrat/{SESSION_ID}-final",
-    "commit": COMMIT,
-    "message": "squash 3 kept iterations",
-}
-
-STOP_RECORD: dict[str, object] = {
-    "type": "stop",
-    "at": AT,
-    "message": "user requested stop",
-}
 
 COMMAND_RECORD: dict[str, object] = {
     "type": "command",
@@ -142,19 +89,6 @@ COMMAND_RECORD_SUCCESS: dict[str, object] = {
     "seq": 1,
 }
 
-COMMAND_RECORD_WITH_TRACEPARENT: dict[str, object] = {
-    "type": "command",
-    "at": AT,
-    "name": "iterate",
-    "args": {},
-    "exit_code": 2,
-    "reason": "error",
-    "duration_ms": 100,
-    "origin": "cli",
-    "seq": 5,
-    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-}
-
 
 def omitting(record: dict[str, object], key: str) -> dict[str, object]:
     """Copy of ``record`` without ``key``."""
@@ -173,20 +107,9 @@ def nested_with(record: dict[str, object], field: str, **overrides: object) -> d
     return patching(record, {field: {**field_of(record, field), **overrides}})
 
 
-def confirm_with(**overrides: object) -> dict[str, object]:
-    """Copy of ``CONFIRM`` with ``overrides`` merged over it."""
-    return {**CONFIRM, **overrides}
-
-
 def verdict_with(**overrides: object) -> dict[str, object]:
     """``ITERATION_RECORD`` whose ``total_ms`` verdict has ``overrides`` merged over it."""
     return patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, **overrides}}})
-
-
-def verdict_without(*keys: str) -> dict[str, object]:
-    """``ITERATION_RECORD`` whose ``total_ms`` verdict lacks every key in ``keys``."""
-    verdict = {key: value for key, value in METRIC_VERDICT.items() if key not in keys}
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": verdict}})
 
 
 def field_of(record: dict[str, object], key: str) -> dict[str, object]:

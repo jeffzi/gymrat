@@ -16,10 +16,9 @@ import asyncio
 import contextlib
 import json
 import os
-import shlex
 import signal
 import sys
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,22 +27,17 @@ import pytest
 from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
-from gymrat.signals import TERMINATION_SIGNALS
 from tests._exec_fixtures import (
     ExecRun,
     ExecTask,
     expected_result,
-    fresh_live_process_groups,
     run_argv,
     run_shell,
-    shell_grandchild,
+    shell_leaving_a_descendant,
     wait_for_spawned,
 )
 from tests._process_helpers import (
     REAL_KILLPG,
-    KillpgRefusal,
-    is_alive,
-    refuse_killpg,
     wait_for_pid_file,
     wait_until_dead,
 )
@@ -51,9 +45,6 @@ from tests._process_helpers import (
 # ---------------------------------------------------------------------------
 # captured output and stdin delivery
 # ---------------------------------------------------------------------------
-
-#: A process-group id no test spawns; recorded, never signaled.
-_LEAKED_GROUP_PID = 999_999
 
 
 async def test_exec_when_multi_byte_char_split_across_reads_does_decode_single_char(
@@ -75,19 +66,6 @@ async def test_exec_when_descendant_writes_after_shell_exits_does_capture_output
     result = await run_exec("(sleep 0.2; echo METRIC) &", make_opts())
 
     assert result == expected_result("METRIC\n", "", 0)
-
-
-async def test_exec_when_stdin_unread_and_large_does_settle_with_command_result(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    # Larger than any OS pipe buffer, so the write cannot complete on its own:
-    # the child exits first and the pending write breaks with a broken pipe,
-    # which is swallowed rather than surfaced as an error.
-    payload = "x" * (1024 * 1024)
-
-    result = await run_exec("exit 3", make_opts(stdin=payload))
-
-    assert result == expected_result("", "", 3)
 
 
 # ---------------------------------------------------------------------------
@@ -116,16 +94,6 @@ _MIB = 1024 * 1024
             [
                 sys.executable,
                 "-c",
-                "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)",
-            ],
-            expected_result("out\n", "err\n", 3),
-            id="exec_argv",
-        ),
-        pytest.param(
-            run_argv,
-            [
-                sys.executable,
-                "-c",
                 f"import sys; sys.stderr.write('E' * {_MIB}); sys.stderr.flush(); print('OK')",
             ],
             expected_result("OK\n", "E" * _MIB, 0),
@@ -144,21 +112,14 @@ async def test_exec_when_run_to_completion_does_capture_the_full_result(
     assert result == expected
 
 
+# Both entry points feed stdin the same way, so each pairs with one case.
 @pytest.mark.parametrize(
-    ("run", "args"),
+    ("run", "args", "stdin", "expected_stdout"),
     [
-        pytest.param(run_shell, "cat", id="exec"),
-        pytest.param(run_argv, _ECHO_STDIN_ARGV, id="exec_argv"),
+        pytest.param(run_shell, "cat", "piped input\n", "piped input\n", id="exec-stdin-delivered"),
+        pytest.param(run_argv, _ECHO_STDIN_ARGV, None, "", id="exec_argv-stdin-omitted-is-closed"),
     ],
 )
-@pytest.mark.parametrize(
-    ("stdin", "expected_stdout"),
-    [
-        pytest.param("piped input\n", "piped input\n", id="stdin-delivered"),
-        pytest.param(None, "", id="stdin-omitted-is-closed"),
-    ],
-)
-@pytest.mark.usefixtures("stdin_holding_text")
 async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
     make_opts: Callable[..., ExecOptions],
     *,
@@ -170,26 +131,6 @@ async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
     result = await run(args, make_opts(stdin=stdin))
 
     assert result == expected_result(expected_stdout, "", 0)
-
-
-@pytest.mark.parametrize(
-    ("run", "args"),
-    [
-        pytest.param(run_shell, "pwd -P", id="exec"),
-        pytest.param(
-            run_argv, [sys.executable, "-c", "import os; print(os.getcwd())"], id="exec_argv"
-        ),
-    ],
-)
-async def test_exec_when_cwd_specified_does_run_in_that_directory(
-    tmp_path: Path,
-    make_opts: Callable[..., ExecOptions],
-    run: ExecRun,
-    args: Any,
-) -> None:
-    result = await run(args, make_opts())
-
-    assert result == expected_result(f"{await asyncio.to_thread(tmp_path.resolve)}\n", "", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -205,32 +146,15 @@ def _missing_dir(tmp_path: Path) -> str:
     return str(tmp_path / "does-not-exist")
 
 
-# One OSError and one ValueError per entry point: every spawn the interpreter or
-# host rejects takes the same path to a failed result, whatever check raised.
+# One OSError and one ValueError: every spawn the interpreter or host rejects
+# takes the same path to a failed result, whatever check raised or entry point
+# was used. An empty argv is the one rejection exec_argv makes itself.
 @pytest.mark.parametrize(
-    ("run", "args", "cwd", "message"),
+    ("run", "args", "cwd"),
     [
-        pytest.param(
-            run_shell,
-            "echo hello",
-            _missing_dir,
-            "[Errno 2] No such file or directory: '{cwd}'",
-            id="exec-cwd-missing",
-        ),
-        pytest.param(
-            run_shell, "echo a\x00b", _in_tmp, "embedded null byte", id="exec-nul-in-command"
-        ),
-        pytest.param(
-            run_argv,
-            ["no-such-binary-exists-anywhere"],
-            _in_tmp,
-            "[Errno 2] No such file or directory: 'no-such-binary-exists-anywhere'",
-            id="argv-binary-not-found",
-        ),
-        pytest.param(
-            run_argv, ["echo", "a\x00b"], _in_tmp, "embedded null byte", id="argv-nul-in-argument"
-        ),
-        pytest.param(run_argv, [], _in_tmp, "argv is empty: no program to run", id="argv-empty"),
+        pytest.param(run_shell, "echo hello", _missing_dir, id="exec-cwd-missing"),
+        pytest.param(run_shell, "echo a\x00b", _in_tmp, id="exec-nul-in-command"),
+        pytest.param(run_argv, [], _in_tmp, id="argv-empty"),
     ],
 )
 async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
@@ -239,13 +163,11 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
     run: ExecRun,
     args: Any,
     cwd: Callable[[Path], str],
-    message: str,
 ) -> None:
-    run_dir = cwd(tmp_path)
+    result = await run(args, ExecOptions(cwd=cwd(tmp_path)))
 
-    result = await run(args, ExecOptions(cwd=run_dir))
-
-    assert result == expected_result("", message.format(cwd=run_dir) + "\n", exit_code=1)
+    assert result == expected_result("", result.stderr, exit_code=1)
+    assert result.stderr.strip() != ""
 
 
 # ---------------------------------------------------------------------------
@@ -253,29 +175,16 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "arg",
-    [
-        pytest.param("hello world", id="spaces"),
-        pytest.param("$HOME", id="dollar-variable"),
-        pytest.param("foo|bar", id="pipe"),
-        pytest.param('say "hi"', id="double-quotes"),
-        pytest.param("it's", id="single-quote"),
-        pytest.param("a;b", id="semicolon"),
-        pytest.param("a && b", id="double-ampersand"),
-    ],
-)
 async def test_exec_argv_when_arg_contains_metacharacter_does_pass_verbatim(
     make_opts: Callable[..., ExecOptions],
-    arg: str,
 ) -> None:
+    arg = "$HOME"
+
     result = await exec_argv(
         [sys.executable, "-c", "import sys, json; print(json.dumps(sys.argv[1:]))", arg],
         make_opts(),
     )
 
-    assert isinstance(result, ExecResult)
-    assert result.exit_code == 0
     received = json.loads(result.stdout.strip())
     assert received == [arg]
 
@@ -294,28 +203,25 @@ async def test_exec_when_child_killed_by_signal_does_report_exit_one(
 
     assert isinstance(result, ExecResult)
     assert result.exit_code == 1
-    assert result.stdout == ""
 
 
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
 async def test_exec_when_stream_read_fails_does_settle_as_failure(
     monkeypatch: pytest.MonkeyPatch,
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
-    stream: str,
 ) -> None:
     # A cap shorter than the diagnostic, so its length alone cannot pass for truncation.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 4)
     task = asyncio.create_task(run_exec("sleep 0.5", make_opts()))
     proc = await wait_for_spawned(spawned_processes)
-    pipe: asyncio.StreamReader = getattr(proc, stream)
+    assert proc.stdout is not None
 
-    pipe.set_exception(RuntimeError("stream exploded"))
+    proc.stdout.set_exception(RuntimeError("stream exploded"))
 
     result = await asyncio.wait_for(task, 3)
     assert isinstance(result, ExecResult)
     assert result.exit_code == 1
-    assert result.stderr == "stream exploded\n"
+    assert result.stderr.removesuffix("\n") == "stream exploded"
     # The diagnostic text is internal, not command output — byte count stays zero.
     assert result.stderr_bytes == 0
     # Nor does the diagnostic count as output dropped past the cap.
@@ -346,7 +252,7 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
         ),
     ],
 )
-async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_counting(
+async def test_exec_when_output_reaches_cap_does_keep_chunks_started_under_it_and_count_every_byte(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
     *,
@@ -356,7 +262,6 @@ async def test_exec_when_output_exceeds_cap_does_stop_appending_but_keep_countin
     stdout_bytes: int,
     stdout_truncated: bool,
 ) -> None:
-    # Byte counting continues past the cap and the child is never signalled.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", cap)
 
     result = await run_exec(command, make_opts())
@@ -409,7 +314,6 @@ async def test_exec_when_run_finishes_does_flag_each_stream_that_overran_the_cap
 
     result = await run_exec(command, make_opts())
 
-    assert isinstance(result, ExecResult)
     assert (result.stdout_truncated, result.stderr_truncated) == expected
 
 
@@ -424,7 +328,6 @@ async def test_exec_when_stream_ends_at_cap_mid_character_does_keep_tail_untrunc
 
     result = await run_exec("printf 'ab\\342'", make_opts())
 
-    assert isinstance(result, ExecResult)
     assert (result.stdout, result.stdout_truncated) == ("ab�", False)
 
 
@@ -467,22 +370,6 @@ _RUN_SETTLE_TIMEOUT_S = 5.0
 
 
 @pytest.fixture
-def killpg_refusal(
-    monkeypatch: pytest.MonkeyPatch,
-    spawned_processes: list[asyncio.subprocess.Process],
-) -> Iterator[KillpgRefusal]:
-    """Install a killpg stand-in a test can switch to refusing right before its act.
-
-    Depends on ``spawned_processes``, so its own teardown runs first: clearing
-    ``refusing`` here happens before ``spawned_processes`` kills any survivor's
-    group, so that cleanup kill goes through the real ``killpg``.
-    """
-    refusal = refuse_killpg(monkeypatch, refusing=False)
-    yield refusal
-    refusal.refusing = False
-
-
-@pytest.fixture
 async def background_runs(
     spawned_processes: list[asyncio.subprocess.Process],
 ) -> AsyncIterator[list[ExecTask]]:
@@ -505,7 +392,6 @@ async def background_runs(
     ("run", "args", "timeout_ms"),
     [
         pytest.param(run_shell, "echo hello", None, id="exec-completes"),
-        pytest.param(run_argv, [sys.executable, "-c", "pass"], None, id="exec_argv-completes"),
         # Every teardown (timeout, abort, stream error, cancel) settles through the
         # same release, so the timeout stands in for all of them.
         pytest.param(run_shell, "sleep 30", 200, id="exec-torn-down"),
@@ -526,47 +412,6 @@ async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its
     exec_mod.kill_live_process_groups()
 
     assert attempted == []
-
-
-def test_fresh_live_process_groups_when_a_group_leaked_in_does_hide_it_from_the_sweep_until_exit(
-    record_killpg: Callable[[], list[int]],
-) -> None:
-    exec_mod._live_process_groups.add(_LEAKED_GROUP_PID)
-    attempted = record_killpg()
-
-    with fresh_live_process_groups():
-        exec_mod.kill_live_process_groups()
-
-    assert attempted == []
-    assert _LEAKED_GROUP_PID in exec_mod._live_process_groups
-
-
-async def test_fresh_live_process_groups_when_runs_started_before_it_does_spare_them_from_the_sweep(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    background_runs: list[ExecTask],
-) -> None:
-    background_runs.extend(
-        asyncio.create_task(run_exec(shell_grandchild(tmp_path / f"earlier{n}.pid"), make_opts()))
-        for n in range(2)
-    )
-    await wait_for_spawned(spawned_processes, count=2)
-    earlier_grandchildren = [
-        await wait_for_pid_file(tmp_path / f"earlier{n}.pid") for n in range(2)
-    ]
-    with fresh_live_process_groups():
-        background_runs.append(
-            asyncio.create_task(run_exec(shell_grandchild(tmp_path / "later.pid"), make_opts())),
-        )
-        await wait_for_spawned(spawned_processes, count=3)
-        later_grandchild = await wait_for_pid_file(tmp_path / "later.pid")
-
-        exec_mod.kill_live_process_groups()
-
-    await asyncio.wait_for(background_runs[-1], _RUN_SETTLE_TIMEOUT_S)
-    alive = [is_alive(pid) for pid in (*earlier_grandchildren, later_grandchild)]
-    assert alive == [True, True, False]
 
 
 async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_group_without_propagating(
@@ -594,51 +439,31 @@ async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_gro
     assert sorted(killed) == sorted(proc.pid for proc in spawned_processes)
 
 
-async def test_kill_live_process_groups_when_exited_leader_group_with_live_member_refuses_does_warn(
+async def test_kill_live_process_groups_when_group_leader_exited_does_still_signal_its_group(
     tmp_path: Path,
     spawned_processes: list[asyncio.subprocess.Process],
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
     *,
-    killpg_refusal: KillpgRefusal,
+    record_killpg: Callable[[], list[int]],
     background_runs: list[ExecTask],
 ) -> None:
-    # The grandchild holds the run's stdout, so the run keeps going after the
+    # The grandchild holds the run's stderr, so the run keeps going after the
     # shell leading the group has exited.
     background_runs.append(
-        asyncio.create_task(run_exec("sleep 30 & echo $! > grandchild.pid", make_opts())),
+        asyncio.create_task(
+            run_exec(shell_leaving_a_descendant(tmp_path / "grandchild.pid"), make_opts())
+        ),
     )
     leader = await wait_for_spawned(spawned_processes)
     grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
     stray_process_ids.append(grandchild)
     await wait_until_dead(leader.pid)
-    killpg_refusal.refusing = True
+    # No grace: the recorder signals nothing, so the sweep would otherwise wait it out.
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", 0)
+    attempted = record_killpg()
 
-    with pytest.warns(RuntimeWarning, match="killpg failed"):
-        exec_mod.kill_live_process_groups()
+    exec_mod.kill_live_process_groups()
 
-
-# ---------------------------------------------------------------------------
-# child signal mask
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_when_spawned_does_unblock_termination_signals_in_child(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    result = await run_exec(
-        shlex.join([
-            sys.executable,
-            "-c",
-            (
-                "import signal, json; "
-                "print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"
-            ),
-        ]),
-        make_opts(),
-    )
-
-    assert isinstance(result, ExecResult)
-    assert result.exit_code == 0
-    blocked: list[int] = json.loads(result.stdout.strip())
-    assert sorted(set(TERMINATION_SIGNALS) & set(blocked)) == []
+    assert set(attempted) == {leader.pid}

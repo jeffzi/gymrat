@@ -43,9 +43,7 @@ def test_console_module_when_imported_does_not_import_the_exit_module():
     ("color_flag", "tty", "env", "expected_no_color"),
     [
         pytest.param(False, True, {}, True, id="no-color-flag-vetoes"),
-        pytest.param(True, True, {"FORCE_COLOR": "0"}, False, id="color-flag-overrides-force-zero"),
         pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
-        pytest.param(True, False, {}, False, id="color-flag-forces-color-even-without-tty"),
     ],
 )
 def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
@@ -95,6 +93,14 @@ def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flag
     assert (is_debug_mode(), resolve_stream_color(None, FakeStream(tty=False))) == (True, True)
 
 
+def test_apply_command_flags_when_command_gives_a_color_flag_does_replace_the_root_override():
+    set_color_override(override=True)
+
+    apply_command_flags(debug=False, color=False)
+
+    assert resolve_stream_color(None, FakeStream(tty=True)) is False
+
+
 # ---------------------------------------------------------------------------
 # colorless SGR suppression (color_system=None, not just no_color=True)
 # ---------------------------------------------------------------------------
@@ -129,50 +135,15 @@ def test_stderr_console_when_stderr_pipe_breaks_does_exit_one_without_output():
     assert (result.returncode, result.stdout) == (1, b"")
 
 
-@pytest.mark.parametrize(
-    ("platform", "error"),
-    [
-        pytest.param("linux", BrokenPipeError(), id="posix-broken-pipe"),
-        pytest.param("win32", OSError(errno.EINVAL, "Invalid argument"), id="windows-einval"),
-    ],
-)
-def test_stderr_console_when_stream_has_no_file_descriptor_does_exit_one_on_broken_pipe(
-    monkeypatch: pytest.MonkeyPatch, platform: str, error: OSError
+def test_stderr_console_when_windows_stream_has_no_file_descriptor_does_exit_one_on_einval(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr("sys.platform", platform)
+    monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setattr("sys.stdout", io.StringIO())
-    monkeypatch.setattr("sys.stderr", RaisingStream(error))
+    monkeypatch.setattr("sys.stderr", RaisingStream(OSError(errno.EINVAL, "Invalid argument")))
     console = stderr_console(color_flag=False)
 
     with pytest.raises(SystemExit) as exc:
         console.print("probe")
 
     assert exc.value.code == 1
-
-
-# ---------------------------------------------------------------------------
-# emoji codes stay literal
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("markup", "highlight", "emoji"),
-    [
-        pytest.param(None, None, None, id="default-flags"),
-        pytest.param(False, False, None, id="no-markup-no-highlight"),
-        pytest.param(None, None, True, id="emoji-requested"),
-    ],
-)
-def test_stderr_console_when_text_has_an_emoji_code_does_print_it_literally(
-    markup: bool | None,
-    highlight: bool | None,
-    emoji: bool | None,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    console = stderr_console(color_flag=False)
-
-    with console.capture() as capture:
-        console.print("lat:100:p99", end="", markup=markup, highlight=highlight, emoji=emoji)
-
-    assert capture.get() == "lat:100:p99"

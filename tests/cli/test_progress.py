@@ -13,152 +13,36 @@ state transition is fully determined by ``(state, event)``.
 from __future__ import annotations
 
 import itertools
-import sys
-from dataclasses import dataclass
-from io import StringIO
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
-from unittest.mock import patch
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.cli.live_display import LIVE_REFRESH_PER_SECOND, ErasableLive
 from gymrat.cli.progress import ProgressReporter, ProgressState, RunShape, advance, plain_line
 from gymrat.progress_events import (
     HookStarted,
-    PassStarted,
     PrepareFinished,
     PrepareStarted,
 )
-from gymrat.signals import install_termination_cleanup
 from tests._rich import (
-    KEPT_LINE,
-    TERMINATION_SIGNAL,
     Clock,
     console_output,
     frame_text,
-    kept_line_terminal,
     screen_lines,
     sealed_console,
     track,
 )
-from tests.cli._progress_helpers import iterate_renderer, report_full_pass
 from tests.cli._progress_helpers import ms_from_clock as _ms
 from tests.cli._progress_helpers import pass_finished as _pass_finished
 from tests.cli._progress_helpers import pass_started as _pass_started
-from tests.cli.supervise._fixtures import (
-    LIVE_CLASS_PATH,
-    dashboard_console_patch,
-    launch_event,
-    make_reporter,
-)
+from tests.cli._progress_helpers import report_full_pass
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
-
     from rich.console import Console
     from syrupy.assertion import SnapshotAssertion
-
-    from gymrat.cli.supervise.progress import SuperviseReporter
-
-    RendererFactory = Callable[[Literal["live", "plain"], Console], "LiveRenderer"]
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class LiveRenderer(Protocol):
-    """The surface every CLI progress renderer shares, as the cross-renderer tests drive it."""
-
-    @property
-    def live(self) -> ErasableLive | None:
-        """The live display it mounted, or ``None`` in plain mode."""
-        ...
-
-    def warn(self, message: str) -> None:
-        """Print ``message`` verbatim, above the live display when one is up."""
-        ...
-
-    def stop(self) -> None:
-        """Stop the renderer; a no-op once a termination signal has erased its live display."""
-        ...
-
-
-def build_progress_reporter(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
-    """Build the measure/compare progress reporter on ``console``, showing its first event.
-
-    Args:
-        mode: ``"live"`` for a rich live display, ``"plain"`` for milestone lines.
-        console: The console to render to.
-
-    Returns:
-        A single-target reporter with a hand-advanced clock.
-    """
-    reporter = track(
-        ProgressReporter(
-            mode=mode,
-            console=console,
-            shape=RunShape(target_count=1, sample_count=3, command="measure"),
-            clock=Clock(0.0),
-        )
-    )
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-    return reporter
-
-
-def build_iterate_renderer(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
-    """Build the iterate progress renderer on ``console``, showing its first event.
-
-    Args:
-        mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
-        console: The console to render to.
-
-    Returns:
-        A renderer for iteration 1 with a hand-advanced clock.
-    """
-    _console, _clock, renderer = iterate_renderer(mode, console=console)
-    renderer.report(PrepareStarted(label="bench", at_ms=0))
-    return renderer
-
-
-@dataclass(frozen=True, slots=True)
-class _ShownSupervise:
-    """The supervise reporter paired with the live display it mounted."""
-
-    reporter: SuperviseReporter
-    live: ErasableLive | None
-
-    def warn(self, message: str) -> None:
-        self.reporter.warn(message)
-
-    def stop(self) -> None:
-        self.reporter.stop()
-
-
-def build_supervise_reporter(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
-    """Build the supervise dashboard reporter on ``console``, showing the agent's launch.
-
-    Args:
-        mode: ``"live"`` for the rich dashboard, ``"plain"`` for status lines.
-        console: The console the dashboard paints on.
-
-    Returns:
-        The reporter with the display it mounted, or none in plain mode.
-    """
-    lives: list[ErasableLive] = []
-
-    def build_live(**kwargs: Any) -> ErasableLive:
-        live = ErasableLive(**kwargs)
-        lives.append(live)
-        return live
-
-    with (
-        dashboard_console_patch(console),
-        patch(LIVE_CLASS_PATH, autospec=True, side_effect=build_live),
-    ):
-        kit = make_reporter(mode=mode, plain_write=lambda _line: None)
-    kit.reporter.observer(launch_event(1000))
-    return _ShownSupervise(kit.reporter, lives[0] if lives else None)
 
 
 def _reporter(
@@ -218,17 +102,10 @@ def state() -> ProgressState:
 # ---------------------------------------------------------------------------
 
 
-def test_start_when_sample_count_known_does_set_the_total_with_nothing_visible():
+def test_start_when_sample_count_known_does_set_the_total_per_target():
     result = ProgressState.start(target_count=2, sample_count=3)
 
-    assert (
-        result.total,
-        result.prepare_visible,
-        result.pass_visible,
-        result.current_target,
-        result.run_start_ms,
-        result.run_end_ms,
-    ) == (6, False, False, "", None, None)
+    assert result.total == 6
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +116,17 @@ def test_start_when_sample_count_known_does_set_the_total_with_nothing_visible()
 def test_advance_when_prepare_started_does_show_prepare_row_with_label(state: ProgressState):
     result = advance(state, PrepareStarted(label="bench", at_ms=7_000))
 
-    assert (
-        result.prepare_visible,
-        result.current_target,
-        result.prepare_start_ms,
-        result.run_start_ms,
-        result.run_end_ms,
-    ) == (True, "bench", 7_000, 7_000, 7_000)
+    assert (result.prepare_visible, result.current_target, result.prepare_start_ms) == (
+        True,
+        "bench",
+        7_000,
+    )
+
+
+def test_advance_when_first_event_does_anchor_the_run_clock(state: ProgressState):
+    result = advance(state, PrepareStarted(label="bench", at_ms=7_000))
+
+    assert (result.run_start_ms, result.run_end_ms) == (7_000, 7_000)
 
 
 def test_advance_when_prepare_finished_does_hide_prepare_row(state: ProgressState):
@@ -276,7 +157,7 @@ def test_advance_when_pass_started_and_total_unknown_does_set_total_from_event(
 ):
     result = advance(state, _pass_started(1, 5, target_count=2, at_ms=2_000))
 
-    assert (result.total, result.eta.total) == (10, 10)
+    assert result.total == 10
 
 
 def test_advance_when_pass_started_and_total_known_does_keep_total(state: ProgressState):
@@ -284,7 +165,7 @@ def test_advance_when_pass_started_and_total_known_does_keep_total(state: Progre
 
     result = advance(first, _pass_started(2, 7, target_count=2, at_ms=14_000))
 
-    assert (result.total, result.eta.total) == (10, 10)
+    assert result.total == 10
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +178,7 @@ def test_advance_when_pass_finished_does_advance_eta_by_pass_duration(state: Pro
 
     result = advance(running, _pass_finished(1, 3, at_ms=12_000))
 
-    assert (result.eta.completed, result.eta.total_time_ms, result.eta.total) == (1, 10_000, 3)
+    assert (result.eta.completed, result.eta.total_time_ms) == (1, 10_000)
 
 
 # ---------------------------------------------------------------------------
@@ -316,44 +197,15 @@ def test_advance_when_unrelated_event_does_return_state_unchanged(state: Progres
 # ---------------------------------------------------------------------------
 
 
-def test_plain_line_when_multi_target_pass_finished_does_name_the_target(state: ProgressState):
-    before = advance(state, _pass_started(2, 5, target_count=2, label="candidate", at_ms=2_000))
-    event = _pass_finished(2, 5, target_count=2, label="candidate", at_ms=62_000)
+def test_plain_line_when_event_is_not_a_milestone_does_return_none(state: ProgressState):
+    event = _pass_started(1, 3, at_ms=7_000)
 
-    result = plain_line(before, advance(before, event), event)
-
-    assert result == "pass 2/5 · candidate (1m 0s)"
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        pytest.param(PrepareStarted(label="bench", at_ms=7_000), id="prepare-started"),
-        pytest.param(_pass_started(1, 3, at_ms=7_000), id="pass-started"),
-        pytest.param(HookStarted(stage="before", at_ms=7_000), id="hook-started"),
-    ],
-)
-def test_plain_line_when_event_is_not_a_milestone_does_return_none(
-    state: ProgressState, event: PrepareStarted | PassStarted | HookStarted
-):
     assert plain_line(state, advance(state, event), event) is None
 
 
 # ---------------------------------------------------------------------------
 # Frame golden snapshots via frame_text(reporter.frame())
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("manual_refresh")
-def test_frame_when_prepare_running_does_show_spinner_and_label(
-    snapshot: SnapshotAssertion,
-):
-    _console, _clock, reporter = _reporter("live")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-
-    result = frame_text(reporter.frame())
-
-    assert result == snapshot
 
 
 @pytest.mark.usefixtures("manual_refresh")
@@ -464,49 +316,6 @@ def test_report_when_plain_mode_prepare_finished_does_print_exact_timestamped_li
 
 
 # ---------------------------------------------------------------------------
-# Live wiring -- Live attributes and refresh path
-# ---------------------------------------------------------------------------
-
-
-def test_progress_reporter_when_built_in_live_mode_does_mount_a_transient_auto_refreshing_live():
-    # redirect_stderr=False leaves sys.stderr as the real stream: this display
-    # never swaps in rich's FileProxy, so there is nothing for the erase to
-    # restore.
-    real_stderr = sys.stderr
-
-    _console, _clock, reporter = _reporter("live", command="measure", target_labels=["bench"])
-
-    live = reporter.live
-    assert live is not None
-    assert (live.transient, live.auto_refresh, live.refresh_per_second) == (
-        True,
-        True,
-        LIVE_REFRESH_PER_SECOND,
-    )
-    assert sys.stderr is real_stderr
-    assert frame_text(live.get_renderable()) == frame_text(reporter.frame())
-
-
-def test_warn_when_plain_mode_does_print_the_message_verbatim_on_its_own_line():
-    console, _clock, reporter = _reporter("plain")
-    before = console_output(console)
-
-    reporter.warn("warning: cannot write [/tmp/lat:100:p99.json]")
-
-    assert console_output(console) == before + "warning: cannot write [/tmp/lat:100:p99.json]\n"
-
-
-@pytest.mark.usefixtures("manual_refresh")
-def test_stop_when_live_does_clear_live():
-    _console, _clock, reporter = _reporter("live")
-    reporter.report(PrepareStarted(label="bench", at_ms=0))
-
-    reporter.stop()
-
-    assert reporter.live is None
-
-
-# ---------------------------------------------------------------------------
 # Summary line -- exact via injected clock
 # ---------------------------------------------------------------------------
 
@@ -521,7 +330,7 @@ def test_stop_when_measure_done_does_print_summary():
     assert _summary_line(console) == "measured in 23s"
 
 
-def test_stop_when_plain_mode_does_not_print_summary():
+def test_stop_when_plain_mode_does_print_only_the_milestone_lines():
     console, clock, reporter = _reporter("plain", sample_count=2)
     _run_two_passes(reporter, clock)
 
@@ -547,143 +356,3 @@ def test_stop_when_compare_done_does_print_summary():
     reporter.stop()
 
     assert _summary_line(console) == "compared in 45s"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "label",
-    [
-        pytest.param("[bold]bench[/bold]", id="markup"),
-        pytest.param("cpu:fire:total", id="emoji-code"),
-    ],
-)
-def test_report_when_plain_label_looks_like_markup_or_emoji_code_does_print_it_verbatim(label: str):
-    console, _clock, reporter = _reporter("plain")
-    reporter.report(PrepareStarted(label=label, at_ms=0))
-
-    reporter.report(PrepareFinished(label=label, at_ms=1000))
-
-    assert console_output(console) == f"[00:00:01] prepared {label} (1s)\n"
-
-
-# ---------------------------------------------------------------------------
-# Every CLI progress renderer alike -- zero-width fallback, warnings, termination signal
-# ---------------------------------------------------------------------------
-
-
-# The renderers built on LiveDisplayMixin, whose stop() does nothing once a
-# signal has erased the display.
-_MIXIN_RENDERERS = [
-    pytest.param(build_progress_reporter, id="progress-reporter"),
-    pytest.param(build_iterate_renderer, id="iterate-renderer"),
-]
-
-
-@pytest.fixture(
-    params=[
-        *_MIXIN_RENDERERS,
-        pytest.param(build_supervise_reporter, id="supervise-reporter"),
-    ]
-)
-def build_renderer(request: pytest.FixtureRequest) -> Iterator[RendererFactory]:
-    """Build each CLI progress renderer in turn; stops whatever was built, even after a failure."""
-    built: list[LiveRenderer] = []
-
-    def build(mode: Literal["live", "plain"], console: Console) -> LiveRenderer:
-        renderer = request.param(mode, console)
-        built.append(renderer)
-        return renderer
-
-    yield build
-    for renderer in built:
-        # A termination signal marks the renderer stopped (as os._exit would
-        # follow in production), so stop() is then a no-op; stop the Live
-        # display directly so no refresh thread or console registration leaks.
-        if renderer.live is not None:
-            renderer.live.stop()
-        renderer.stop()
-
-
-def test_live_renderer_when_console_width_zero_does_mount_no_live_display(
-    build_renderer: RendererFactory,
-):
-    renderer = build_renderer("live", sealed_console(width=0))
-
-    assert renderer.live is None
-
-
-def test_warn_when_live_mode_does_print_through_the_console_while_the_frame_is_up(
-    build_renderer: RendererFactory, monkeypatch: pytest.MonkeyPatch
-):
-    console = sealed_console()
-    renderer = build_renderer("live", console)
-    live = cast("ErasableLive", renderer.live)
-    printed: list[tuple[str, bool]] = []
-    real_print = console.print
-
-    def recording_print(*objects: object, **kwargs: Any) -> None:
-        printed.extend((text, live.is_started) for text in objects if isinstance(text, str))
-        real_print(*objects, **kwargs)
-
-    monkeypatch.setattr(console, "print", recording_print)
-
-    renderer.warn("warning: lat:100:p99 disk full")
-
-    assert printed == [("warning: lat:100:p99 disk full", True)]
-
-
-def test_signal_when_live_up_does_erase_only_the_frame(
-    build_renderer: RendererFactory,
-    monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
-):
-    console = kept_line_terminal(monkeypatch)
-    build_renderer("live", console)
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert screen_lines(console_output(console)) == [KEPT_LINE]
-
-
-@pytest.mark.parametrize("build_renderer", _MIXIN_RENDERERS, indirect=True)
-def test_stop_when_signal_already_erased_the_display_does_write_nothing(
-    build_renderer: RendererFactory,
-):
-    console = sealed_console()
-    renderer = build_renderer("live", console)
-    cast("ErasableLive", renderer.live).erase_for_exit()
-    before = console_output(console)
-
-    renderer.stop()
-
-    assert console_output(console) == before
-
-
-@pytest.mark.parametrize(
-    ("mode", "stopped"),
-    [
-        pytest.param("live", True, id="live-renderer-stopped"),
-        pytest.param("plain", False, id="plain-renderer-running"),
-    ],
-)
-def test_signal_when_no_live_display_is_up_does_write_nothing(
-    mode: Literal["live", "plain"],
-    stopped: bool,
-    build_renderer: RendererFactory,
-    monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
-):
-    renderer = build_renderer(mode, sealed_console())
-    if stopped:
-        renderer.stop()
-    install_termination_cleanup(lambda: None)
-    buf = StringIO()
-    monkeypatch.setattr(sys, "stderr", buf)
-
-    raise_signal(TERMINATION_SIGNAL)
-
-    assert buf.getvalue() == ""

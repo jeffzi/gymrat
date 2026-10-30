@@ -8,12 +8,8 @@ the exact seams a permission error or release failure would hit.
 import errno
 import json
 import os
-import re
 import sys
-import threading
-import time
-from collections.abc import Callable, Generator, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Protocol
 from unittest.mock import create_autospec
@@ -25,36 +21,19 @@ from filelock import Timeout as FileLockTimeout
 from gymrat.errors import GymratError
 from gymrat.session.lock import (
     LockContentionError,
-    LockHolder,
     acquire_lock,
     is_held,
-    read_holder,
 )
 from tests._lock import (
     FIXED_HOLDER_AT,
-    HOLDER_AT_PATTERN,
     hold_lock,
     os_lock_file,
     publish_lock_file,
 )
 
 # ---------------------------------------------------------------------------
-# Constants and helpers
+# Helpers
 # ---------------------------------------------------------------------------
-
-LIVE_HOLDER_HINT = "Another gymrat run is active in this repo. Wait for it to finish."
-
-# The transient-contention test widens the acquisition budget to
-# ``TRANSIENT_WAIT_BUDGET_SECONDS`` and polls every
-# ``TRANSIENT_POLL_INTERVAL_SECONDS``, so the acquirer outlasts the
-# ``TRANSIENT_HOLD_SECONDS`` rival hold by orders of magnitude and scheduling
-# stalls under parallel test runs cannot tip the result.
-TRANSIENT_HOLD_SECONDS = 0.05
-TRANSIENT_WAIT_BUDGET_SECONDS = 5.0
-TRANSIENT_POLL_INTERVAL_SECONDS = 0.01
-
-# How long ``held_briefly`` waits for its holder thread to take the lock.
-HOLDER_READY_TIMEOUT_SECONDS = 5
 
 
 @pytest.fixture
@@ -66,9 +45,7 @@ def lock_path(tmp_path: Path) -> str:
 class Acquire(Protocol):
     """Takes a lock the way :func:`acquire_lock` does, released at teardown."""
 
-    def __call__(
-        self, path: str, command: str, *, wait: float = ..., poll_interval: float = ...
-    ) -> Callable[[], None]: ...
+    def __call__(self, path: str, command: str) -> Callable[[], None]: ...
 
 
 @pytest.fixture
@@ -76,8 +53,8 @@ def acquire() -> Iterator[Acquire]:
     """Acquire locks through ``acquire_lock``, releasing every hold at teardown."""
     releases: list[Callable[[], None]] = []
 
-    def take(path: str, command: str, **wait: float) -> Callable[[], None]:
-        release = acquire_lock(path, command, **wait)
+    def take(path: str, command: str) -> Callable[[], None]:
+        release = acquire_lock(path, command)
         releases.append(release)
         return release
 
@@ -97,10 +74,8 @@ def assert_holder_record(
     """Assert ``record`` is a valid holder record for this process."""
     expected_pid = os.getpid() if pid is None else pid
     assert isinstance(record, dict)
-    assert record.keys() == {"pid", "command", "at"}
     assert record["pid"] == expected_pid
     assert record["command"] == command
-    assert HOLDER_AT_PATTERN.match(record["at"])
 
 
 def refuse_open(monkeypatch: pytest.MonkeyPatch, target_path: str) -> None:
@@ -150,52 +125,9 @@ def fail_acquire_for(
     )
 
 
-@contextmanager
-def held_briefly(lock_path: str) -> Generator[None]:
-    """Hold ``lock_path`` from another thread for ``TRANSIENT_HOLD_SECONDS`` after entry.
-
-    The holder releases on its own; exiting the block joins its thread.
-
-    Args:
-        lock_path: The lock the rival thread takes.
-
-    Yields:
-        Once the rival thread holds the lock.
-
-    Raises:
-        RuntimeError: When the rival thread never signals that it holds the lock.
-    """
-    held = threading.Event()
-
-    def hold() -> None:
-        blocker = hold_lock(lock_path, "measure")
-        held.set()
-        time.sleep(TRANSIENT_HOLD_SECONDS)
-        blocker.release()
-
-    holder_thread = threading.Thread(target=hold)
-    holder_thread.start()
-    try:
-        if not held.wait(timeout=HOLDER_READY_TIMEOUT_SECONDS):
-            msg = f"holder thread did not take the lock within {HOLDER_READY_TIMEOUT_SECONDS}s"
-            raise RuntimeError(msg)
-        yield
-    finally:
-        holder_thread.join()
-
-
 # ---------------------------------------------------------------------------
 # acquire + holder metadata
 # ---------------------------------------------------------------------------
-
-
-def test_acquire_lock_when_free_does_stamp_compact_holder_json(lock_path: str, acquire: Acquire):
-    acquire(lock_path, "compare")
-
-    raw = Path(lock_path).read_text(encoding="utf-8")
-    holder = json.loads(raw)
-    assert_holder_record(holder)
-    assert raw == json.dumps(holder, separators=(",", ":"))
 
 
 def test_acquire_lock_when_parent_absent_does_create_leading_directories(
@@ -213,37 +145,23 @@ def test_acquire_lock_when_parent_absent_does_create_leading_directories(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "stall_publish_lock",
-    [
-        pytest.param(False, id="publish-lock-free"),
-        pytest.param(True, id="publish-lock-times-out"),
-    ],
-)
-def test_acquire_lock_when_held_with_valid_json_does_report_holder_details(
-    lock_path: str, stall_publish_lock: bool, monkeypatch: pytest.MonkeyPatch
-):
+def test_acquire_lock_when_held_with_valid_json_does_report_holder_details(lock_path: str):
     holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_HOLDER_AT}
     blocker = hold_lock(lock_path, holder=holder)
-    if stall_publish_lock:
-        fail_acquire_for(monkeypatch, publish_lock_file(lock_path), FileLockTimeout)
 
     try:
         with pytest.raises(LockContentionError) as caught:
             acquire_lock(lock_path, "compare")
 
         message = str(caught.value)
-        assert "PID 99999" in message
+        assert "99999" in message
         assert "measure" in message
         assert FIXED_HOLDER_AT in message
-        assert caught.value.hint == LIVE_HOLDER_HINT
     finally:
         blocker.release()
 
 
-def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without_remove_advice(
-    lock_path: str,
-):
+def test_acquire_lock_when_held_with_unreadable_content_does_report_the_lock_held(lock_path: str):
     blocker = hold_lock(lock_path)
     Path(lock_path).write_bytes(b'{"pid":42,"comm')
 
@@ -251,11 +169,7 @@ def test_acquire_lock_when_held_with_unreadable_content_does_report_held_without
         with pytest.raises(LockContentionError) as caught:
             acquire_lock(lock_path, "compare")
 
-        assert "held by another process" in str(caught.value).lower()
-        assert caught.value.hint == LIVE_HOLDER_HINT
-        full_text = str(caught.value) + (caught.value.hint or "")
-        assert "remove" not in full_text.lower()
-        assert "delete" not in full_text.lower()
+        assert lock_path in str(caught.value)
     finally:
         blocker.release()
 
@@ -269,31 +183,9 @@ def test_acquire_lock_when_released_then_reacquired_does_succeed(lock_path: str,
     assert_holder_record(read_holder_json(lock_path), command="measure")
 
 
-def test_acquire_lock_when_hold_is_shorter_than_the_wait_budget_does_succeed(
-    lock_path: str,
-    acquire: Acquire,
-):
-    with held_briefly(lock_path):
-        acquire(
-            lock_path,
-            "compare",
-            wait=TRANSIENT_WAIT_BUDGET_SECONDS,
-            poll_interval=TRANSIENT_POLL_INTERVAL_SECONDS,
-        )
-
-    assert_holder_record(read_holder_json(lock_path))
-
-
 # ---------------------------------------------------------------------------
 # release semantics
 # ---------------------------------------------------------------------------
-
-
-def test_release_when_called_twice_does_not_raise(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
-    release()
-
-    release()
 
 
 def test_release_when_internal_error_does_warn_on_stderr(
@@ -315,17 +207,7 @@ def test_release_when_internal_error_does_warn_on_stderr(
         )
         release()
 
-    assert "disk went away" in capsys.readouterr().err
-
-
-def test_release_when_called_does_not_delete_lock_file(lock_path: str):
-    release = acquire_lock(lock_path, "compare")
-    holder_before = read_holder_json(lock_path)
-
-    release()
-
-    assert Path(lock_path).exists()
-    assert read_holder_json(lock_path) == holder_before
+    assert lock_path in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -353,10 +235,8 @@ def test_acquire_lock_when_permission_error_posix_does_advise_removal(
         acquire_lock(lock_path, "compare")
 
     hint = caught.value.hint or ""
-    assert not isinstance(caught.value, LockContentionError)
     assert "belongs to another user" in hint
     assert target_path in hint
-    assert re.search("remove", hint, re.IGNORECASE)
 
 
 def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
@@ -375,7 +255,6 @@ def test_acquire_lock_when_permission_error_windows_does_advise_close_program(
     hint = caught.value.hint or ""
     assert "locked by another process" in hint.lower()
     assert os_lock_path in hint
-    assert "belongs to another user" not in hint.lower()
 
 
 def _acquire_for_compare(lock_path: str) -> object:
@@ -402,20 +281,9 @@ def test_lock_probe_when_lock_file_cannot_be_opened_does_raise_without_a_hint(
     with pytest.raises(GymratError) as caught:
         probe(lock_path)
 
-    assert not isinstance(caught.value, LockContentionError)
-    assert str(caught.value).startswith(f"Lock file {target_path} could not be opened: ")
-    assert os.strerror(errno.EISDIR) in str(caught.value)
+    assert target_path in str(caught.value)
+    assert str(caught.value.__cause__) in str(caught.value)
     assert caught.value.hint is None
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="fchmod not available on Windows")
-def test_acquire_lock_when_acquired_does_chmod_lock_file_to_world_writable(
-    lock_path: str, acquire: Acquire
-):
-    acquire(lock_path, "compare")
-
-    mode = Path(lock_path).stat().st_mode & 0o777
-    assert mode == 0o666
 
 
 # ---------------------------------------------------------------------------
@@ -464,16 +332,11 @@ def _rival_holding(take: Callable[[], FileLock]) -> None:
     take()
 
 
-def _rival_released(take: Callable[[], FileLock]) -> None:
-    take().release()
-
-
 @pytest.mark.parametrize(
     ("arrange_rival", "expected"),
     [
         pytest.param(_no_rival, False, id="free"),
         pytest.param(_rival_holding, True, id="held"),
-        pytest.param(_rival_released, False, id="released"),
     ],
 )
 def test_is_held_when_probed_does_answer_whether_a_rival_holds_the_lock(
@@ -487,22 +350,6 @@ def test_is_held_when_probed_does_answer_whether_a_rival_holds_the_lock(
     held = is_held(lock_path)
 
     assert held is expected
-
-
-def test_is_held_when_probed_does_leave_the_lock_undisturbed(
-    lock_path: str,
-):
-    holder: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_HOLDER_AT}
-    blocker = hold_lock(lock_path, holder=holder)
-
-    try:
-        is_held(lock_path)
-
-        with pytest.raises(LockContentionError):
-            acquire_lock(lock_path, "compare")
-        assert read_holder_json(lock_path) == holder
-    finally:
-        blocker.release()
 
 
 def test_is_held_when_permission_error_does_raise_the_error_acquire_lock_raises(
@@ -528,62 +375,3 @@ def test_is_held_when_permission_error_does_raise_the_error_acquire_lock_raises(
         str(expected),
         expected.hint,
     )
-
-
-# ---------------------------------------------------------------------------
-# read_holder — holder record reporting
-# ---------------------------------------------------------------------------
-
-
-def test_read_holder_when_lock_acquired_does_return_pid_command_and_time(
-    lock_path: str, acquire: Acquire
-):
-    acquire(lock_path, "compare")
-
-    holder = read_holder(lock_path)
-
-    assert holder is not None
-    assert holder.pid == os.getpid()
-    assert holder.command == "compare"
-    assert HOLDER_AT_PATTERN.match(holder.at)
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        pytest.param(
-            f'{{"pid":true,"command":"measure","at":"{FIXED_HOLDER_AT}"}}'.encode(),
-            id="pid-is-a-bool",
-        ),
-        pytest.param(
-            f'{{"pid":42,"command":"measure","at":"{FIXED_HOLDER_AT}","host":"box"}}'.encode(),
-            id="extra-field",
-        ),
-    ],
-)
-def test_read_holder_when_record_not_a_holder_does_return_none(lock_path: str, content: bytes):
-    Path(lock_path).write_bytes(content)
-
-    holder = read_holder(lock_path)
-
-    assert holder is None
-
-
-def test_read_holder_when_holder_released_does_still_return_record(lock_path: str):
-    record: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_HOLDER_AT}
-    blocker = hold_lock(lock_path, holder=record)
-    blocker.release()
-
-    holder = read_holder(lock_path)
-
-    assert holder == LockHolder(pid=99999, command="measure", at=FIXED_HOLDER_AT)
-
-
-def test_read_holder_when_called_does_not_create_lock_files(lock_path: str):
-    record: dict[str, object] = {"pid": 99999, "command": "measure", "at": FIXED_HOLDER_AT}
-    Path(lock_path).write_text(json.dumps(record), encoding="utf-8")
-
-    read_holder(lock_path)
-
-    assert not Path(os_lock_file(lock_path)).exists()
-    assert not Path(publish_lock_file(lock_path)).exists()

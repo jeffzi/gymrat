@@ -10,7 +10,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.utils import monotonic_ms
+from gymrat.utils import monotonic_ms, now_ms
 from tests._rich import Clock
 
 
@@ -31,6 +31,16 @@ def install_monotonic_clock(
         "gymrat.utils.monotonic_ms", create_autospec(monotonic_ms, side_effect=clock)
     )
     return clock
+
+
+def freeze_now_ms(monkeypatch: pytest.MonkeyPatch, at_ms: float) -> None:
+    """Stand ``gymrat.utils.now_ms`` still at ``at_ms``.
+
+    Args:
+        monkeypatch: The fixture the frozen clock is patched through.
+        at_ms: The wall-clock reading, in epoch milliseconds, every call returns.
+    """
+    monkeypatch.setattr("gymrat.utils.now_ms", create_autospec(now_ms, return_value=at_ms))
 
 
 @contextlib.contextmanager
@@ -68,10 +78,14 @@ _READS_PER_SLEEP_LIMIT = 100
 class WaitClock:
     """Stand-in for the process-group wait clock, advancing only when a wait sleeps.
 
-    Every sleep, blocking or async, is recorded in ``sleeps`` and moves ``now``
-    on by its length, then runs ``on_sleep``, so a test can change the world a
-    wait polls at a chosen sleep. A wait that reads the clock over and over
-    without sleeping through it fails at once instead of spinning.
+    A wait that reads the clock over and over without sleeping through it fails
+    at once instead of spinning.
+
+    Attributes:
+        now: The fake time in seconds, moved on by each sleep's length.
+        sleeps: The length of every sleep so far, blocking or async, in order.
+        on_sleep: Runs after each sleep, so a test can change the world a wait
+            polls at a chosen sleep.
     """
 
     now: float = 0.0

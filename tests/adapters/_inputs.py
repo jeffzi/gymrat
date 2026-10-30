@@ -12,70 +12,42 @@ import. :func:`build_tinybench_stdout` does the same for the
 entry to prove the adapter keeps parsing past it. :func:`task` and
 :data:`VALID_TASK` are their tinybench counterparts.
 
-:data:`LINE_BREAKS` lists every character ``str.splitlines`` breaks on, with the
-escape ``json.dumps`` writes for it. ``tests/adapters/test_mitata.py`` builds its
-per-character escape table from it.
-
-:data:`VALID_ADAPTERS_HINT` and :func:`unknown_adapter_message` are the hint and
-message ``get_adapter`` puts on an unknown-adapter error, shared by every test
-that surfaces that error. :func:`malformed_line_warning` is the warning the
-metric-lines adapter gives for a line it cannot read, shared by every test that
-sees that warning reach a sink. :data:`NULL_BENCHMARK_WARNING` is the warning the
-mitata adapter gives for a ``null`` benchmark entry, and :data:`NULL_TASK_WARNING`
-the one the tinybench adapter gives for a ``null`` task, shared the same way.
+:func:`unknown_adapter_error` and :func:`malformed_line_warning` ask the
+adapters themselves for the error ``get_adapter`` raises on an unknown name and
+the warning the metric-lines adapter gives for a line it cannot read. A test
+that only checks such an error or warning reaches its caller compares against
+them, so the wording stays pinned in the adapter tests alone.
 
 This is test-support code shared across test modules, not a test module. It
 carries no test functions of its own.
 """
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
-
-@dataclass(frozen=True, slots=True)
-class LineBreak:
-    """One character that ``str.splitlines`` breaks on, with its JSON-escaped form and test id."""
-
-    char: str
-    """The line-break character itself."""
-    escaped: str
-    """The escape ``json.dumps`` writes for ``char``, as a warning shows it."""
-    name: str
-    """A readable test id."""
+from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.adapters.registry import get_adapter
+from gymrat.errors import GymratError
 
 
-LINE_BREAKS = (
-    LineBreak("\n", r"\n", "line-feed"),
-    LineBreak("\r", r"\r", "carriage-return"),
-    LineBreak("\v", r"\u000b", "vertical-tab"),
-    LineBreak("\f", r"\f", "form-feed"),
-    LineBreak("\x1c", r"\u001c", "file-separator"),
-    LineBreak("\x1d", r"\u001d", "group-separator"),
-    LineBreak("\x1e", r"\u001e", "record-separator"),
-    LineBreak("\x85", r"\u0085", "next-line"),
-    LineBreak("\u2028", r"\u2028", "line-separator-u2028"),
-    LineBreak("\u2029", r"\u2029", "paragraph-separator-u2029"),
-)
-"""Every character ``str.splitlines`` breaks on.
-
-``utils.LINE_TERMINATORS`` must match exactly this set.
-"""
-
-VALID_ADAPTERS_HINT = "valid adapters are: metric-lines, mitata, tinybench"
-"""The hint on an unknown-adapter error, listing every built-in adapter."""
-
-
-def unknown_adapter_message(name: str) -> str:
-    """Return the message ``get_adapter`` raises for an unregistered adapter name.
+def unknown_adapter_error(name: str) -> GymratError:
+    """Return the error ``get_adapter`` raises for an unregistered adapter name.
 
     Args:
-        name: The adapter name that was looked up.
+        name: The adapter name to look up.
 
     Returns:
-        The error message naming ``name``.
+        The error ``get_adapter`` raised.
+
+    Raises:
+        AssertionError: When ``name`` is a registered adapter.
     """
-    return f'Unknown adapter: "{name}".'
+    try:
+        get_adapter(name)
+    except GymratError as error:
+        return error
+    msg = f"{name!r} is a registered adapter"
+    raise AssertionError(msg)
 
 
 def malformed_line_warning(line: str) -> str:
@@ -85,16 +57,12 @@ def malformed_line_warning(line: str) -> str:
         line: The offending stdout line.
 
     Returns:
-        The warning naming ``line``.
+        The single warning the adapter gives for ``line``.
     """
-    return f"Failed to parse METRIC line: {line}"
-
-
-NULL_BENCHMARK_WARNING = "Skipping benchmark: expected an object, got null"
-"""The warning the mitata adapter gives for a ``null`` benchmark entry."""
-
-NULL_TASK_WARNING = "Skipping task: expected an object, got null"
-"""The warning the tinybench adapter gives for a ``null`` task."""
+    warnings: list[str] = []
+    metric_lines_adapter.parse(f"{line}\nMETRIC valid=1", warnings.append)
+    (warning,) = warnings
+    return warning
 
 
 def build_stdout(benchmarks: list[Any]) -> str:

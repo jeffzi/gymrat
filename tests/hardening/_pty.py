@@ -23,6 +23,31 @@ termios = pytest.importorskip("termios", reason="POSIX-only pty")
 # Seconds the reader thread is given to see end-of-file once the capture closes.
 _READER_JOIN_S = 10
 
+#: The ``(rows, columns)`` a pty reports, so Rich in the child draws at a known
+#: geometry rather than the 0x0 an unsized pty reports.
+PTY_SIZE = (24, 80)
+
+
+def pty_env(base: dict[str, str]) -> dict[str, str]:
+    """A child environment sealed from the developer's terminal for a pty run.
+
+    Rich reads ``COLUMNS`` and ``LINES`` ahead of the pty's own window size, and
+    an inherited ``TERM=dumb`` stops it drawing at all, so those are dropped and
+    ``TERM`` is pinned to a capable terminal. ``COLORTERM`` is dropped so the
+    developer's terminal does not raise the color depth, and the fault handler
+    stays on, as in every spawned run.
+
+    Args:
+        base: The environment to adjust; it is not modified.
+
+    Returns:
+        A copy of ``base`` with the terminal variables adjusted.
+    """
+    env = {**base, "PYTHONFAULTHANDLER": "1", "TERM": "xterm-256color"}
+    for name in ("COLUMNS", "LINES", "COLORTERM"):
+        env.pop(name, None)
+    return env
+
 
 @dataclasses.dataclass(slots=True)
 class PtyCapture:

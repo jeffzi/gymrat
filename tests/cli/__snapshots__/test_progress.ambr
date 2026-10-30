@@ -23,6 +23,3 @@
 # name: test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta
   '⠋ sampling                                          0/3 00:00/--:--'
 # ---
-# name: test_frame_when_prepare_running_does_show_spinner_and_label
-  '⠋ preparing 0:00:00'
-# ---

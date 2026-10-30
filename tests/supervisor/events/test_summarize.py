@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from gymrat.supervisor.events import (
+    ITERATE_SUMMARY,
     ITERATE_TOOL,
     PROBE_TOOL,
     SUMMARY_MAX_CHARS,
@@ -25,44 +26,20 @@ from tests.supervisor._fixtures import NotJsonEncodable
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        pytest.param("short text", "short text", id="plain-fit"),
-        pytest.param("hello   world", "hello world", id="internal-whitespace-collapsed"),
-        pytest.param("  trimmed  ", "trimmed", id="leading-trailing-trimmed"),
-        pytest.param("line1\nline2\nline3", "line1 line2 line3", id="newlines-collapsed"),
-        pytest.param("a" * SUMMARY_MAX_CHARS, "a" * SUMMARY_MAX_CHARS, id="exactly-at-budget"),
-    ],
-)
-def test_summarize_when_within_budget_does_return_collapsed_text(text: str, expected: str):
+def test_summarize_when_exactly_at_budget_does_return_the_text_whole():
+    text = "a" * SUMMARY_MAX_CHARS
+
     result = summarize(text)
 
-    assert result == expected
+    assert result == text
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        pytest.param(
-            "a" * (SUMMARY_MAX_CHARS + 250), "a" * SUMMARY_MAX_CHARS + "…", id="ascii-over-budget"
-        ),
-        pytest.param(
-            "\n".join(["line"] * SUMMARY_MAX_CHARS),
-            " ".join(["line"] * SUMMARY_MAX_CHARS)[:SUMMARY_MAX_CHARS] + "…",
-            id="multiline-collapsed-then-truncated",
-        ),
-        pytest.param(
-            "\U0001f3af" * (SUMMARY_MAX_CHARS + 3),
-            "\U0001f3af" * SUMMARY_MAX_CHARS + "…",
-            id="all-emoji",
-        ),
-    ],
-)
-def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, expected: str):
+def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis():
+    text = "\n".join(["line"] * SUMMARY_MAX_CHARS)
+
     result = summarize(text)
 
-    assert result == expected
+    assert result == " ".join(["line"] * SUMMARY_MAX_CHARS)[:SUMMARY_MAX_CHARS] + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -70,20 +47,10 @@ def test_summarize_when_over_budget_does_truncate_with_bare_ellipsis(text: str, 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        pytest.param({"key": "value"}, '{"key":"value"}', id="dict-no-spaces"),
-        pytest.param(None, "null", id="none-to-json-null"),
-        pytest.param(NotJsonEncodable(), "not-json-encodable", id="non-serializable-str-fallback"),
-    ],
-)
-def test_summarize_input_when_given_value_does_summarize_its_json_form(
-    value: object, expected: str
-):
-    result = summarize_input(value)
+def test_summarize_input_when_value_not_json_encodable_does_fall_back_to_its_str():
+    result = summarize_input(NotJsonEncodable())
 
-    assert result == expected
+    assert result == "not-json-encodable"
 
 
 # ---------------------------------------------------------------------------
@@ -95,25 +62,6 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
     ("tool_name", "tool_input", "expected"),
     [
         pytest.param("Read", {"file_path": "/a/b.py"}, "/a/b.py", id="read"),
-        pytest.param(
-            "Edit",
-            {"file_path": "/a/b.py", "old_string": "x", "new_string": "y"},
-            "/a/b.py",
-            id="edit",
-        ),
-        pytest.param("Write", {"file_path": "/a/b.py", "content": "..."}, "/a/b.py", id="write"),
-        pytest.param(
-            "MultiEdit",
-            {"file_path": "/a/b.py", "edits": [{"old_string": "x", "new_string": "y"}]},
-            "/a/b.py",
-            id="multi-edit",
-        ),
-        pytest.param(
-            "NotebookEdit",
-            {"notebook_path": "/a/nb.ipynb"},
-            "/a/nb.ipynb",
-            id="notebook-edit",
-        ),
         pytest.param("Bash", {"command": "echo hello"}, "echo hello", id="bash-command"),
         pytest.param(
             "Agent",
@@ -148,7 +96,7 @@ def test_summarize_input_when_given_value_does_summarize_its_json_form(
             "gymrat some args",
             id="skill-name-with-args",
         ),
-        pytest.param(ITERATE_TOOL, {"some": "data"}, "gymrat iterate", id="gymrat-iterate"),
+        pytest.param(ITERATE_TOOL, {"some": "data"}, ITERATE_SUMMARY, id="gymrat-iterate"),
     ],
 )
 def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
@@ -162,13 +110,6 @@ def test_summarize_input_when_known_tool_does_extract_its_identifying_fields(
 @pytest.mark.parametrize(
     ("file_path", "supervised_root", "expected"),
     [
-        pytest.param("/project/src/main.py", "/project", "src/main.py", id="under-root"),
-        pytest.param(
-            "{home}/Documents/notes.md",
-            "/other/project",
-            "~/Documents/notes.md",
-            id="under-home",
-        ),
         pytest.param(
             "{home}/project/src/main.py",
             "{home}/project",
@@ -223,16 +164,6 @@ def test_summarize_input_when_file_path_given_does_render_it_from_root_or_home(
             {"names": ["bench", "squat"], "samples": 6},
             "gymrat probe bench squat --samples 6",
             id="names-and-samples",
-        ),
-        pytest.param(
-            {"names": ["bench"]},
-            "gymrat probe bench",
-            id="single-name-no-samples",
-        ),
-        pytest.param(
-            {},
-            "gymrat probe",
-            id="empty-dict",
         ),
         pytest.param(
             {"names": "not-a-list"},

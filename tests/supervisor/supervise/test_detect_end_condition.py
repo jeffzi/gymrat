@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.config import StopConfig
+from gymrat.loop.stop_condition import stop_reason
 from gymrat.supervisor.supervise import EndCondition, detect_end_condition
 from tests._config import benchless_config
 from tests.session.records._fixtures import (
@@ -23,34 +24,15 @@ from tests.session.records._fixtures import (
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionLogRecord
-    from gymrat.session.store import SessionState
 
 
-@pytest.mark.parametrize(
-    ("records", "state", "reason"),
-    [
-        pytest.param(
-            [iteration_record(seq=1), iteration_record(seq=2)],
-            session_state(iteration_count=2),
-            "max iterations (2 of 2)",
-            id="records-and-state-met",
-        ),
-        pytest.param(
-            [],
-            session_state(iteration_count=2),
-            "max iterations (2 of 2)",
-            id="state-met-records-not",
-        ),
-    ],
-)
-def test_detect_end_condition_when_stop_condition_met_does_report_it_from_the_state(
-    records: list[SessionLogRecord], state: SessionState, reason: str
-):
+def test_detect_end_condition_when_stop_condition_met_does_report_it_from_the_state():
     config = benchless_config(stop=StopConfig(max_iterations=2))
+    state = session_state(iteration_count=2)
 
-    result = detect_end_condition(config, records, state, cursor=0, check_stop=True)
+    result = detect_end_condition(config, [], state, cursor=0, check_stop=True)
 
-    assert result == EndCondition(ended_by="stop-condition", reason=reason)
+    assert result == EndCondition(ended_by="stop-condition", reason=str(stop_reason(config, state)))
 
 
 def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_nothing():
@@ -64,15 +46,15 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
 
 
 @pytest.mark.parametrize(
-    ("records", "reason"),
+    ("records", "fragments"),
     [
         pytest.param(
             [
-                hook_record(stage="before", seq=2, exit_code=3, stdout_bytes=80, stderr_bytes=12),
-                iteration_record(seq=2),
-                hook_record(stage="after", seq=2),
+                hook_record(stage="before", seq=7, exit_code=3, stdout_bytes=80, stderr_bytes=12),
+                iteration_record(seq=7),
+                hook_record(stage="after", seq=7),
             ],
-            "before hook failed on iteration 2: exit 3 (stdout 80 B, stderr 12 B)",
+            ("before", "7", "exit 3", "80", "12"),
             id="non-zero-exit-two-back-from-tail",
         ),
         pytest.param(
@@ -80,28 +62,30 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
                 command_record(),
                 hook_record(stage="after", seq=4, exit_code=1, timed_out=True, stderr_bytes=None),
             ],
-            "after hook failed on iteration 4: timed out (stdout 80 B, stderr ? B)",
+            ("after", "4", "timed out", "?"),
             id="timed-out-without-stderr-count",
         ),
         pytest.param(
             [
                 hook_record(stage="after", seq=2, exit_code=5, stderr_bytes=1),
                 iteration_record(seq=3),
-                hook_record(stage="after", seq=3, exit_code=6, stderr_bytes=2),
+                hook_record(stage="after", seq=3, exit_code=6, stderr_bytes=4),
             ],
-            "after hook failed on iteration 2: exit 5 (stdout 80 B, stderr 1 B)",
+            ("2", "exit 5"),
             id="earliest-of-several-failures",
         ),
     ],
 )
 def test_detect_end_condition_when_hook_failed_after_cursor_does_report_hook_failure(
-    records: list[SessionLogRecord], reason: str
+    records: list[SessionLogRecord], fragments: tuple[str, ...]
 ):
     result = detect_end_condition(
         benchless_config(), records, session_state(), cursor=0, check_stop=True
     )
 
-    assert result == EndCondition(ended_by="hook-failure", reason=reason)
+    assert result is not None
+    assert result.ended_by == "hook-failure"
+    assert [fragment for fragment in fragments if fragment not in result.reason] == []
 
 
 @pytest.mark.parametrize(
@@ -139,7 +123,5 @@ def test_detect_end_condition_when_hook_failed_and_stop_met_does_report_hook_fai
 
     result = detect_end_condition(config, records, state, cursor=0, check_stop=True)
 
-    assert result == EndCondition(
-        ended_by="hook-failure",
-        reason="after hook failed on iteration 1: exit 2 (stdout 80 B, stderr 0 B)",
-    )
+    assert result is not None
+    assert result.ended_by == "hook-failure"

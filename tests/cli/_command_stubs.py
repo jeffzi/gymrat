@@ -14,7 +14,7 @@ import pytest
 
 from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.compare import compare
-from gymrat.config import KindEntry, MetricEntry, ResolvedConfig, resolve_config
+from gymrat.config import ResolvedConfig, resolve_config
 from gymrat.measure import MeasureOptions
 from gymrat.progress_events import ProgressEvent
 from gymrat.report.types import ComparisonResult, MeasurementResult
@@ -34,16 +34,7 @@ MEASURE_CONFIG = resolved_config(
 
 
 #: The config the stubbed ``compare`` command resolves; its fake engine never benches against it.
-COMPARE_CONFIG = resolved_config(
-    bench="sh bench.sh",
-    prepare="npm ci",
-    samples=5,
-    timeout_seconds=30,
-    unstable_noise_pct=2.0,
-    primary="time",
-    metrics={"decode/time": MetricEntry(direction="higher")},
-    kinds={"memory": KindEntry(gating=False)},
-)
+COMPARE_CONFIG = resolved_config(bench="sh bench.sh")
 
 
 def stub_config(
@@ -111,7 +102,15 @@ def capture_measure(
 def stub_measure(
     monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
 ) -> list[MeasureOptions]:
-    """Stub both config resolution and the ``measure`` seam; return captured options."""
+    """Stub both config resolution and the ``measure`` seam.
+
+    Args:
+        monkeypatch: The fixture that installs the fakes.
+        result: What the fake hands back; a default clean run when ``None``.
+
+    Returns:
+        The options each call to the fake ``measure`` received, in call order.
+    """
     stub_resolve(monkeypatch)
     return capture_measure(monkeypatch, result)
 

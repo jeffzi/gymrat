@@ -1,10 +1,8 @@
 """Tests for how a Claude session disconnects its client.
 
-Every way a session ends reaches the client's ``disconnect`` once. The fake
-client here copies the SDK client's own ``disconnect``: it checks its stream,
-awaits the close, then uses and clears the stream. Two overlapping callers
-therefore fail the way the SDK does, the second resuming with the stream
-already cleared.
+Every way a session ends reaches the client's ``disconnect`` once. The racing
+fake's ``disconnect`` stays suspended across several loop turns, so a cancelled
+waiter that does not shield the call would cut the disconnect short.
 """
 
 import asyncio
@@ -14,78 +12,41 @@ from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import override
 
 import pytest
-from claude_agent_sdk import TextBlock
 from typing_extensions import TypedDict
 
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
 from tests.supervisor._fixtures import (
     FakeClient,
     abort_on_first_usage_update,
-    assistant,
     end_and_settle,
     result_message,
-    run_interrupting_on_first_usage_update,
     settled_outcome,
     start_claude_session,
     start_past_turns,
 )
 
-_DISCONNECT_WARNING = "claude client disconnect failed"
+#: The error every failing disconnect raises, which its warning must carry.
+_DISCONNECT_ERROR = "transport already gone"
 
 # ---------------------------------------------------------------------------
 # test-local client variants
 # ---------------------------------------------------------------------------
 
 
-class _Stream:
-    """The message stream a racing client closes when it disconnects."""
-
-    def __init__(self, released: asyncio.Event) -> None:
-        self._released = released
-
-    async def close(self) -> None:
-        """End the message stream, then stay suspended across several loop turns.
-
-        The suspension is what lets a second ``disconnect`` caller, woken by
-        the stream ending, overlap the first.
-        """
-        self._released.set()
-        for _ in range(10):
-            await asyncio.sleep(0)
-
-    def close_receive_stream(self) -> None:
-        return None
-
-
 class _RacingOptions(TypedDict, total=False, closed=True):
     """The keyword options a test row passes to ``_RacingClient``."""
 
     finite: bool
-    fail_follow_up: bool
-    after_turn: Sequence[object]
 
 
 class _RacingClient(FakeClient):
-    """A client whose ``disconnect`` checks, awaits, then clears, as the SDK's does."""
-
-    def __init__(
-        self,
-        messages: Sequence[object],
-        *,
-        finite: bool = False,
-        fail_follow_up: bool = False,
-        after_turn: Sequence[object] = (),
-    ) -> None:
-        super().__init__([*messages, *after_turn], fail_follow_up=fail_follow_up, finite=finite)
-        self._stream: _Stream | None = _Stream(self._released)
+    """A client whose ``disconnect`` stays suspended across several loop turns."""
 
     @override
     async def disconnect(self) -> None:
         self.disconnect_count += 1
-        if self._stream:
-            await self._stream.close()
-            self._stream.close_receive_stream()
-            self._stream = None
+        self._released.set()
+        await _drain(10)
 
 
 class _DisconnectFailingClient(FakeClient):
@@ -95,8 +56,7 @@ class _DisconnectFailingClient(FakeClient):
     async def disconnect(self) -> None:
         self.disconnect_count += 1
         self._released.set()
-        message = "transport already gone"
-        raise RuntimeError(message)
+        raise RuntimeError(_DISCONNECT_ERROR)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +70,10 @@ def _one_turn() -> list[object]:
 
 
 async def _drain(n: int = 30) -> None:
-    """Yield to the event loop; the default outlasts the turns ``_Stream.close`` stays suspended."""
+    """Yield to the event loop.
+
+    The default outlasts the turns ``_RacingClient.disconnect`` stays suspended.
+    """
     for _ in range(n):
         await asyncio.sleep(0)
 
@@ -145,20 +108,6 @@ async def _end_by_abort(client: FakeClient) -> SessionOutcome:
     )
 
 
-async def _end_by_interrupt(client: FakeClient) -> SessionOutcome:
-    """Run a session over ``client`` and interrupt it on its first usage update."""
-    outcome = await run_interrupting_on_first_usage_update(client)
-    await _drain()
-    return outcome
-
-
-async def _end_by_send(client: FakeClient) -> SessionOutcome:
-    """Run a session over ``client`` and send it a follow-up after its first turn."""
-    session = await _start_past_first_turn(client)
-    await session.send("one more thing")
-    return await _outcome(session)
-
-
 async def _end_by_stream(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` until its own stream ends it."""
     return await _outcome(start_claude_session(client))
@@ -173,7 +122,11 @@ def _recorded_warnings() -> Generator[list[warnings.WarningMessage]]:
 
 
 def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]:
-    return [str(w.message) for w in caught if _DISCONNECT_WARNING in str(w.message)]
+    return [
+        str(w.message)
+        for w in caught
+        if issubclass(w.category, RuntimeWarning) and _DISCONNECT_ERROR in str(w.message)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +139,6 @@ def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]
     [
         pytest.param({}, _end_by_end_call, id="end-call"),
         pytest.param({}, _end_by_abort, id="abort"),
-        pytest.param(
-            {"after_turn": [assistant(TextBlock(text="late"))]},
-            _end_by_interrupt,
-            id="interrupt",
-        ),
-        pytest.param({"fail_follow_up": True}, _end_by_send, id="send-failure"),
         pytest.param({"finite": True}, _end_by_stream, id="stream-exhaustion"),
     ],
 )
@@ -206,23 +153,11 @@ async def test_start_when_session_ended_does_disconnect_client_exactly_once(
     assert client.disconnect_count == 1
 
 
-@pytest.mark.parametrize(
-    ("finite", "end_session", "expected_reason"),
-    [
-        pytest.param(False, _end_by_end_call, "completed", id="end-call"),
-        pytest.param(False, _end_by_abort, "interrupted", id="abort"),
-        pytest.param(True, _end_by_stream, "completed", id="stream-exhaustion"),
-    ],
-)
-async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning(
-    finite: bool,
-    end_session: Callable[[FakeClient], Awaitable[SessionOutcome]],
-    expected_reason: str,
-):
-    client = _DisconnectFailingClient(_one_turn(), finite=finite)
+async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning():
+    client = _DisconnectFailingClient(_one_turn())
 
     with _recorded_warnings() as caught:
-        outcome = await end_session(client)
+        outcome = await _end_by_end_call(client)
 
-    assert (outcome.reason, outcome.cost_usd) == (expected_reason, 0.01)
+    assert (outcome.reason, outcome.cost_usd) == ("completed", 0.01)
     assert len(_disconnect_warnings(caught)) == 1

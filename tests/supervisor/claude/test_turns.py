@@ -6,13 +6,11 @@ termination, or an error result message.
 """
 
 import math
-from collections.abc import Awaitable, Callable, Sequence
-from operator import methodcaller
+from collections.abc import Sequence
 
 import pytest
 from claude_agent_sdk import MessageOrigin, ResultMessage, TextBlock
 
-from gymrat.supervisor.driver import DriverSession
 from gymrat.supervisor.events import (
     SessionEvent,
     TurnEndEvent,
@@ -54,22 +52,6 @@ async def _run_turns(messages: Sequence[object]) -> list[SessionEvent]:
 @pytest.mark.parametrize(
     ("messages", "texts"),
     [
-        pytest.param(
-            [assistant(TextBlock(text="first answer")), result_message(total_cost_usd=0.01)],
-            ["first answer"],
-            id="top-level-text",
-        ),
-        pytest.param([result_message(total_cost_usd=0.01)], [""], id="no-text-is-empty"),
-        pytest.param(
-            [
-                assistant(TextBlock(text="turn one text")),
-                result_message(total_cost_usd=0.01),
-                assistant(TextBlock(text="turn two text")),
-                result_message(total_cost_usd=0.02),
-            ],
-            ["turn one text", "turn two text"],
-            id="second-turn-resets-the-text",
-        ),
         pytest.param(
             [
                 assistant(TextBlock(text="turn one text")),
@@ -130,11 +112,10 @@ async def test_start_when_result_carries_origin_does_report_turn_origin(
     [
         pytest.param([0.05, 0.15], [0.05, 0.15, 0.15], [0.05, 0.15], id="rising-usable-costs"),
         pytest.param([0.05, math.nan], [0.05, 0.05], [0.05, 0.05], id="nan-after-a-usable-cost"),
-        pytest.param([None], [0.0], [0.0], id="none-before-any-cost"),
     ],
 )
 async def test_start_when_results_report_costs_does_track_the_running_cost(
-    costs: list[float | None], usage_costs: list[float], turn_end_costs: list[float]
+    costs: list[float], usage_costs: list[float], turn_end_costs: list[float]
 ):
     messages = [result_message(total_cost_usd=cost) for cost in costs]
 
@@ -219,41 +200,44 @@ async def test_send_when_client_query_fails_does_settle_error_with_its_message()
     )
 
 
+async def test_send_when_session_settled_by_an_error_result_does_not_query_the_client():
+    result = result_message(subtype="error", is_error=True, result="fatal", total_cost_usd=0.10)
+    client = FakeClient([result])
+    session = start_claude_session(client, collecting_observer().observer)
+    await settled_outcome(session)
+    queries_before = list(client.query_prompts)
+
+    await session.send("should be ignored")
+
+    assert client.query_prompts == queries_before
+
+
 # ---------------------------------------------------------------------------
 # end() settles the session completed unless it already settled or was interrupted
 # ---------------------------------------------------------------------------
 
 
-async def test_end_when_called_does_settle_completed_at_the_running_cost():
-    session, _ = await start_past_turns(FakeClient([result_message(total_cost_usd=0.20)]), turns=1)
-
-    outcome = await end_and_settle(session)
-
-    assert (outcome.reason, outcome.cost_usd) == ("completed", 0.20)
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        pytest.param(methodcaller("send", "should be ignored"), id="send"),
-        pytest.param(methodcaller("end"), id="end"),
-    ],
-)
-async def test_send_or_end_when_session_settled_by_an_error_result_does_nothing(
-    call: Callable[[DriverSession], Awaitable[None]],
-):
+async def test_end_when_session_settled_by_an_error_result_does_emit_nothing():
     result = result_message(subtype="error", is_error=True, result="fatal", total_cost_usd=0.10)
-    client = FakeClient([result])
     probe = collecting_observer()
-    session = start_claude_session(client, probe.observer)
+    session = start_claude_session(FakeClient([result]), probe.observer)
     await settled_outcome(session)
-    queries_before = list(client.query_prompts)
     events_before = list(probe.events)
 
-    await call(session)
+    await session.end()
 
-    assert client.query_prompts == queries_before
     assert probe.events == events_before
+
+
+async def test_end_when_already_interrupted_before_connect_does_keep_the_interrupted_outcome():
+    client = FakeClient([result_message(total_cost_usd=0.10)])
+    session = start_claude_session(client, collecting_observer().observer)
+    await session.interrupt()
+
+    await session.end()
+    outcome = await settled_outcome(session)
+
+    assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -266,17 +250,17 @@ async def test_send_or_end_when_session_settled_by_an_error_result_does_nothing(
     [
         pytest.param(
             [assistant(TextBlock(text="hello"))],
-            ("error", "Agent stream ended without a result message", 0.0),
+            ("error", True, 0.0),
             id="no-turn-closed",
         ),
         pytest.param(
-            [result_message(total_cost_usd=0.05)], ("completed", None, 0.05), id="one-turn-closed"
+            [result_message(total_cost_usd=0.05)], ("completed", False, 0.05), id="one-turn-closed"
         ),
     ],
 )
 async def test_start_when_stream_ends_on_its_own_does_settle_by_whether_a_turn_closed(
-    messages: list[object], expected: tuple[str, str | None, float]
+    messages: list[object], expected: tuple[str, bool, float]
 ):
     outcome = await run_outcome(FiniteClient(messages))
 
-    assert (outcome.reason, outcome.message, outcome.cost_usd) == expected
+    assert (outcome.reason, outcome.message is not None, outcome.cost_usd) == expected

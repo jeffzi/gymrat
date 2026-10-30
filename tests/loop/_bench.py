@@ -78,20 +78,11 @@ def tune_experiment(repo: str, latency: int) -> None:
     (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
 
 
-#: A rerun template that scopes the bench to the metric names it is given.
-#: The bench script ignores the extra arguments, so a scoped run measures the
-#: same metric a whole run does.
-FILTER_TEMPLATE = f"{sys.executable} {BENCH_FILE} --filter {{names}}"
-
-
-def config_text(*, samples: int = 5, filter_template: str | None = None) -> str:
+def config_text(*, samples: int = 5) -> str:
     """Render the ``gymrat.toml`` a bench project runs under.
 
     Args:
         samples: Paired samples per target the config asks for.
-        filter_template: Rerun template that scopes the bench to named metrics,
-            or None to leave the project without one — a probe given names then
-            has no way to narrow the bench.
 
     Returns:
         The rendered TOML text.
@@ -102,8 +93,6 @@ def config_text(*, samples: int = 5, filter_template: str | None = None) -> str:
         "samples": samples,
         "timeout_seconds": 120,
     }
-    if filter_template is not None:
-        config["filter"] = filter_template
     return tomli_w.dumps(config)
 
 
@@ -112,7 +101,6 @@ def commit_project(
     *,
     samples: int = 5,
     gate_file: str | None = None,
-    filter_template: str | None = None,
 ) -> None:
     """Commit the bench script, config, and gitignore into ``repo_dir``.
 
@@ -126,13 +114,11 @@ def commit_project(
         samples: Paired samples per target the committed config asks for.
         gate_file: Path the bench waits for before measuring, or None to
             measure straight away.
-        filter_template: Rerun template the committed config carries, or None
-            to commit a project without one.
     """
     files = {
         ".gitignore": ".gymrat/\n",
         BENCH_FILE: bench_script(gate_file),
-        "gymrat.toml": config_text(samples=samples, filter_template=filter_template),
+        "gymrat.toml": config_text(samples=samples),
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")

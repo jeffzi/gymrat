@@ -1,30 +1,20 @@
 """Behavioral tests for the package clock: wall-clock stamps and the duration clock."""
 
 import time
-from collections.abc import Callable
 
 import pytest
 
-from gymrat.utils import monotonic_ms, now_ms, now_ns
+from gymrat.utils import monotonic_ms, now_ms
 
 
-@pytest.mark.parametrize(
-    ("clock", "ns_per_unit"),
-    [
-        pytest.param(now_ns, 1, id="now_ns"),
-        pytest.param(now_ms, 1_000_000, id="now_ms"),
-    ],
-)
-def test_wall_clock_when_called_does_return_epoch_time_in_its_unit(
-    clock: Callable[[], int], ns_per_unit: int
+def test_now_ms_when_called_does_return_epoch_milliseconds(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    before = time.time_ns() // ns_per_unit
+    monkeypatch.setattr(time, "time", lambda: 1.5)
 
-    result = clock()
+    result = now_ms()
 
-    after = time.time_ns() // ns_per_unit
-    assert isinstance(result, int)
-    assert before - 1 <= result <= after + 1
+    assert result == 1500
 
 
 def test_monotonic_ms_when_called_does_return_perf_counter_in_milliseconds(

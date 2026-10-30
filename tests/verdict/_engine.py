@@ -31,18 +31,11 @@ METRIC_EXACT_HIGHER = {"metric": meta_of("higher", exact=True)}
 METRIC_APPROX_LOWER = {"metric": meta_of("lower")}
 METRIC_APPROX_HIGHER = {"metric": meta_of("higher")}
 METRIC_BYTES_LOWER = {"metric": meta_of("lower", unit="bytes", resolution=1.0)}
-METRIC_BYTES_HIGHER = {"metric": meta_of("higher", unit="bytes", resolution=1.0)}
-METRIC_NS_LOWER = {"metric": meta_of("lower", unit="ns")}
-METRIC_BYTES_NO_RESOLUTION_LOWER = {"metric": meta_of("lower", unit="bytes")}
-METRIC_EXACT_BYTES_LOWER = {"metric": meta_of("lower", exact=True, unit="bytes", resolution=1.0)}
 
 # A 24 MHz timer read in whole nanoseconds: one tick is 41.67 ns, so readings land
 # 41 or 42 ns apart.
 TIMER_TICK_NS = 41.67
 METRIC_TIMER_LOWER = {"metric": meta_of("lower", unit="ns", resolution=TIMER_TICK_NS)}
-METRIC_EXACT_TIMER_LOWER = {
-    "metric": meta_of("lower", exact=True, unit="ns", resolution=TIMER_TICK_NS)
-}
 
 
 def noop_warn(_message: str) -> None:
@@ -96,10 +89,6 @@ NOISY_PERMUTATION_B = samples(40.0, 45.0, 50.0, 50.0, 55.0, 60.0)
 # Enough identical rounds to stay on the permutation path with p well below 0.05.
 FLAT_PERMUTATION_ROUNDS = 10
 
-# Two paired windows noisy enough to reach noise_pct = 30 on the band path.
-NOISY_BAND_A = samples(80.0, 120.0)
-NOISY_BAND_B = samples(8.0, 12.0)
-
 # Six windows whose medians are 4 vs 3 bytes — a one-byte move (delta -25%) —
 # that every pair shows, so the sign-flip null makes it significant
 # (p = 0.03125). The 1.25-step resolution floor, not the p-value, is what
@@ -115,6 +104,10 @@ DIRECTION_MISMATCH_B = create_samples(4, 9.0) + samples(9.5) + create_samples(5,
 # A subnormal baseline: any finite move divided by it overflows the percentage
 # delta to infinity.
 SUBNORMAL_BASELINE = 5e-324
+
+# A subnormal median: any spread (or the one-byte floor) divided by it overflows
+# to infinity.
+OVERFLOWING_MEDIAN = 1e-310
 
 # Two six-window groups where every pair moves the same way: the sign-flip null
 # makes the shift significant (p = 0.03125) in either pairing direction.

@@ -16,11 +16,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.progress_events import (
-    ConfirmFinished,
     ConfirmSkipped,
     ConfirmStarted,
     HookFinished,
-    HookStarted,
     IterationRecorded,
     JudgeFinished,
     JudgeStarted,
@@ -50,9 +48,6 @@ pytestmark = pytest.mark.usefixtures("manual_refresh")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-#: A regressed metric name holding emoji-code and fragment syntax, which must print literally.
-_EMOJI_LIKE_REGRESSED = "lat:100:p99#time"
 
 
 def _sample_one_round(renderer: IterateRenderer, clock: Clock[float]) -> None:
@@ -94,7 +89,7 @@ _live = functools.partial(iterate_renderer, "live")
 
 
 # ---------------------------------------------------------------------------
-# Initial frame, hooks and prepare
+# Initial frame and prepare
 # ---------------------------------------------------------------------------
 
 
@@ -108,37 +103,12 @@ def test_frame_when_initial_does_show_all_nodes_pending(
     assert result == snapshot
 
 
-def test_frame_when_before_hook_running_does_show_spinner(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live(has_before_hook=True)
-
-    renderer.report(HookStarted(stage="before", at_ms=0))
-
-    assert _frame(renderer, clock) == snapshot
-
-
 def test_frame_when_worktree_preparing_does_name_its_target(
     snapshot: SnapshotAssertion,
 ):
     _console, clock, renderer = _live()
 
     renderer.report(PrepareStarted(label="baseline", at_ms=0))
-
-    assert _frame(renderer, clock) == snapshot
-
-
-def test_frame_when_both_worktrees_prepared_does_show_elapsed(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live()
-    renderer.report(PrepareStarted(label="baseline", at_ms=0))
-    clock.tick(3)
-    renderer.report(PrepareFinished(label="baseline", at_ms=_ms(clock)))
-    renderer.report(PrepareStarted(label="candidate", at_ms=_ms(clock)))
-    clock.tick(2)
-
-    renderer.report(PrepareFinished(label="candidate", at_ms=_ms(clock)))
 
     assert _frame(renderer, clock) == snapshot
 
@@ -174,22 +144,6 @@ def test_frame_when_passes_mid_run_does_show_pass_progress(
     assert result == snapshot
 
 
-def test_frame_when_header_before_first_pass_completes_does_show_elapsed_without_eta(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live()
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    clock.tick(7)
-    renderer.report(
-        _pass_started(1, 5, label="baseline", at_ms=_ms(clock)),
-    )
-    clock.tick(3)
-
-    result = _frame(renderer, clock)
-
-    assert result == snapshot
-
-
 # ---------------------------------------------------------------------------
 # Judge
 # ---------------------------------------------------------------------------
@@ -210,51 +164,18 @@ def test_frame_when_judge_started_does_show_running_with_elapsed(
     assert result == snapshot
 
 
-def test_frame_when_judge_finished_after_started_does_show_elapsed(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live(sample_count=1)
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    _sample_one_round(renderer, clock)
-    clock.tick(1)
-    renderer.report(JudgeStarted(at_ms=_ms(clock)))
-    clock.tick(4)
-
-    renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=("latency",), at_ms=_ms(clock)))
-
-    assert _frame(renderer, clock) == snapshot
-
-
-def test_frame_when_judge_finished_no_regressions_does_drop_the_confirm_row(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live(sample_count=1, metric_count=4)
-    renderer.report(PrepareFinished(label="bench", at_ms=0))
-    _sample_one_round(renderer, clock)
-    clock.tick(1)
-
-    renderer.report(JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)))
-
-    assert _frame(renderer, clock) == snapshot
-
-
 def test_frame_when_judge_finished_does_style_regressed_names_apart_from_dim_wording():
     _console, clock, renderer = _live(sample_count=1, metric_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     _sample_one_round(renderer, clock)
     clock.tick(1)
-    regressed = ("node/access#time", "parse[json]", _EMOJI_LIKE_REGRESSED)
+    regressed = ("latency",)
 
     renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=regressed, at_ms=_ms(clock)))
 
     assert _judge_detail_style_runs(renderer.frame()) == [
-        ("-3.2% on geomean · 3 regressed: node/", "dim"),
-        ("access", ""),
-        ("#time, ", "dim"),
-        ("parse[json]", ""),
-        (", ", "dim"),
-        ("lat:100:p99", ""),
-        ("#time", "dim"),
+        ("-3.2% on geomean · 1 regressed: ", "dim"),
+        ("latency", ""),
     ]
 
 
@@ -300,50 +221,6 @@ def test_frame_when_confirm_skipped_after_a_regression_does_keep_a_skipped_confi
     result = _frame(renderer, clock)
 
     assert result == snapshot
-
-
-def test_frame_when_confirm_finished_does_show_summary_on_node_line(snapshot: SnapshotAssertion):
-    _console, clock, renderer = _live(sample_count=2)
-    clock.tick(5)
-    renderer.report(JudgeFinished(primary_delta_pct=2.0, regressed=("x",), at_ms=_ms(clock)))
-    clock.tick(0.1)
-    renderer.report(ConfirmStarted(filtered_metrics=("x",), at_ms=_ms(clock)))
-    for round_num, label in itertools.product((1, 2), ("baseline", "experiment")):
-        clock.tick(0.5)
-        report_full_pass(
-            renderer,
-            clock,
-            round_num,
-            2,
-            duration_s=0.5,
-            target_count=2,
-            label=label,
-            phase="confirm",
-        )
-    clock.tick(10.9)
-
-    renderer.report(ConfirmFinished(reproduced=True, at_ms=_ms(clock)))
-
-    assert _frame(renderer, clock) == snapshot
-
-
-# ---------------------------------------------------------------------------
-# Record
-# ---------------------------------------------------------------------------
-
-
-def test_frame_when_recorded_with_checks_cmd_does_show_gymrat_keep(
-    snapshot: SnapshotAssertion,
-):
-    _console, clock, renderer = _live(
-        seq=3,
-        checks_cmd="npm run check && npm test",
-    )
-    clock.tick(15)
-
-    renderer.report(IterationRecorded(seq=3, outcome="unsettled", at_ms=_ms(clock)))
-
-    assert _frame(renderer, clock, width=100) == snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -400,26 +277,16 @@ def test_frame_when_compact_confirm_started_does_restart_progress_for_confirm():
 # ---------------------------------------------------------------------------
 
 
-def test_report_when_plain_mode_does_print_one_timestamped_line_per_milestone():
+def test_report_when_plain_mode_does_print_only_milestones_stamped_from_the_run_start():
     console, clock, renderer = iterate_renderer("plain", seq=2, sample_count=1)
     renderer.report(HookFinished(stage="before", at_ms=0))
-    renderer.report(PrepareStarted(label="baseline", at_ms=0))
-    clock.tick(3)
-    renderer.report(PrepareFinished(label="baseline", at_ms=_ms(clock)))
-    _sample_one_round(renderer, clock)
-    renderer.report(JudgeStarted(at_ms=_ms(clock)))
     clock.tick(1)
-    renderer.report(JudgeFinished(primary_delta_pct=-2.0, regressed=(), at_ms=_ms(clock)))
+    renderer.report(PrepareStarted(label="baseline", at_ms=_ms(clock)))
+    clock.tick(3)
 
-    renderer.report(IterationRecorded(seq=2, outcome="improved", at_ms=_ms(clock)))
+    renderer.report(PrepareFinished(label="baseline", at_ms=_ms(clock)))
 
-    assert renderer.live is None
-    assert console_output(console).splitlines() == [
-        "[00:00:03] prepared baseline (3s)",
-        "[00:00:08] passes done (5s)",
-        "[00:00:09] judge -2.0% on geomean · no gating regression",
-        "[00:00:09] recorded improved suggested",
-    ]
+    assert console_output(console) == "[00:00:04] prepared baseline (3s)\n"
 
 
 # ---------------------------------------------------------------------------

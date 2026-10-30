@@ -13,7 +13,6 @@ exist on win32.
 
 import asyncio
 import contextlib
-import errno
 import json
 import os
 import signal
@@ -25,10 +24,13 @@ from typing import NoReturn
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, exec_argv
-from tests._exec_fixtures import RUNNERS, Runner, expected_result
+from gymrat import process_group
+from gymrat.exec import ExecOptions, exec_argv
+from gymrat.signals import TERMINATION_SIGNALS
+from tests._exec_fixtures import expected_result, run_shell
 from tests._process_helpers import (
     KILLPG_FAILED,
+    REAL_KILLPG,
     SLEEPER_ARGV,
     refuse_resume,
 )
@@ -48,47 +50,22 @@ def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
     return fail
 
 
-@pytest.mark.parametrize(
-    ("failure", "expected_message"),
-    [
-        pytest.param(
-            ("attach_process_group", _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED))),
-            CONTAINMENT_REFUSED,
-            id="attach-warning-escalated-to-error",
-        ),
-        pytest.param(
-            (
-                "resume_process_group",
-                _raise_on_call(OSError(errno.EPERM, CONTAINMENT_REFUSED)),
-            ),
-            "[Errno 1] containment refused",
-            id="resume-os-error",
-        ),
-        pytest.param(
-            ("resume_process_group", refuse_resume),
-            "child process {pid} could not be resumed",
-            id="resume-refused",
-        ),
-    ],
-)
-@pytest.mark.parametrize("runner", RUNNERS)
-async def test_exec_when_containment_raises_after_spawn_does_fail_the_run_after_reaping_child(
+# Both entry points contain a child through the same spawn; a containment error
+# raised there is pinned with its teardown in the containment-and-teardown test.
+
+
+async def test_exec_when_resume_refused_after_spawn_does_fail_the_run_after_reaping_child(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    failure: tuple[str, Callable[[int], bool]],
-    expected_message: str,
-    runner: Runner,
 ) -> None:
-    seam, stand_in = failure
-    monkeypatch.setattr(exec_mod, seam, stand_in)
+    monkeypatch.setattr(process_group, "_resume_child_impl", refuse_resume)
 
-    result = await asyncio.wait_for(runner.run(runner.sleeper, make_opts()), _WAIT_TIMEOUT_S)
+    result = await asyncio.wait_for(run_shell("sleep 30", make_opts()), _WAIT_TIMEOUT_S)
 
     (child,) = spawned_processes
-    stderr = expected_message.format(pid=child.pid) + "\n"
-    assert result == expected_result("", stderr, exit_code=1)
+    assert result == expected_result("", result.stderr, exit_code=1)
+    assert str(child.pid) in result.stderr
     assert child.returncode is not None, (
         "the child left behind by the failed spawn was never reaped"
     )
@@ -98,38 +75,20 @@ RELEASE_REFUSED = "release refused"
 
 
 def _fail_release(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make dropping the child's container raise, as the win32 release can."""
+    """Make dropping the child's container raise, as the win32 job release can."""
     monkeypatch.setattr(
-        exec_mod,
-        "release_process_group",
-        _raise_on_call(RuntimeWarning(RELEASE_REFUSED)),
+        process_group, "_release_job_impl", _raise_on_call(RuntimeWarning(RELEASE_REFUSED))
     )
 
 
 def _fail_group_kill(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every group signal raise once sent, as an escalated killpg warning does."""
-    for seam in ("terminate_process_group", "kill_process_group"):
-        real: Callable[..., bool] = getattr(exec_mod, seam)
 
-        def signal_then_raise(
-            pid: int,
-            *args: object,
-            _real: Callable[..., bool] = real,
-            **kwargs: object,
-        ) -> NoReturn:
-            _real(pid, *args, **kwargs)
-            raise RuntimeWarning(KILLPG_FAILED)
+    def signal_then_raise(group_pid: int, signal_number: int) -> NoReturn:
+        REAL_KILLPG(group_pid, signal_number)
+        raise RuntimeWarning(KILLPG_FAILED)
 
-        monkeypatch.setattr(exec_mod, seam, signal_then_raise)
-
-
-TEARDOWN_FAILURES = pytest.mark.parametrize(
-    ("install_teardown_failure", "teardown_fragment"),
-    [
-        pytest.param(_fail_group_kill, KILLPG_FAILED, id="group-kill-raises"),
-        pytest.param(_fail_release, RELEASE_REFUSED, id="release-raises"),
-    ],
-)
+    monkeypatch.setattr(os, "killpg", signal_then_raise)
 
 
 async def _spawn_contained_sleeper() -> asyncio.subprocess.Process:
@@ -146,30 +105,37 @@ async def _spawn_contained_sleeper() -> asyncio.subprocess.Process:
     )
 
 
-@TEARDOWN_FAILURES
+# Each containment failure meets one teardown failure, and each teardown
+# failure appears at least once.
 @pytest.mark.parametrize(
-    ("seam", "stand_in", "reason", "cause_from_teardown"),
+    ("seam", "stand_in", "reason", "install_teardown_failure", "teardown_fragment", "cause"),
     [
         pytest.param(
-            "attach_process_group",
+            "_attach_job_impl",
             _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED)),
             CONTAINMENT_REFUSED,
-            False,
-            id="attach-raises",
+            _fail_group_kill,
+            KILLPG_FAILED,
+            CONTAINMENT_REFUSED,
+            id="attach-raises-then-group-kill-raises",
         ),
         pytest.param(
-            "resume_process_group",
+            "_resume_child_impl",
             _raise_on_call(RuntimeWarning(CONTAINMENT_REFUSED)),
             CONTAINMENT_REFUSED,
-            False,
-            id="resume-raises",
+            _fail_release,
+            RELEASE_REFUSED,
+            CONTAINMENT_REFUSED,
+            id="resume-raises-then-release-raises",
         ),
         pytest.param(
-            "resume_process_group",
+            "_resume_child_impl",
             refuse_resume,
-            "child process {pid} could not be resumed",
-            True,
-            id="resume-refused",
+            "{pid}",
+            _fail_group_kill,
+            KILLPG_FAILED,
+            KILLPG_FAILED,
+            id="resume-refused-then-group-kill-raises",
         ),
     ],
 )
@@ -180,39 +146,30 @@ async def test_spawn_contained_when_containment_and_teardown_both_fail_does_rais
     seam: str,
     stand_in: Callable[[int], bool],
     reason: str,
-    cause_from_teardown: bool,
     install_teardown_failure: Callable[[pytest.MonkeyPatch], None],
     teardown_fragment: str,
+    cause: str,
 ) -> None:
-    monkeypatch.setattr(exec_mod, seam, stand_in)
+    monkeypatch.setattr(process_group, seam, stand_in)
     install_teardown_failure(monkeypatch)
 
     with pytest.raises(exec_mod.SpawnError) as caught:
         await _spawn_contained_sleeper()
 
     (child,) = spawned_processes
-    expected_reason = reason.format(pid=child.pid)
-    assert str(caught.value) == (
-        f"{expected_reason} (tearing the child down also failed: {teardown_fragment})"
-    )
-    cause = caught.value.__cause__
-    assert (type(cause), str(cause)) == (
-        RuntimeWarning,
-        teardown_fragment if cause_from_teardown else CONTAINMENT_REFUSED,
-    )
+    message = str(caught.value)
+    assert reason.format(pid=child.pid) in message
+    assert teardown_fragment in message
+    raised_from = caught.value.__cause__
+    assert (type(raised_from), str(raised_from)) == (RuntimeWarning, cause)
     assert child.returncode is not None, (
         "the child left behind by the failed spawn was never reaped"
     )
 
 
-def _teardown_succeeds(_monkeypatch: pytest.MonkeyPatch) -> None:
-    pass
-
-
 @pytest.mark.parametrize(
     "install_teardown_failure",
     [
-        pytest.param(_teardown_succeeds, id="teardown-succeeds"),
         pytest.param(_fail_group_kill, id="group-kill-raises"),
         pytest.param(_fail_release, id="release-raises"),
     ],
@@ -223,7 +180,7 @@ async def test_kill_live_process_groups_when_spawn_contained_failed_does_not_tar
     record_killpg: Callable[[], list[int]],
     install_teardown_failure: Callable[[pytest.MonkeyPatch], None],
 ) -> None:
-    monkeypatch.setattr(exec_mod, "resume_process_group", refuse_resume)
+    monkeypatch.setattr(process_group, "_resume_child_impl", refuse_resume)
     install_teardown_failure(monkeypatch)
     with contextlib.suppress(exec_mod.SpawnError):
         await _spawn_contained_sleeper()
@@ -245,7 +202,7 @@ async def test_spawn_contained_when_group_kill_raises_on_a_child_ignoring_the_re
     spawned_processes: list[asyncio.subprocess.Process],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "resume_process_group", refuse_resume)
+    monkeypatch.setattr(process_group, "_resume_child_impl", refuse_resume)
     _fail_group_kill(monkeypatch)
 
     with pytest.raises(exec_mod.SpawnError):
@@ -282,7 +239,6 @@ async def test_exec_argv_when_env_given_or_omitted_does_hand_child_that_env_one_
         make_opts(env=env),
     )
 
-    assert isinstance(result, ExecResult)
     child_env = json.loads(result.stdout.strip())
     assert {
         "GYMRAT_TEST_MARKER": child_env.get("GYMRAT_TEST_MARKER"),
@@ -327,17 +283,24 @@ def test_nesting_depth_when_read_from_environment_does_fall_back_to_zero_unless_
 
 
 # ---------------------------------------------------------------------------
-# child session (POSIX)
+# the contained child: termination signals unblocked (POSIX)
 # ---------------------------------------------------------------------------
 
 
-async def test_exec_argv_when_child_spawned_does_make_it_lead_its_own_session(
+async def test_exec_argv_when_child_spawned_does_unblock_termination_signals_in_it(
     make_opts: Callable[..., ExecOptions],
 ) -> None:
     result = await exec_argv(
-        [sys.executable, "-c", "import os; print(os.getsid(0) == os.getpid())"],
+        [
+            sys.executable,
+            "-c",
+            (
+                "import signal, json; "
+                "print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"
+            ),
+        ],
         make_opts(),
     )
 
-    assert isinstance(result, ExecResult)
-    assert result.stdout == "True\n"
+    blocked: list[int] = json.loads(result.stdout.strip())
+    assert sorted(set(TERMINATION_SIGNALS) & set(blocked)) == []

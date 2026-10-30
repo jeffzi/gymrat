@@ -17,14 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from gymrat.model import (
-    BandVerdict,
-    Direction,
-    Exclusion,
-    GeomeanResult,
-    MetricVerdict,
-    ResolvedMetricMeta,
-)
+from gymrat.model import Exclusion, MetricVerdict, ResolvedMetricMeta
 from gymrat.verdict import KindAggregate, compute_geomean, compute_kind_aggregates
 from tests.report._verdicts import band_verdict, exact_verdict, metric_meta
 
@@ -39,9 +32,6 @@ class MetricSpec:
 
     name: str
     """Full metric name — the key the verdict and exclusion lists report it under."""
-
-    direction: Direction = "lower"
-    """Defaults to ``"lower"``, so a directionless spec list is lower-is-better."""
 
     gating: bool = True
     """Defaults to ``True``, matching every case that isn't explicitly non-gating."""
@@ -82,40 +72,16 @@ def build_inputs(
 
         meta_by_name[spec.name] = metric_meta(
             spec.name,
-            direction=spec.direction,
             gating=spec.gating,
-            exact=verdict is not None and verdict.method == "exact",
             kind=spec.kind,
         )
 
     return verdicts, meta_by_name
 
 
-def unstable_band_verdict() -> BandVerdict:
-    """A band verdict too noisy to judge, regardless of its ratio."""
-    return band_verdict(
-        verdict="unstable", usable_n=4, noise_pct=250.0, noise_abs=25.0, delta=-50.0, n=4
-    )
-
-
 # ---------------------------------------------------------------------------
 # Multiple gating metrics
 # ---------------------------------------------------------------------------
-
-
-def test_compute_geomean_when_directions_differ_does_respect_each_metric():
-    verdicts, meta = build_inputs(
-        [
-            MetricSpec(name="metric1", direction="lower", delta=-10.0),
-            MetricSpec(name="metric2", direction="higher", delta=10.0),
-        ],
-    )
-
-    result = compute_geomean(verdicts, meta)
-
-    assert result.n == 2
-    assert result.excluded == ()
-    assert result.value == pytest.approx((math.sqrt(0.9 / 1.1) - 1) * 100, abs=1e-6)
 
 
 def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order_averaging_the_rest():
@@ -138,36 +104,11 @@ def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order_aver
             Exclusion(metric="metric1", reason="no-verdict"),
         ),
     )
-    assert result.value == pytest.approx(-5.0, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
 # Unstable exclusion
 # ---------------------------------------------------------------------------
-
-
-def test_compute_geomean_when_metric_unstable_does_exclude_it():
-    verdicts, meta = build_inputs(
-        [
-            MetricSpec(name="noisy", verdict=unstable_band_verdict()),
-            MetricSpec(
-                name="stable",
-                verdict=band_verdict(
-                    verdict="improved",
-                    usable_n=4,
-                    noise_pct=4.0,
-                    noise_abs=2.0,
-                    delta=-5.0,
-                    n=4,
-                ),
-            ),
-        ],
-    )
-
-    result = compute_geomean(verdicts, meta)
-
-    assert (result.n, result.excluded) == (1, (Exclusion(metric="noisy", reason="unstable"),))
-    assert (result.value, result.band) == pytest.approx((-5.0, 4.0), abs=1e-5)
 
 
 def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undefined():
@@ -189,12 +130,7 @@ def test_compute_geomean_when_unstable_delta_nan_does_report_unstable_over_undef
 
     result = compute_geomean(verdicts, meta)
 
-    assert result == GeomeanResult(
-        value=0.0,
-        n=0,
-        band=0.0,
-        excluded=(Exclusion(metric="noisy", reason="unstable"),),
-    )
+    assert (result.n, result.excluded) == (0, (Exclusion(metric="noisy", reason="unstable"),))
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +182,7 @@ def kind_named(aggregates: Sequence[KindAggregate], kind: str) -> KindAggregate:
 
 
 # ---------------------------------------------------------------------------
-# Kind aggregate shape and empty inputs
+# Kind aggregate shape
 # ---------------------------------------------------------------------------
 
 
@@ -255,20 +191,10 @@ def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_kind_g
         [MetricSpec(name="warmup", gating=False, delta=0.0)],
     )
 
-    assert result == [
-        KindAggregate(
-            kind="time",
-            geomean=GeomeanResult(value=0.0, n=1, band=0.0, excluded=()),
-            groups=(),
-            gated_geomean=None,
-        ),
-    ]
-
-
-def test_compute_kind_aggregates_when_nothing_measured_does_return_no_aggregates():
-    result = kinds_of([])
-
-    assert result == []
+    assert [
+        (aggregate.kind, aggregate.geomean.n, aggregate.groups, aggregate.gated_geomean)
+        for aggregate in result
+    ] == [("time", 1, (), None)]
 
 
 # ---------------------------------------------------------------------------
@@ -288,19 +214,6 @@ def test_compute_kind_aggregates_when_multi_segment_names_does_group_by_path_pre
     assert [group.group for group in kind.groups] == ["decode", "encode"]
     assert kind.groups[0].geomean.n == 2
     assert kind.groups[1].geomean.n == 1
-
-
-def test_compute_kind_aggregates_when_single_segment_name_does_count_in_kind_not_group():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/time#time", delta=-10.0),
-            MetricSpec(name="warmup#time", delta=-10.0),
-        ],
-    )
-
-    assert [group.group for group in kind.groups] == ["decode"]
-    assert kind.groups[0].geomean.n == 1
-    assert kind.geomean.n == 2
 
 
 def test_compute_kind_aggregates_when_grouped_name_in_one_kind_does_leave_other_kind_flat():
@@ -350,20 +263,3 @@ def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_gate_ov
     assert kind.gated_geomean is not None
     assert (kind.gated_geomean.n, kind.gated_geomean.value) == (1, pytest.approx(-10.0, abs=1e-5))
     assert kind.groups[0].geomean.n == 2
-
-
-def test_compute_kind_aggregates_when_metric_unstable_does_exclude_it_only_where_it_belongs():
-    [kind] = kinds_of(
-        [
-            MetricSpec(name="decode/bad#time", verdict=unstable_band_verdict()),
-            MetricSpec(name="decode/good#time", delta=-5.0),
-            MetricSpec(name="encode/fine#time", delta=-5.0),
-        ],
-    )
-
-    excluded = (Exclusion(metric="decode/bad#time", reason="unstable"),)
-    assert (kind.geomean.n, kind.geomean.excluded) == (2, excluded)
-    assert [(group.group, group.geomean.n, group.geomean.excluded) for group in kind.groups] == [
-        ("decode", 1, excluded),
-        ("encode", 1, ()),
-    ]

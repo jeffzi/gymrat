@@ -12,7 +12,6 @@ from gymrat.cli.live_display import ErasableLive
 from tests._rich import stop_tracked
 from tests.cli._session import (
     open_stop_ready_session,
-    write_settled_session,
 )
 
 
@@ -49,11 +48,4 @@ def _in_non_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def stop_repo(repo: str) -> str:
     """A repository with a settled, configured session ready for the stop command."""
     open_stop_ready_session(repo)
-    return repo
-
-
-@pytest.fixture
-def status_repo(repo: str) -> str:
-    """A repository with a configured session and one kept iteration."""
-    write_settled_session(repo)
     return repo

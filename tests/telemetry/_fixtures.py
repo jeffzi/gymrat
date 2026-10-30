@@ -44,8 +44,7 @@ def hide_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the OTLP exporter package fail to import while the OpenTelemetry SDK still imports.
 
     Args:
-        monkeypatch: Maps the package and its loaded submodules to ``None`` in
-            ``sys.modules``, so importing any of them raises ``ImportError``.
+        monkeypatch: The test's monkeypatch; its teardown undoes the change.
     """
     _hide_package(monkeypatch, "opentelemetry.exporter.otlp.proto.http", "trace_exporter")
 
@@ -54,8 +53,7 @@ def hide_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the OpenTelemetry SDK and every submodule of it fail to import.
 
     Args:
-        monkeypatch: Maps the package and its loaded submodules to ``None`` in
-            ``sys.modules``, so importing any of them raises ``ImportError``.
+        monkeypatch: The test's monkeypatch; its teardown undoes the change.
     """
     _hide_package(monkeypatch, "opentelemetry.sdk", "trace")
 
@@ -64,7 +62,7 @@ def arm_placeholder_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """Point ``OTEL_EXPORTER_OTLP_ENDPOINT`` at :data:`PLACEHOLDER_ENDPOINT` so tracing is asked for.
 
     Args:
-        monkeypatch: Sets the endpoint variable for the rest of the test.
+        monkeypatch: The test's monkeypatch; its teardown undoes the change.
     """
     monkeypatch.setenv(ENDPOINT_ENV, PLACEHOLDER_ENDPOINT)
 
@@ -73,8 +71,7 @@ def disable_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set ``OTEL_SDK_DISABLED`` while an OTLP endpoint is set, so tracing is asked for but off.
 
     Args:
-        monkeypatch: Sets ``OTEL_SDK_DISABLED=true`` and points
-            ``OTEL_EXPORTER_OTLP_ENDPOINT`` at :data:`PLACEHOLDER_ENDPOINT`.
+        monkeypatch: The test's monkeypatch; its teardown undoes the change.
     """
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
     arm_placeholder_endpoint(monkeypatch)
@@ -171,7 +168,7 @@ def session_traceparent(session_id: str, span_key: str) -> str:
 
     Args:
         session_id: The session whose trace the span belongs to.
-        span_key: The key the span id is derived from, such as ``"run:<at>"``.
+        span_key: The key the span id is derived from, such as one built by :func:`gymrat.telemetry.run_spans.run_span_key`.
 
     Returns:
         The header value.
