@@ -110,13 +110,23 @@ PERIOD_S = 0.05
 
 
 def beat_forever(path: str) -> None:
-    """Rewrite ``path`` with ``"<pid> <counter>"`` until this process is killed."""
+    """Rewrite ``path`` with ``"<pid> <counter>"`` until this process is killed.
+
+    Each beat overwrites the file in place without truncating it first. A
+    truncating write killed between the truncate and the write leaves the file
+    empty for good, and the readers take an empty file for a writer caught
+    mid-write, so a dead child would read as alive forever. The text never
+    shrinks, since the counter only grows, so no stale tail survives an
+    overwrite.
+    """
     target = Path(path)
+    target.touch()
     pid = os.getpid()
     count = 0
     while True:
         count += 1
-        target.write_text(f"{pid} {count}", encoding="utf-8")
+        with target.open("r+", encoding="utf-8") as beat:
+            beat.write(f"{pid} {count}")
         time.sleep(PERIOD_S)
 
 
