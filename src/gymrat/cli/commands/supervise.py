@@ -53,8 +53,8 @@ from gymrat.config import (
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
+from gymrat.metric_meta import primary_direction
 from gymrat.report.style import render_lines
-from gymrat.sampling import primary_direction
 from gymrat.session.budget import arm_budget
 from gymrat.session.lock import acquire_lock
 from gymrat.session.paths import (

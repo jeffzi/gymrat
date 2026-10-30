@@ -10,10 +10,8 @@ import itertools
 import pytest
 
 from gymrat.adapters.metric_lines import metric_lines_adapter
-from gymrat.config import MetricEntry
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import OUTPUT_CAP, ExecResult, ExecTimeoutError
-from gymrat.model import GEOMEAN_DIRECTION
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -27,7 +25,6 @@ from gymrat.sampling import (
     TargetContext,
     collect_samples,
     compute_metric_stats,
-    primary_direction,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
 from tests._config import resolved_config
@@ -492,42 +489,6 @@ def test_run_options_from_config_when_override_given_does_replace_the_configured
     run = RunOptions.from_config(config, samples=samples, bench=bench)
 
     assert getattr(run.sampling, read) == expected
-
-
-# ---------------------------------------------------------------------------
-# primary_direction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("primary", "expected"),
-    [
-        pytest.param("geomean", GEOMEAN_DIRECTION, id="geomean-ignores-a-geomean-metric-entry"),
-        pytest.param("throughput", "higher", id="named-metric-resolves-its-entry"),
-    ],
-)
-def test_primary_direction_when_primary_named_does_return_the_direction_it_resolves_to(
-    primary: str, expected: str
-):
-    config = resolved_config(
-        primary=primary,
-        metrics={
-            "throughput": MetricEntry(direction="higher"),
-            "geomean": MetricEntry(direction="higher"),
-        },
-    )
-
-    direction = primary_direction(config)
-
-    assert direction == expected
-
-
-def test_primary_direction_when_no_metric_entries_does_take_the_adapters_default():
-    config = resolved_config(primary="throughput", metrics=None)
-
-    direction = primary_direction(config)
-
-    assert direction == "lower"
 
 
 # ---------------------------------------------------------------------------

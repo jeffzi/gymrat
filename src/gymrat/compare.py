@@ -19,6 +19,7 @@ from functools import partial
 
 from gymrat.adapters.registry import get_adapter
 from gymrat.config import KindEntry
+from gymrat.metric_meta import resolve_metric_meta_from_samples
 from gymrat.model import MetricVerdict, ResolvedMetricMeta, pair_metric
 from gymrat.report.types import (
     CandidateComparison,
@@ -35,7 +36,6 @@ from gymrat.sampling import (
     WorktreeInfo,
     collect_samples,
     compute_metric_stats,
-    resolve_metric_meta_from_samples,
     run_with_worktrees,
     to_context,
 )

@@ -1,7 +1,7 @@
 """Behavioral tests for metric-meta resolution.
 
 Adapter defaults, then kind, then metric, including the warning for time
-readings that look quantized.
+readings that look quantized, and the direction of the configured primary.
 """
 
 from collections.abc import Callable
@@ -9,18 +9,38 @@ from dataclasses import replace
 
 import pytest
 
-from gymrat.adapters.contract import TIME_SUFFIX, MetricDefaults
+from gymrat.adapters.contract import TIME_SUFFIX, Adapter, MetricDefaults
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.config import KindEntry, MetricEntry
 from gymrat.errors import GymratError
-from gymrat.model import ResolvedMetricMeta
-from gymrat.sampling import (
+from gymrat.metric_meta import (
+    primary_direction,
     resolve_metric_meta,
     resolve_metric_meta_from_samples,
 )
+from gymrat.model import GEOMEAN_DIRECTION, ResolvedMetricMeta
+from gymrat.utils import WarnSink, warn_to_stderr
+from tests._config import resolved_config
 from tests._pipeline import is_quantized_warning
 from tests.report._verdicts import metric_meta
-from tests.sampling._adapters import make_adapter
+
+
+def make_adapter(
+    defaults_fn: Callable[[str], MetricDefaults] = lambda _name: MetricDefaults(direction="lower"),
+) -> Adapter:
+    """Build a mock adapter whose per-metric defaults come from ``defaults_fn``."""
+
+    class MockAdapter:
+        name = "test-adapter"
+
+        def parse(self, stdout: str, warn: WarnSink = warn_to_stderr) -> dict[str, float]:
+            return {}
+
+        def defaults(self, metric_name: str) -> MetricDefaults:
+            return defaults_fn(metric_name)
+
+    return MockAdapter()
+
 
 # ---------------------------------------------------------------------------
 # resolve_metric_meta
@@ -218,6 +238,11 @@ _ONE_STEP_UP = _readings(*_ONE_STEP_UP_VALUES)
         ),
         pytest.param(_readings([333.0] * 3, [333.0] * 3), None, id="every-reading-one-value"),
         pytest.param(_readings([0.0, 0.0], [0.0, 5.0]), "5ns", id="zero-median"),
+        pytest.param(
+            _readings(*([-value for value in values] for values in _ONE_STEP_UP_VALUES)),
+            "42ns",
+            id="negative-median",
+        ),
     ],
 )
 def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does_warn_once(
@@ -242,6 +267,11 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
         pytest.param(
             _readings([1000.0, 1000.0], [1000.0, 1005.0]), None, id="gap-at-half-a-percent"
         ),
+        pytest.param(
+            _readings([-1000.0, -1000.0], [-1000.0, -1005.0]),
+            None,
+            id="gap-at-half-a-percent-of-a-negative-median",
+        ),
     ],
 )
 def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_warn(
@@ -255,3 +285,39 @@ def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_war
     )
 
     assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# primary_direction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("primary", "expected"),
+    [
+        pytest.param("geomean", GEOMEAN_DIRECTION, id="geomean-ignores-a-geomean-metric-entry"),
+        pytest.param("throughput", "higher", id="named-metric-resolves-its-entry"),
+    ],
+)
+def test_primary_direction_when_primary_named_does_return_the_direction_it_resolves_to(
+    primary: str, expected: str
+):
+    config = resolved_config(
+        primary=primary,
+        metrics={
+            "throughput": MetricEntry(direction="higher"),
+            "geomean": MetricEntry(direction="higher"),
+        },
+    )
+
+    direction = primary_direction(config)
+
+    assert direction == expected
+
+
+def test_primary_direction_when_no_metric_entries_does_take_the_adapters_default():
+    config = resolved_config(primary="throughput", metrics=None)
+
+    direction = primary_direction(config)
+
+    assert direction == "lower"
