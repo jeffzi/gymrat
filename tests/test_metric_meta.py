@@ -243,6 +243,31 @@ _ONE_STEP_UP = _readings(*_ONE_STEP_UP_VALUES)
             "42ns",
             id="negative-median",
         ),
+        pytest.param(
+            _readings([1000.0, 1000.0, 1084.0], [1210.0, 1294.0]),
+            "42ns",
+            id="coarse-lattice-names-the-fitted-step-not-the-smallest-gap",
+        ),
+        pytest.param(
+            _readings([1000.0, 1042.0], [1126.0, 1210.0]),
+            "42ns",
+            id="coarse-lattice-without-a-repeat",
+        ),
+        pytest.param(
+            _readings([1000.0, 1042.00001], [1084.00001, 1126.0]),
+            "42ns",
+            id="coarse-lattice-off-by-float-noise",
+        ),
+        pytest.param(
+            _readings([1000.0, 1000.0000001], [1010.0, 1027.0]),
+            "10ns",
+            id="float-noise-keeps-three-distinct-readings-in-the-upper-bound-rule",
+        ),
+        pytest.param(
+            _readings([0.0, 0.0, 0.0, 0.0], [-7.0, 0.0, 5.0, 12.0]),
+            "5ns",
+            id="zero-median-with-four-distinct-readings",
+        ),
     ],
 )
 def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does_warn_once(
@@ -271,6 +296,21 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
             _readings([-1000.0, -1000.0], [-1000.0, -1005.0]),
             None,
             id="gap-at-half-a-percent-of-a-negative-median",
+        ),
+        pytest.param(
+            _readings([1000.0, 1000.0, 1007.0], [1013.0, 1020.0]),
+            None,
+            id="fine-lattice-at-four-distinct-readings",
+        ),
+        pytest.param(
+            _readings([1000.0, 1007.0, 1013.0], [1020.0, 1020.0, 1027.0]),
+            None,
+            id="fine-lattice-with-one-repeated-pair",
+        ),
+        pytest.param(
+            _readings([990.0, 1000.0, 1000.0], [995.0, 1005.0, 1010.0]),
+            None,
+            id="lattice-at-half-a-percent-with-four-distinct-readings",
         ),
     ],
 )

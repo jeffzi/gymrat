@@ -7,7 +7,7 @@ exact to off. A per-kind config entry may set gating and resolution, and a
 per-metric entry overrides direction, gating, exact and resolution.
 
 Resolving metadata from samples also warns about a time metric with no
-resolution whose readings repeat the way a quantized timer's do.
+resolution whose readings look like a quantized timer's.
 """
 
 import itertools
@@ -123,11 +123,22 @@ def resolve_metric_meta_from_samples(
     :func:`resolve_metric_meta` describes.
 
     A statistical ``ns`` metric with no resolution gets one warning when its
-    readings look quantized: some target reads one value at least twice, and
-    either every reading is that value or the smallest gap between distinct
-    values, pooled across targets, is above 0.5% of the median. Readings within
-    a millionth of the median count as one value. The warning never changes the
-    resolved metadata.
+    readings look quantized. Readings pool across targets, and readings within
+    a millionth of the median count as one distinct value. The rule depends on
+    how many distinct values there are:
+
+    - Four or more, with a nonzero median: the readings are fitted to a timer
+      step. Candidate steps are the smallest gap between distinct values
+      divided by 1, 2, 3, and so on, while the candidate stays above 0.5% of
+      the median's magnitude. The first candidate that every gap lies within a
+      millionth of the median of a whole multiple of is the fitted step, and
+      the warning names it. No candidate fits: no warning.
+    - Fewer than four, or a zero median: some target must read one value at
+      least twice, and either every reading is that value (the warning names
+      no step) or the smallest gap is above 0.5% of the median's magnitude
+      (the warning names that gap as an upper bound on the step).
+
+    The warning never changes the resolved metadata.
 
     Args:
         sample_sets: One list of per-round metric records per target.
@@ -174,32 +185,54 @@ _SAME_VALUE_FRACTION = 1e-6
 """Readings closer than this fraction of the median count as one value."""
 
 _QUANTIZED_GAP_FRACTION = 0.005
-"""A smallest gap above this fraction of the median, with a repeat, looks like a timer's step."""
+"""A timer step above this fraction of the median makes readings look quantized."""
+
+_MIN_FIT_READINGS = 4
+"""Distinct readings needed to fit a timer step rather than bound it by the smallest gap."""
+
+_RESOLUTION_ADVICE = (
+    "Set `resolution` to the timer's tick divided by the calls each reading averages, "
+    "or time more iterations per reading"
+)
+
+
+def _fitted_step(gaps: list[float], threshold: float, tolerance: float) -> float | None:
+    # Candidates shrink from the smallest gap, so the first that every gap fits is
+    # the largest step; the threshold must be positive for the loop to end.
+    smallest = min(gaps)
+    divisor = 1
+    while (candidate := smallest / divisor) > threshold:
+        if all(abs(gap - round(gap / candidate) * candidate) <= tolerance for gap in gaps):
+            return candidate
+        divisor += 1
+    return None
 
 
 def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str | None:
     pooled = sorted(value for values in per_target for value in values)
     median = statistics.median(pooled)
     tolerance = abs(median) * _SAME_VALUE_FRACTION
+    threshold = abs(median) * _QUANTIZED_GAP_FRACTION
+    distinct: list[float] = []
+    for value in pooled:
+        if not distinct or value - distinct[-1] > tolerance:
+            distinct.append(value)
+    gaps = [later - earlier for earlier, later in itertools.pairwise(distinct)]
+
+    if len(distinct) >= _MIN_FIT_READINGS and median != 0:
+        fitted = _fitted_step(gaps, threshold, tolerance)
+        if fitted is None:
+            return None
+        step = format_value(fitted, "ns")
+        return f"{name}: readings sit on a timer step of {step}. {_RESOLUTION_ADVICE}"
+
     repeats = any(
         later - earlier <= tolerance
         for values in per_target
         for earlier, later in itertools.pairwise(sorted(values))
     )
-    if not repeats:
+    gap = min(gaps, default=None)
+    if not repeats or (gap is not None and gap <= threshold):
         return None
-
-    distinct: list[float] = []
-    for value in pooled:
-        if not distinct or value - distinct[-1] > tolerance:
-            distinct.append(value)
-    gap = min((later - earlier for earlier, later in itertools.pairwise(distinct)), default=None)
-    if gap is not None and gap <= abs(median) * _QUANTIZED_GAP_FRACTION:
-        return None
-
-    step = "" if gap is None else f"; its step is at most {format_value(gap, 'ns')}"
-    return (
-        f"{name}: readings repeat as a quantized timer's would{step}. "
-        "Set `resolution` to the timer's tick divided by the calls each reading averages, "
-        "or time more iterations per reading"
-    )
+    bound = "" if gap is None else f"; its step is at most {format_value(gap, 'ns')}"
+    return f"{name}: readings repeat as a quantized timer's would{bound}. {_RESOLUTION_ADVICE}"
