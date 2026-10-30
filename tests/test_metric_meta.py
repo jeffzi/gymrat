@@ -310,7 +310,7 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
         pytest.param(
             _readings([990.0, 1000.0, 1000.0], [995.0, 1005.0, 1010.0]),
             None,
-            id="lattice-at-half-a-percent-with-four-distinct-readings",
+            id="lattice-at-half-a-percent-with-five-distinct-readings",
         ),
     ],
 )

@@ -39,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the calls each reading averages, instead of the bare tick, which hid real changes on batched
   benchmarks.
 - Stop the quantized-readings warning from firing on readings that sit on a fine lattice and happen
-  to repeat once; with four or more distinct readings it now names the timer step the readings fit.
+  to repeat once. With four or more distinct readings it now fits the timer step, names that step,
+  and warns on a coarse step even when no reading repeats; with fewer it still names the smallest
+  gap, if any, as an upper bound on the step.
 
 ## [0.22.0] - 2026-10-24
 

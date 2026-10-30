@@ -182,10 +182,10 @@ that averages several calls moves in smaller steps: the tick divided by the numb
 change behind it can be anything from nothing to two steps. Where the bench allows it, time more
 iterations per reading instead of declaring a step: the step then shrinks relative to each reading,
 so smaller changes can signal. gymrat warns when a time metric's readings look quantized and no
-step is declared. With four or more distinct readings, the warning names the step the readings fit.
-With fewer, it names only an upper bound on the step: the smallest gap between readings. Either
-way, declare the timer's tick divided by the calls each reading averages, rather than the value the
-warning names.
+step is declared. With four or more distinct readings and a nonzero median, the warning names the
+step the readings fit. Otherwise it names only an upper bound on the step, the smallest gap between
+readings, or no step at all when every reading is the same value. Either way, declare the timer's
+tick divided by the calls each reading averages, rather than the value the warning names.
 
 Precedence: command-line flag > `GYMRAT_*` environment variable (`GYMRAT_BENCH`, `GYMRAT_SAMPLES`,
 …) > `gymrat.toml` > built-in default.
