@@ -21,17 +21,13 @@ from gymrat.config import GEOMEAN_PRIMARY, KindEntry, MetricEntry, ResolvedConfi
 from gymrat.errors import GymratError
 from gymrat.model import GEOMEAN_DIRECTION, Direction, ResolvedMetricMeta
 from gymrat.report.format import format_value
-from gymrat.utils import WarnSink, own_values, warn_to_stderr
+from gymrat.utils import WarnSink, first_set, own_values, warn_to_stderr
 
 DEFAULT_METRIC_KIND: Final[str] = "other"
 """The kind a metric falls under when its adapter reports none."""
 
 _DEFAULT_GATING = True
 """Whether a metric gates when neither a ``metrics`` entry nor a ``kinds`` entry names it."""
-
-
-def _first_set[T](default: T, *overrides: T | None) -> T:
-    return next((value for value in overrides if value is not None), default)
 
 
 def resolve_metric_meta(
@@ -63,19 +59,18 @@ def resolve_metric_meta(
         The metric's resolved metadata.
     """
     defaults = adapter.defaults(name)
-    kind = defaults.kind if defaults.kind is not None else DEFAULT_METRIC_KIND
-    direction = (
-        entry.direction if entry is not None and entry.direction is not None else defaults.direction
-    )
-
+    kind = first_set(defaults.kind, default=DEFAULT_METRIC_KIND)
     metric_entry = entry if entry is not None else MetricEntry()
+    direction = first_set(metric_entry.direction, default=defaults.direction)
     kind_entry = (config_kinds or {}).get(kind, KindEntry())
 
-    gating = _first_set(_DEFAULT_GATING, metric_entry.gating, kind_entry.gating)
-    resolution = _first_set(defaults.resolution, metric_entry.resolution, kind_entry.resolution)
+    gating = first_set(metric_entry.gating, kind_entry.gating, default=_DEFAULT_GATING)
+    resolution = first_set(
+        metric_entry.resolution, kind_entry.resolution, default=defaults.resolution
+    )
 
-    exact = entry.exact if entry is not None and entry.exact is not None else False
-    short_name = defaults.short_name if defaults.short_name is not None else name
+    exact = first_set(metric_entry.exact, default=False)
+    short_name = first_set(defaults.short_name, default=name)
 
     return ResolvedMetricMeta(
         direction=direction,
@@ -128,11 +123,11 @@ def resolve_metric_meta_from_samples(
     how many distinct values there are:
 
     - Four or more, with a nonzero median: the readings are fitted to a timer
-      step. Candidate steps are the smallest gap between distinct values
-      divided by 1, 2, 3, and so on, while the candidate stays above 0.5% of
-      the median's magnitude. The first candidate that every gap lies within a
-      millionth of the median of a whole multiple of is the fitted step, and
-      the warning names it. No candidate fits: no warning.
+      step, found by a tolerant greatest common divisor of the gaps between
+      distinct values, that every gap lies within a millionth of the median of
+      a whole multiple of. The warning names it when it is above 0.5% of the
+      median's magnitude. A finer step, or none that fits every gap, fits no
+      timer: no warning.
     - Fewer than four, or a zero median: some target must read one value at
       least twice, and either every reading is that value (the warning names
       no step) or the smallest gap is above 0.5% of the median's magnitude
@@ -196,23 +191,55 @@ _RESOLUTION_ADVICE = (
 )
 
 
-def _fitted_step(gaps: list[float], threshold: float, tolerance: float) -> float | None:
-    # Candidates shrink from the smallest gap, so the first that every gap fits is
-    # the largest step; the threshold must be positive for the loop to end.
-    smallest = min(gaps)
-    divisor = 1
-    while (candidate := smallest / divisor) > threshold:
-        if all(abs(gap - round(gap / candidate) * candidate) <= tolerance for gap in gaps):
-            return candidate
-        divisor += 1
-    return None
+def _tolerant_gcd(
+    first: float, first_error: float, second: float, second_error: float
+) -> tuple[float, float]:
+    # Each value carries a bound on its error. A remainder of larger - q * smaller
+    # inherits larger's error plus q times smaller's, so the bound a remainder is
+    # compared against grows with the quotient. Remainders at least halve every
+    # two rounds and every error is at least the tolerance the callers start from,
+    # so the loop is logarithmic in larger / tolerance however far apart the two
+    # sit. Both values must be positive: a remainder above its error bound is.
+    (larger, larger_error), (smaller, smaller_error) = sorted(
+        ((first, first_error), (second, second_error)), reverse=True
+    )
+    while True:
+        quotient, remainder = divmod(larger, smaller)
+        remainder_error = larger_error + quotient * smaller_error
+        if remainder <= remainder_error or smaller - remainder <= remainder_error + smaller_error:
+            return smaller, smaller_error
+        larger, larger_error, smaller, smaller_error = (
+            smaller,
+            smaller_error,
+            remainder,
+            remainder_error,
+        )
+
+
+def _fitted_step(gaps: list[float], min_step: float, tolerance: float) -> float | None:
+    # The tolerant gcd only seeds the whole-number multiples of each gap: its
+    # result carries accumulated error, so the step itself is the midpoint of the
+    # range every gap allows, which keeps every gap within the tolerance of its
+    # multiple. A gap that rounds to zero multiples leaves no step to fit.
+    seed, seed_error = gaps[0], tolerance
+    for gap in gaps[1:]:
+        seed, seed_error = _tolerant_gcd(seed, seed_error, gap, tolerance)
+    multiples = [round(gap / seed) for gap in gaps]
+    if 0 in multiples:
+        return None
+    fitted = list(zip(gaps, multiples, strict=True))
+    lowest = max((gap - tolerance) / multiple for gap, multiple in fitted)
+    highest = min((gap + tolerance) / multiple for gap, multiple in fitted)
+    step = (lowest + highest) / 2
+    fits = all(abs(gap - multiple * step) <= tolerance for gap, multiple in fitted)
+    return step if fits and step > min_step else None
 
 
 def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str | None:
     pooled = sorted(value for values in per_target for value in values)
     median = statistics.median(pooled)
     tolerance = abs(median) * _SAME_VALUE_FRACTION
-    threshold = abs(median) * _QUANTIZED_GAP_FRACTION
+    min_step = abs(median) * _QUANTIZED_GAP_FRACTION
     distinct: list[float] = []
     for value in pooled:
         if not distinct or value - distinct[-1] > tolerance:
@@ -220,7 +247,7 @@ def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str
     gaps = [later - earlier for earlier, later in itertools.pairwise(distinct)]
 
     if len(distinct) >= _MIN_FIT_READINGS and median != 0:
-        fitted = _fitted_step(gaps, threshold, tolerance)
+        fitted = _fitted_step(gaps, min_step, tolerance)
         if fitted is None:
             return None
         step = format_value(fitted, "ns")
@@ -231,8 +258,10 @@ def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str
         for values in per_target
         for earlier, later in itertools.pairwise(sorted(values))
     )
+    if not repeats:
+        return None
     gap = min(gaps, default=None)
-    if not repeats or (gap is not None and gap <= threshold):
+    if gap is not None and gap <= min_step:
         return None
     bound = "" if gap is None else f"; its step is at most {format_value(gap, 'ns')}"
     return f"{name}: readings repeat as a quantized timer's would{bound}. {_RESOLUTION_ADVICE}"

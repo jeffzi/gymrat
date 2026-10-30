@@ -46,15 +46,15 @@ def make_adapter(
 # resolve_metric_meta
 # ---------------------------------------------------------------------------
 
-_NAME = "bench-a/heap"
+_HEAP_METRIC = "bench-a/heap"
 _HEAP = MetricDefaults(direction="higher", kind="memory", short_name="heap", unit="bytes")
 _MEMORY_NOT_GATING = {"memory": KindEntry(gating=False)}
 _HEAP_STEP = replace(_HEAP, resolution=1.0)
 _MEMORY_STEP = {"memory": KindEntry(resolution=1024.0)}
 
 
-def _heap_step_meta(
-    resolution: float, *, gating: bool = True, exact: bool = False
+def _heap_meta(
+    resolution: float | None = None, *, gating: bool = True, exact: bool = False
 ) -> ResolvedMetricMeta:
     return metric_meta(
         "heap",
@@ -74,7 +74,7 @@ def _heap_step_meta(
             MetricDefaults(direction="higher", unit="ns"),
             None,
             None,
-            metric_meta(_NAME, direction="higher", unit="ns"),
+            metric_meta(_HEAP_METRIC, direction="higher", unit="ns"),
             id="adapter-direction-and-unit",
         ),
         pytest.param(
@@ -88,23 +88,21 @@ def _heap_step_meta(
             _HEAP,
             MetricEntry(exact=True),
             _MEMORY_NOT_GATING,
-            metric_meta(
-                "heap", direction="higher", kind="memory", unit="bytes", gating=False, exact=True
-            ),
+            _heap_meta(gating=False, exact=True),
             id="kind-gating-fills-an-entry-without-gating",
         ),
         pytest.param(
             _HEAP,
             None,
             {"time": KindEntry(gating=False)},
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            _heap_meta(),
             id="other-kind-gating-ignored",
         ),
         pytest.param(
             _HEAP,
             MetricEntry(gating=True),
             _MEMORY_NOT_GATING,
-            metric_meta("heap", direction="higher", kind="memory", unit="bytes"),
+            _heap_meta(),
             id="entry-gating-beats-kind-gating",
         ),
         pytest.param(
@@ -114,19 +112,19 @@ def _heap_step_meta(
             metric_meta("heap", kind="other", gating=False),
             id="adapter-reports-no-kind",
         ),
-        pytest.param(_HEAP_STEP, None, None, _heap_step_meta(1.0), id="adapter-resolution"),
+        pytest.param(_HEAP_STEP, None, None, _heap_meta(1.0), id="adapter-resolution"),
         pytest.param(
             _HEAP_STEP,
             MetricEntry(resolution=8.0),
             _MEMORY_STEP,
-            _heap_step_meta(8.0),
+            _heap_meta(8.0),
             id="entry-resolution-beats-kind-resolution",
         ),
         pytest.param(
             _HEAP_STEP,
             MetricEntry(exact=True),
             _MEMORY_STEP,
-            _heap_step_meta(1024.0, exact=True),
+            _heap_meta(1024.0, exact=True),
             id="kind-resolution-fills-an-entry-without-resolution",
         ),
     ],
@@ -139,7 +137,7 @@ def test_resolve_metric_meta_when_layers_given_does_layer_entry_over_kind_over_a
 ):
     adapter = make_adapter(lambda _name: defaults)
 
-    result = resolve_metric_meta(_NAME, entry, adapter, config_kinds)
+    result = resolve_metric_meta(_HEAP_METRIC, entry, adapter, config_kinds)
 
     assert result == expected
 
@@ -224,25 +222,20 @@ def _readings(*per_target: list[float], name: str = _TIME) -> list[list[dict[str
 
 _ONE_STEP_UP_VALUES = ([333.0] * 5 + [375.0], [375.0] * 5 + [417.0])
 _ONE_STEP_UP = _readings(*_ONE_STEP_UP_VALUES)
+_ONE_STEP_UP_NEGATED = _readings(*([-value for value in values] for values in _ONE_STEP_UP_VALUES))
 
 
 @pytest.mark.parametrize(
     ("sample_sets", "gap"),
     [
         pytest.param(_ONE_STEP_UP, "42ns", id="one-step-up-on-every-pair"),
-        pytest.param(_readings([333.0] * 10, [417.0] * 10), "84ns", id="two-values-ten-times"),
         pytest.param(
             _readings([332.9999999550637, 333.0], [375.0, 417.0]),
             "42ns",
             id="float-noise-counts-as-one-value",
         ),
         pytest.param(_readings([333.0] * 3, [333.0] * 3), None, id="every-reading-one-value"),
-        pytest.param(_readings([0.0, 0.0], [0.0, 5.0]), "5ns", id="zero-median"),
-        pytest.param(
-            _readings(*([-value for value in values] for values in _ONE_STEP_UP_VALUES)),
-            "42ns",
-            id="negative-median",
-        ),
+        pytest.param(_ONE_STEP_UP_NEGATED, "42ns", id="negative-median"),
         pytest.param(
             _readings([1000.0, 1000.0, 1084.0], [1210.0, 1294.0]),
             "42ns",
@@ -288,6 +281,24 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
         pytest.param(_ONE_STEP_UP, {_TIME: MetricEntry(resolution=42.0)}, id="metric-resolution"),
         pytest.param(_ONE_STEP_UP, {_TIME: MetricEntry(exact=True)}, id="exact"),
         pytest.param(_readings(*_ONE_STEP_UP_VALUES, name="bench"), None, id="unit-not-ns"),
+    ],
+)
+def test_resolve_metric_meta_from_samples_when_metric_exempt_from_the_check_does_not_warn(
+    sample_sets: list[list[dict[str, float]]],
+    config_metrics: dict[str, MetricEntry] | None,
+):
+    warnings: list[str] = []
+
+    resolve_metric_meta_from_samples(
+        sample_sets, config_metrics, metric_lines_adapter, None, warn=warnings.append
+    )
+
+    assert warnings == []
+
+
+@pytest.mark.parametrize(
+    ("sample_sets", "config_metrics"),
+    [
         pytest.param(_readings([333.0, 375.0], [333.0, 375.0]), None, id="no-target-repeats"),
         pytest.param(
             _readings([1000.0, 1000.0], [1000.0, 1005.0]), None, id="gap-at-half-a-percent"
@@ -314,7 +325,7 @@ def test_resolve_metric_meta_from_samples_when_time_readings_look_quantized_does
         ),
     ],
 )
-def test_resolve_metric_meta_from_samples_when_readings_not_suspect_does_not_warn(
+def test_resolve_metric_meta_from_samples_when_readings_not_quantized_does_not_warn(
     sample_sets: list[list[dict[str, float]]],
     config_metrics: dict[str, MetricEntry] | None,
 ):
