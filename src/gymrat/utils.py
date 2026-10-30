@@ -356,6 +356,19 @@ def own_values(samples: Sequence[dict[str, float]], name: str) -> list[float]:
     return [record[name] for record in samples if name in record]
 
 
+def first_set[T](*values: T | None, default: T) -> T:
+    """The first value that is set, in precedence order, else ``default``.
+
+    Args:
+        *values: The candidates, highest precedence first; ``None`` means unset.
+        default: What to return when every candidate is unset.
+
+    Returns:
+        The first candidate that is not ``None``, or ``default``.
+    """
+    return next((value for value in values if value is not None), default)
+
+
 def coerce_integer(value: object) -> object:
     """Fold an integral float into ``int`` so it satisfies strict integer validation.
 

@@ -26,6 +26,7 @@ from gymrat import utils
 from gymrat.adapters.registry import get_adapter
 from gymrat.config import FILTER_PLACEHOLDER, GEOMEAN_PRIMARY, ResolvedConfig
 from gymrat.loop.gating import is_gating_regression
+from gymrat.metric_meta import resolve_metric_meta_from_samples
 from gymrat.model import ExactVerdict
 from gymrat.progress_events import (
     ConfirmFinished,
@@ -49,7 +50,6 @@ from gymrat.sampling import (
     TargetContext,
     TargetSamples,
     collect_samples,
-    resolve_metric_meta_from_samples,
 )
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from gymrat.adapters.registry import get_adapter
+from gymrat.metric_meta import resolve_metric_meta_from_samples
 from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
 from gymrat.sampling import (
@@ -24,7 +25,6 @@ from gymrat.sampling import (
     WorktreeInfo,
     collect_samples,
     compute_metric_stats,
-    resolve_metric_meta_from_samples,
     run_with_worktrees,
     to_context,
 )
