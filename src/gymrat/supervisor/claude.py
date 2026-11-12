@@ -18,7 +18,6 @@ SDK's own dataclasses.
 import asyncio
 import contextlib
 import json
-import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from math import ceil, isfinite
@@ -403,7 +402,7 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     return options
 
 
-async def _disconnect_quietly(client: ClaudeClient) -> None:
+async def _disconnect_quietly(client: ClaudeClient, warn: utils.WarnSink) -> None:
     """Disconnect ``client``, warning instead of raising.
 
     The caller's outcome is already settled by the time this runs; a
@@ -411,11 +410,12 @@ async def _disconnect_quietly(client: ClaudeClient) -> None:
 
     Args:
         client: The client to disconnect.
+        warn: Receives the failure when the disconnect raises.
     """
     try:
         await client.disconnect()
     except Exception as err:  # noqa: BLE001 - must not replace the already-settled outcome
-        warnings.warn(f"claude client disconnect failed: {err!s}", RuntimeWarning, stacklevel=2)
+        warn(f"warning: claude client disconnect failed: {err!s}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,17 +443,17 @@ class _ClaudeSession:
 
     def __init__(
         self,
-        client_factory: ClientFactory | None,
+        driver: "_ClaudeDriver",
         prompt: SessionPrompt,
         observer: SessionObserver,
         abort: asyncio.Event,
-        factories: _OptionFactories,
     ) -> None:
-        self._client_factory = client_factory
+        self._client_factory = driver.client_factory
         self._prompt = prompt
         self._observer = observer
         self._abort = abort
-        self._factories = factories
+        self._factories = driver.factories
+        self._warn = driver.warn
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._disconnecting: asyncio.Task[None] | None = None
@@ -515,7 +515,7 @@ class _ClaudeSession:
         if self._client is None:
             return
         if self._disconnecting is None:
-            self._disconnecting = asyncio.create_task(_disconnect_quietly(self._client))
+            self._disconnecting = asyncio.create_task(_disconnect_quietly(self._client, self._warn))
         await asyncio.shield(self._disconnecting)
 
     def _settled_or(self, default: SessionOutcome) -> SessionOutcome:
@@ -684,6 +684,7 @@ class _ClaudeSession:
 class _ClaudeDriver:
     client_factory: ClientFactory | None
     factories: _OptionFactories
+    warn: utils.WarnSink
 
     def start(
         self,
@@ -691,13 +692,15 @@ class _ClaudeDriver:
         observer: SessionObserver,
         abort: asyncio.Event,
     ) -> DriverSession:
-        return _ClaudeSession(self.client_factory, prompt, observer, abort, self.factories)
+        return _ClaudeSession(self, prompt, observer, abort)
 
 
 def create_claude_driver(
     client_factory: ClientFactory | None = None,
     tools: ToolsFactory | None = None,
     hooks: HooksFactory | None = None,
+    *,
+    warn: utils.WarnSink = utils.warn_to_stderr,
 ) -> Driver:
     """Build a :class:`Driver` backed by the Claude Agent SDK.
 
@@ -712,8 +715,10 @@ def create_claude_driver(
         hooks: Builds the SDK hooks mapping. Called once per session start;
             its result goes under ``hooks`` in the options. When ``None``, no
             ``hooks`` key is added to the options.
+        warn: Receives a warning when a session's client fails to disconnect;
+            the session's settled outcome stands regardless.
 
     Returns:
         A driver whose ``start`` launches one SDK session per call.
     """
-    return _ClaudeDriver(client_factory, _OptionFactories(tools=tools, hooks=hooks))
+    return _ClaudeDriver(client_factory, _OptionFactories(tools=tools, hooks=hooks), warn)

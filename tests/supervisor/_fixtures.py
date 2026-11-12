@@ -1119,6 +1119,7 @@ def start_claude_session(
     abort: asyncio.Event | None = None,
     hooks: HooksFactory | None = None,
     tools: ToolsFactory | None = None,
+    warn: WarnSink = warn_to_stderr,
 ) -> DriverSession:
     """Start a Claude driver session that streams from ``client``.
 
@@ -1129,11 +1130,14 @@ def start_claude_session(
         abort: The session's abort event; a fresh, never-set one when omitted.
         hooks: The hooks factory the driver passes on, if any.
         tools: The tools factory the driver passes on, if any.
+        warn: Receives the driver's warnings; stderr when omitted.
 
     Returns:
         The running session.
     """
-    driver = create_claude_driver(client_factory=FactoryProbe(client), hooks=hooks, tools=tools)
+    driver = create_claude_driver(
+        client_factory=FactoryProbe(client), hooks=hooks, tools=tools, warn=warn
+    )
     return driver.start(
         prompt or make_prompt(), observer or noop_observer(), abort or asyncio.Event()
     )
@@ -1251,7 +1255,11 @@ async def run_outcome(
 
 
 async def start_past_turns(
-    client: FakeClient, turns: int, prompt: SessionPrompt | None = None
+    client: FakeClient,
+    turns: int,
+    prompt: SessionPrompt | None = None,
+    *,
+    warn: WarnSink = warn_to_stderr,
 ) -> tuple[DriverSession, list[SessionEvent]]:
     """Start a Claude session over ``client`` and wait until it has closed ``turns`` turns.
 
@@ -1263,6 +1271,7 @@ async def start_past_turns(
         client: The fake client the session streams from.
         turns: How many ``TurnEndEvent`` the session must emit before returning.
         prompt: The prompt to start with; ``make_prompt()`` when omitted.
+        warn: Receives the driver's warnings; stderr when omitted.
 
     Returns:
         The running session and the list its observer keeps appending events to.
@@ -1275,7 +1284,7 @@ async def start_past_turns(
         if len(events_of(events, TurnEndEvent)) == turns:
             turns_closed.set()
 
-    session = start_claude_session(client, observer, prompt=prompt)
+    session = start_claude_session(client, observer, prompt=prompt, warn=warn)
     await wait_for_event_or_task(turns_closed, session.outcome)
     return session, events
 

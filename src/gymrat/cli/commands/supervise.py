@@ -439,9 +439,6 @@ def _run_session(ctx: _SessionContext) -> None:
     )
 
     launch = ctx.launch
-    driver = create_claude_driver(
-        tools=gymrat_tools_factory(ctx.root), hooks=supervise_hooks_factory(Path(ctx.root))
-    )
     mode = resolve_render_mode()
     reporter = _create_reporter(ctx, mode)
 
@@ -450,6 +447,11 @@ def _run_session(ctx: _SessionContext) -> None:
         # error reaches the terminal, or when the run path closes it early.
         display = armed.enter_context(ExitStack())
         display.callback(reporter.stop)
+        driver = create_claude_driver(
+            tools=gymrat_tools_factory(ctx.root),
+            hooks=supervise_hooks_factory(Path(ctx.root)),
+            warn=reporter.warn,
+        )
         budget, release_budget = arm_budget(ctx.root, launch.max_minutes, warn=reporter.warn)
         armed.callback(release_budget)
         # A signal mid-exit-sequence exits the process before the loop can cancel

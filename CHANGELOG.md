@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stop the quantized-readings warning from firing on finely spaced readings that happen to repeat,
   and have it advise setting `resolution` to the timer's tick divided by the calls each reading
   averages instead of the bare tick.
+- Exit with git's own error from `measure`, `compare` and `probe` when git cannot resolve the
+  repository, instead of silently dropping the budget trailer and over-budget warning.
+- Fail a bench run whose stdin payload could not be written, instead of reporting a normal run.
+- Keep a file that appears while `gymrat init` runs, instead of overwriting it.
+- Keep the new workspace when a failed `start` cannot read its session log back, and warn when
+  removing a stale session worktree fails.
+- Close a single-kind comparison table that gates nothing on that kind's geomean, instead of
+  reporting no stable metrics.
+- Warn about corrupt supervisor-log lines in `gymrat export` instead of skipping them silently, and
+  ignore a torn last line.
+- Show failed process-group cleanup, background-task, interrupt and disconnect steps as warnings,
+  and route `supervise` warnings through its dashboard.
 
 ## [0.22.0] - 2026-10-24
 

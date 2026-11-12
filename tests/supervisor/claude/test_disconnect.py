@@ -6,15 +6,14 @@ waiter that does not shield the call would cut the disconnect short.
 """
 
 import asyncio
-import contextlib
-import warnings
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable
 from typing import override
 
 import pytest
 from typing_extensions import TypedDict
 
 from gymrat.supervisor.driver import DriverSession, SessionOutcome
+from gymrat.utils import WarnSink, warn_to_stderr
 from tests.supervisor._fixtures import (
     FakeClient,
     abort_on_first_usage_update,
@@ -85,15 +84,17 @@ async def _outcome(session: DriverSession) -> SessionOutcome:
     return outcome
 
 
-async def _start_past_first_turn(client: FakeClient) -> DriverSession:
+async def _start_past_first_turn(
+    client: FakeClient, warn: WarnSink = warn_to_stderr
+) -> DriverSession:
     """Start a session over ``client`` and wait until it has closed its first turn."""
-    session, _ = await start_past_turns(client, 1)
+    session, _ = await start_past_turns(client, 1, warn=warn)
     return session
 
 
-async def _end_by_end_call(client: FakeClient) -> SessionOutcome:
+async def _end_by_end_call(client: FakeClient, warn: WarnSink = warn_to_stderr) -> SessionOutcome:
     """Run a session over ``client`` and end it with ``end()`` after its first turn."""
-    session = await _start_past_first_turn(client)
+    session = await _start_past_first_turn(client, warn)
     outcome = await end_and_settle(session)
     await _drain()
     return outcome
@@ -111,22 +112,6 @@ async def _end_by_abort(client: FakeClient) -> SessionOutcome:
 async def _end_by_stream(client: FakeClient) -> SessionOutcome:
     """Run a session over ``client`` until its own stream ends it."""
     return await _outcome(start_claude_session(client))
-
-
-@contextlib.contextmanager
-def _recorded_warnings() -> Generator[list[warnings.WarningMessage]]:
-    """Record every warning raised in the block, none filtered out."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        yield caught
-
-
-def _disconnect_warnings(caught: Sequence[warnings.WarningMessage]) -> list[str]:
-    return [
-        str(w.message)
-        for w in caught
-        if issubclass(w.category, RuntimeWarning) and _DISCONNECT_ERROR in str(w.message)
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +140,10 @@ async def test_start_when_session_ended_does_disconnect_client_exactly_once(
 
 async def test_start_when_disconnect_raises_does_keep_the_settled_outcome_with_one_warning():
     client = _DisconnectFailingClient(_one_turn())
+    warned: list[str] = []
 
-    with _recorded_warnings() as caught:
-        outcome = await _end_by_end_call(client)
+    outcome = await _end_by_end_call(client, warned.append)
 
     assert (outcome.reason, outcome.cost_usd) == ("completed", 0.01)
-    assert len(_disconnect_warnings(caught)) == 1
+    assert len(warned) == 1
+    assert _DISCONNECT_ERROR in warned[0]

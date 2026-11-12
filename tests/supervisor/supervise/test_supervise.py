@@ -299,13 +299,13 @@ _GRACE_RECOVERY_TIMEOUT_S = 5
         pytest.param(_RejectingInterruptSession, id="coroutine-fails"),
     ],
 )
-async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warning(
+async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_one_warning_to_the_sink(
     root: str,
-    capsys: pytest.CaptureFixture[str],
     make_session: Callable[[DriverSession], DriverSession],
 ):
     inner = create_mock_driver([blocked_step()])
     driver = WrapDriver(inner, lambda session, _abort: make_session(session))
+    warned: list[str] = []
 
     async with asyncio.timeout(_GRACE_RECOVERY_TIMEOUT_S):
         result = await run_supervised(
@@ -313,11 +313,13 @@ async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warn
             driver,
             max_minutes=0.001,
             grace_ms=50,
+            warn=warned.append,
         )
     await asyncio.sleep(0)
 
     assert result.ended_by == "wall-clock"
-    assert "interrupt exploded" in capsys.readouterr().err
+    assert len(warned) == 1
+    assert "interrupt exploded" in warned[0]
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +369,7 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str)
 
 
 # ---------------------------------------------------------------------------
-# an exception from a spawned session call surfaces on stderr
+# an exception from a spawned session call reaches the warn sink
 # ---------------------------------------------------------------------------
 
 
@@ -376,7 +378,7 @@ class _EndThenRaiseSession(DelegatingSession):
 
     The inner call releases the mock's turn gate so the session settles
     normally; the post-call raise fails a session call the supervisor spawned
-    in the background, which it must surface through ``warn_to_stderr``.
+    in the background, which it must surface through the config's warn sink.
     """
 
     @override
@@ -386,16 +388,15 @@ class _EndThenRaiseSession(DelegatingSession):
         raise RuntimeError(msg)
 
 
-async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
-    root: str,
-    capsys: pytest.CaptureFixture[str],
-):
+async def test_supervise_when_spawned_end_raises_does_send_one_warning_to_the_sink(root: str):
     inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
     driver = WrapDriver(inner, lambda session, _abort: _EndThenRaiseSession(session))
+    warned: list[str] = []
 
-    result = await run_supervised(root, driver, max_usd=0.1)
+    result = await run_supervised(root, driver, max_usd=0.1, warn=warned.append)
     # Yield once so the background end's done-callback reports its failure.
     await asyncio.sleep(0)
 
     assert result.ended_by == "spend-cap"
-    assert "end exploded" in capsys.readouterr().err
+    assert len(warned) == 1
+    assert "end exploded" in warned[0]
