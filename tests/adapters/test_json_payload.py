@@ -77,9 +77,13 @@ def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure(
     # should prefer the decode failure (explaining WHY the real payload could not
     # parse) over the generic "JSON missing items array".
     truncated = '{"items":[{"name":"encode"}],"extra":'
+    with pytest.raises(json.JSONDecodeError) as decode_info:
+        json.JSONDecoder().raw_decode(truncated)
 
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON:"):
+    with pytest.raises(AdapterError) as exc_info:
         _FIRST.parse(truncated)
+
+    assert str(decode_info.value) in str(exc_info.value)
 
 
 def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():

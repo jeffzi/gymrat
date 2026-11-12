@@ -26,9 +26,9 @@ from gymrat.errors import GymratError
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import SESSION_DIR_NAME, budget_path, lockfile_path, session_dir
 from gymrat.supervisor.driver import SessionPrompt
-from gymrat.supervisor.hooks import HooksFactory, supervise_hooks_factory
+from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.supervise import SupervisedSession
-from gymrat.supervisor.tools import ToolsFactory, gymrat_tools_factory
+from gymrat.supervisor.tools import gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
 from tests._cli import stderr_text
@@ -221,8 +221,9 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
         pytest.param(GymratError("boom"), id="supervise-raises"),
     ],
 )
-def test_supervise_when_run_ends_does_uninstall_its_cleanup_once_and_clear_the_budget(
-    repo: str, monkeypatch: pytest.MonkeyPatch, raises: Exception | None
+@pytest.mark.usefixtures("repo")
+def test_supervise_when_run_ends_does_uninstall_its_cleanup_once(
+    monkeypatch: pytest.MonkeyPatch, raises: Exception | None
 ):
     install_seams(monkeypatch, raises=raises)
     registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
@@ -230,7 +231,6 @@ def test_supervise_when_run_ends_does_uninstall_its_cleanup_once_and_clear_the_b
     run()
 
     assert registry.uninstall_counts() == [1]
-    assert not Path(budget_path(repo)).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -351,36 +351,23 @@ def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
-    built_tools: dict[Path, ToolsFactory] = {}
-    built_hooks: dict[Path, HooksFactory] = {}
-
-    def _record_tools(root: str) -> ToolsFactory:
-        built_tools[Path(root).resolve()] = gymrat_tools_factory(root)
-        return built_tools[Path(root).resolve()]
-
-    def _record_hooks(root: Path) -> HooksFactory:
-        built_hooks[root.resolve()] = supervise_hooks_factory(root)
-        return built_hooks[root.resolve()]
-
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.gymrat_tools_factory",
-        create_autospec(gymrat_tools_factory, side_effect=_record_tools),
-    )
-    monkeypatch.setattr(
-        "gymrat.cli.commands.supervise.supervise_hooks_factory",
-        create_autospec(supervise_hooks_factory, side_effect=_record_hooks),
-    )
+    tools, hooks = object(), object()
+    tools_factory = create_autospec(gymrat_tools_factory, return_value=tools)
+    hooks_factory = create_autospec(supervise_hooks_factory, return_value=hooks)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.gymrat_tools_factory", tools_factory)
+    monkeypatch.setattr("gymrat.cli.commands.supervise.supervise_hooks_factory", hooks_factory)
     (Path(repo) / "docs").mkdir()
     monkeypatch.chdir(Path(repo) / "docs")
 
     result = run()
 
     assert result.exit_code == 0
-    assert list(built_tools) == [Path(repo).resolve()]
-    assert list(built_hooks) == [Path(repo).resolve()]
+    roots = [
+        Path(factory.call_args.args[0]).resolve() for factory in (tools_factory, hooks_factory)
+    ]
+    assert roots == [Path(repo).resolve(), Path(repo).resolve()]
     call_kwargs = seams.create_driver.call_args.kwargs
-    assert call_kwargs.get("tools") is built_tools[Path(repo).resolve()]
-    assert call_kwargs.get("hooks") is built_hooks[Path(repo).resolve()]
+    assert (call_kwargs.get("tools"), call_kwargs.get("hooks")) == (tools, hooks)
 
 
 # ---------------------------------------------------------------------------

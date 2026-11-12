@@ -206,26 +206,14 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session():
     assert probe.calls == 2
 
 
-@pytest.mark.parametrize(
-    ("prompt", "env"),
-    [
-        pytest.param(
-            make_prompt(traceparent=TRACEPARENT),
-            {TRACEPARENT_ENV: TRACEPARENT},
-            id="traceparent",
-        ),
-        pytest.param(make_prompt(), {}, id="no-traceparent"),
-    ],
-)
-async def test_start_when_tools_given_does_call_factory_with_the_session_context(
-    prompt: SessionPrompt, env: dict[str, str]
-):
+async def test_start_when_tools_given_does_call_factory_with_the_session_context():
     probe = ToolsFactoryProbe()
     abort = asyncio.Event()
+    prompt = make_prompt(traceparent=TRACEPARENT)
 
     await run_outcome(FiniteClient([result_message()]), prompt=prompt, abort=abort, tools=probe)
 
-    assert probe.calls == [(abort, env)]
+    assert probe.calls == [(abort, {TRACEPARENT_ENV: TRACEPARENT})]
 
 
 # ---------------------------------------------------------------------------
@@ -256,52 +244,31 @@ async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_
 
 
 class _ClockedClient(FiniteClient):
-    """A finite client that sets both fake clocks before yielding each message."""
+    """A finite client that sets the fake monotonic clock before yielding each message."""
 
-    def __init__(
-        self,
-        steps: Sequence[tuple[float, int, object]],
-        monotonic: Clock[float],
-        wall_ns: Clock[int],
-    ) -> None:
-        super().__init__([message for _, _, message in steps])
+    def __init__(self, steps: Sequence[tuple[float, object]], monotonic: Clock[float]) -> None:
+        super().__init__([message for _, message in steps])
         self._steps = steps
         self._monotonic = monotonic
-        self._wall_ns = wall_ns
 
     @override
     async def receive_messages(self) -> AsyncIterator[object]:
-        for monotonic_ms, wall_ns, message in self._steps:
+        for monotonic_ms, message in self._steps:
             self._monotonic.now = monotonic_ms
-            self._wall_ns.now = wall_ns
             await asyncio.sleep(0)
             yield message
 
 
-async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
+async def test_start_when_tool_result_matches_start_does_report_monotonic_duration(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monotonic = install_monotonic_clock(monkeypatch)
-    wall_ns = Clock(0)
-    monkeypatch.setattr("time.time_ns", wall_ns)
-    monkeypatch.setattr("time.time", lambda: wall_ns.now / 1_000_000_000)
-    one_hour_ns = 3_600 * 1_000_000_000
-    start_wall_ns = 1_700_000_000 * 1_000_000_000
     client = _ClockedClient(
         [
-            (
-                1_000.0,
-                start_wall_ns,
-                assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"})),
-            ),
-            (
-                1_250.0,
-                start_wall_ns - one_hour_ns,
-                tool_results(ToolResultBlock(tool_use_id="tu_1", content="done")),
-            ),
+            (1_000.0, assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"}))),
+            (1_250.0, tool_results(ToolResultBlock(tool_use_id="tu_1", content="done"))),
         ],
         monotonic,
-        wall_ns,
     )
     probe = collecting_observer()
 

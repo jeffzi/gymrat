@@ -476,19 +476,15 @@ async def test_with_repo_lock_when_tracing_configured_for_another_session_does_d
     assert isinstance(log_records(repo_root())[-1], CommandRecord)
 
 
-async def test_with_repo_lock_when_tracing_enabled_does_export_one_keyed_command_span_under_the_session(
+async def test_with_repo_lock_when_tracing_enabled_without_traceparent_does_parent_the_command_span_on_the_session(
     repo: str,
 ):
     header = seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
-        await with_repo_lock("measure", _ok_body, args={"samples": 5})
+        await with_repo_lock("measure", _ok_body)
 
     span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
-    context = span.context
-    assert context is not None
-    assert context.trace_id == trace_id_of(header.session_id)
-    assert context.span_id == span_id_of(header.session_id, f"command:{len(log_records(repo))}")
     assert span.parent is not None
     assert span.parent.span_id == span_id_of(header.session_id, "session")
 

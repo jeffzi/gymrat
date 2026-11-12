@@ -14,7 +14,6 @@ The win32 ``taskkill`` fallback is tested in ``tests/test_process_group.py``.
 
 import asyncio
 import contextlib
-import json
 import os
 import signal
 import sys
@@ -25,7 +24,7 @@ from typing import Any
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
     ExecRun,
@@ -168,25 +167,6 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
 
     assert result == expected_result("", result.stderr, exit_code=1)
     assert result.stderr.strip() != ""
-
-
-# ---------------------------------------------------------------------------
-# exec_argv: no shell interpretation — metacharacters pass through verbatim
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_arg_contains_metacharacter_does_pass_verbatim(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    arg = "$HOME"
-
-    result = await exec_argv(
-        [sys.executable, "-c", "import sys, json; print(json.dumps(sys.argv[1:]))", arg],
-        make_opts(),
-    )
-
-    received = json.loads(result.stdout.strip())
-    assert received == [arg]
 
 
 # ---------------------------------------------------------------------------

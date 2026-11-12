@@ -49,6 +49,12 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
             id="blank-string",
         ),
         pytest.param(
+            Annotated[str, Field(pattern=NON_BLANK_PATTERN)],
+            "\u00a0",
+            "a non-empty string",
+            id="no-break-space",
+        ),
+        pytest.param(
             Annotated[str, Field(min_length=2)], "a", "a valid value", id="longer-min-length"
         ),
     ],

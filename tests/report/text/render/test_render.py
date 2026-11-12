@@ -2,8 +2,7 @@
 
 These cover the comparison table's run header and label truncation.
 
-They also cover the measurement report: its flat table, multi-kind sections,
-and its golden output.
+They also cover the measurement report's golden output.
 """
 
 from __future__ import annotations
@@ -17,22 +16,15 @@ from tests.report._assertions import (
     line_starting_with,
     stripped_cells,
     table_region,
-    table_rows,
 )
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
 )
-from tests.report._measurements import (
-    create_measurement_result,
-    measured_metric,
-    two_kind_measurement,
-)
+from tests.report._measurements import two_kind_measurement
 
 if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
-
-    from gymrat.report.types import MeasurementResult
 
 
 # ---------------------------------------------------------------------------
@@ -69,57 +61,6 @@ def test_render_report_when_variant_label_overflows_does_truncate_it():
         "main",
         shown,
         "vs main",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# flat measurement table
-# ---------------------------------------------------------------------------
-
-
-def _flat_measurement() -> MeasurementResult:
-    """A flat single-kind run of two metrics measured in nanoseconds."""
-    return create_measurement_result(
-        metrics={
-            "decode/time": measured_metric(median=100, spread=1, unit="ns"),
-            "encode/time": measured_metric(median=2048, spread=2, unit="ns"),
-        }
-    )
-
-
-def test_render_measure_report_when_one_kind_does_draw_one_flat_table_of_medians():
-    report = render_measure_report(_flat_measurement())
-
-    assert table_region(report)[1:] == [
-        "metric",
-        "<rule>",
-        "decode/time",
-        "encode/time",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# multi-kind measurement with no groups
-# ---------------------------------------------------------------------------
-
-
-def test_render_measure_report_when_kinds_differ_without_groups_does_show_short_names_under_titles():
-    result = create_measurement_result(
-        metrics={
-            "decode#time": measured_metric(kind="time", short_name="decode", unit="ns"),
-            "encode#allocation_throughput": measured_metric(
-                kind="allocation_throughput", short_name="encode"
-            ),
-        },
-    )
-
-    rows = table_rows(render_measure_report(result, ReportOptions(color=False)))
-
-    assert [stripped_cells(row) for row in rows] == [
-        ["time", "main"],
-        ["decode", "100ns ± 1%"],
-        ["allocation_throughput", "main"],
-        ["encode", "100 ± 1%"],
     ]
 
 

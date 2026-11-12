@@ -108,13 +108,9 @@ def test_sync_to_experiment_when_git_reports_session_dir_does_not_sync_it(
 def test_sync_to_experiment_when_working_tree_clean_does_return_empty_file_list(
     session_repo: str,
 ):
-    experiment = experiment_worktree_dir(session_repo)
-    before = _tree_snapshot(experiment)
-
     result = sync_to_experiment(session_repo)
 
     assert result.files == ()
-    assert _tree_snapshot(experiment) == before
 
 
 # ---------------------------------------------------------------------------

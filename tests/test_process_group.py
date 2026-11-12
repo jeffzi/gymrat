@@ -764,9 +764,6 @@ def test_kill_process_group_when_member_never_goes_does_stop_at_the_settle_bound
 _PLAIN_PID = 424242
 
 
-_TASKKILL_ARGV = ["taskkill", "/F", "/T", "/PID", str(_PLAIN_PID)]
-
-
 def _taskkill_raises(error: Exception) -> Callable[..., subprocess.CompletedProcess[bytes]]:
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         raise error
@@ -801,7 +798,7 @@ def test_kill_process_group_when_win32_tree_has_no_job_does_fall_back_to_taskkil
         warnings.simplefilter("always")
         kill_process_group(_PLAIN_PID)
 
-    assert calls == [_TASKKILL_ARGV]
+    assert [argv[-1] for argv in calls] == [str(_PLAIN_PID)]
     messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
     assert [str(_PLAIN_PID) in message and str(error) in message for message in messages] == warned
 
@@ -847,7 +844,7 @@ def test_kill_process_group_when_job_refused_does_fall_back_to_taskkill_with_one
     assert len(runtime_warnings) == 1, "a refused job has to warn exactly once"
     assert str(_CHILD_PID) in runtime_warnings[0], "the one warning does not name the child"
     assert FAKE_WIN_ERROR in runtime_warnings[0], "the one warning does not carry the OS reason"
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+    assert [argv[-1] for argv in argv_calls] == [str(_CHILD_PID)], (
         "a child that never reached a job was not torn down through taskkill"
     )
     assert sorted(jobs.closed) == sorted(closed), "a refused job left a handle open"
@@ -924,7 +921,7 @@ def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill
 
     module.kill_process_group(_CHILD_PID)
 
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+    assert [argv[-1] for argv in argv_calls] == [str(_CHILD_PID)], (
         "the released job was still on record, so the kill reached a closed handle"
     )
     assert jobs.terminated == [JOB_HANDLE], "the kill reached the job after its release"

@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from gymrat.cli.app import app
+from gymrat.config import CONFIG_FILENAME
+from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
 from tests._ansi import strip_ansi
 from tests.cli._origin import set_origin
 from tests.cli._runner import (
@@ -69,9 +71,9 @@ def test_init_when_config_already_exists_does_not_require_bench(existing_config_
 # ---------------------------------------------------------------------------
 
 
-_CONFIG_CREATED = "created at gymrat.toml"
-_RUNBOOK_CREATED = "created at gymrat-runbook.md"
-_SKILL_CREATED = f"created at {Path('.claude/skills/gymrat/SKILL.md')}"
+_CONFIG_CREATED = f"created at {CONFIG_FILENAME}"
+_RUNBOOK_CREATED = f"created at {DEFAULT_RUNBOOK_PATH}"
+_SKILL_CREATED = f"created at {Path(SKILL_RELATIVE_PATH)}"
 
 
 def _leave_base_empty(_base: Path) -> None:
@@ -80,7 +82,7 @@ def _leave_base_empty(_base: Path) -> None:
 
 def _plant_runbook(base: Path) -> None:
     """Leave a runbook at ``base`` from an earlier run."""
-    (base / "gymrat-runbook.md").write_text("# Existing\n", encoding="utf-8")
+    (base / DEFAULT_RUNBOOK_PATH).write_text("# Existing\n", encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -95,7 +97,7 @@ def _plant_runbook(base: Path) -> None:
         pytest.param(
             _plant_runbook,
             [],
-            [_CONFIG_CREATED, "already exists at gymrat-runbook.md", _SKILL_CREATED],
+            [_CONFIG_CREATED, f"already exists at {DEFAULT_RUNBOOK_PATH}", _SKILL_CREATED],
             id="runbook-already-existed",
         ),
         pytest.param(
@@ -128,20 +130,6 @@ def test_init_when_scaffolding_succeeds_does_list_each_artifact_with_its_status(
 # ---------------------------------------------------------------------------
 # base-directory resolution
 # ---------------------------------------------------------------------------
-
-
-def test_init_when_run_in_a_git_repo_subdirectory_does_scaffold_at_the_repo_root(
-    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
-):
-    root = create_scratch_repo()
-    nested = Path(root) / "packages" / "core"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-
-    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
-
-    assert result.exit_code == 0
-    assert (Path(root) / "gymrat.toml").exists()
 
 
 def test_init_when_run_in_a_git_repo_subdirectory_does_print_summary_paths_relative_to_cwd(

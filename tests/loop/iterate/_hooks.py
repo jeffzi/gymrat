@@ -1,4 +1,4 @@
-"""Hook-script builders and record helpers shared by the hooks tests.
+"""Hook-script builders and report helpers shared by the hooks tests.
 
 Every builder writes a numbered Python script into a scratch directory and
 returns the command that runs it under the current interpreter: no shell
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 from gymrat.loop.iterate.run import HookInvocation
-from gymrat.session.records import HookRecord
 from gymrat.session.schema import HookStage
 from tests.loop.iterate._fixtures import iterate_session_header
 
@@ -124,31 +123,6 @@ class HookScripts:
         }
         fields.update(overrides)
         return HookInvocation(**fields)
-
-
-def expected_hook_record(**overrides: Any) -> HookRecord:
-    """The ``HookRecord`` ``run_hook`` produces, with ``at`` and ``duration_ms`` normalized to 0.
-
-    ``at`` and ``duration_ms`` are both nondeterministic, so each defaults to 0
-    here and callers compare against a record whose own ``at`` and
-    ``duration_ms`` they have replaced with 0.
-
-    Args:
-        **overrides: The record's fields. ``timed_out`` defaults to ``False``
-            and ``stderr_bytes`` to 0; every other field is the caller's to name.
-
-    Returns:
-        The expected hook record.
-    """
-    fields: dict[str, Any] = {
-        "type": "hook",
-        "at": 0,
-        "timed_out": False,
-        "stderr_bytes": 0,
-        "duration_ms": 0,
-    }
-    fields.update(overrides)
-    return HookRecord(**fields)
 
 
 def labeled_lines(report: str, stage: HookStage) -> list[str]:

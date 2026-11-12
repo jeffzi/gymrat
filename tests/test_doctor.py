@@ -14,11 +14,9 @@ maps git-missing, outside-repo, and unresolvable root to distinct
 ``GitEnvironment`` outcomes without raising.
 
 The text renderer is pinned by one golden per named scenario (glyphs, hint
-and multi-line indentation, caveat note, summary counts); the JSON renderer
-by the failure flag it adds.
+and multi-line indentation, caveat note, summary counts).
 """
 
-import json
 import re
 import shutil
 import sys
@@ -42,7 +40,6 @@ from gymrat.doctor import (
     build_workflow_section,
     create_doctor_report,
     detect_git_environment,
-    render_doctor_json,
     render_doctor_report,
 )
 from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
@@ -666,17 +663,3 @@ def test_render_doctor_report_when_scenario_rendered_does_match_its_golden(
     output = render_doctor_report(report, color=False)
 
     assert output.split("\n") == snapshot
-
-
-# ---------------------------------------------------------------------------
-# JSON rendering
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_json_when_report_has_a_failure_does_flag_it():
-    report = _mixed_status_report()
-
-    output = render_doctor_json(report)
-
-    document = json.loads(output)
-    assert document["has_failures"] is True

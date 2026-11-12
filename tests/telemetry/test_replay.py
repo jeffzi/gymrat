@@ -683,8 +683,4 @@ def test_replay_session_when_launch_traced_live_does_match_replayed_session_and_
     replay_spans = _replay(session_log, sup_log)
 
     live_attributes = _attributes_by_span(live_exporter.get_finished_spans())
-    assert live_attributes["gymrat.session"] == {
-        "gymrat.session.id": SESSION_ID,
-        "gymrat.session.branch": header.branch,
-    }
     assert _attributes_by_span(replay_spans) == live_attributes

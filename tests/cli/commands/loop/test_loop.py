@@ -1,4 +1,4 @@
-"""Command-level tests for keep, discard, status, and subdirectory resolution.
+"""Command-level tests for keep, discard and status.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
@@ -7,7 +7,7 @@ The seams mocked here mirror the engine suites' boundaries: for ``discard``'s
 prompt the ``is_tty`` check as the ``commands.loop`` module imports it, with the
 answer typed on the runner's stdin. The prompt's closed-stderr case runs the
 CLI in a child process, since only a real file descriptor can be closed. Config
-resolution runs for real, the subdirectory case included, where the test observes the directory a command resolves its config from.
+resolution runs for real.
 
 The documents' shapes are pinned in ``tests/report/test_json_doc.py``;
 iterate's tests live in ``test_iterate``. The budget key of a JSON document is
@@ -54,7 +54,6 @@ from tests.cli._runner import (
 )
 from tests.cli._session import (
     start_edited_session,
-    write_bench_config,
     write_settled_session,
 )
 from tests.cli._signalled_cli import (
@@ -68,12 +67,10 @@ from tests.loop._settle import (
     checks_fail,
     checks_pass,
     settling_record_of,
-    start_with,
     unimproved,
 )
 from tests.session._budget import install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
-    iteration_record,
     last_command_record,
     log_records,
     records_of_type,
@@ -187,30 +184,6 @@ def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: s
 
     assert (result.returncode, result.stdout) == (1, b"")
     assert _discard_state(edited_repo) == (True, False)
-
-
-# ---------------------------------------------------------------------------
-# the loop commands, run from a subdirectory of the repository
-# ---------------------------------------------------------------------------
-
-
-def test_loop_command_when_run_from_subdirectory_does_read_the_config_at_repo_root(
-    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
-):
-    root = create_scratch_repo()
-    start_with(root, (iteration_record(seq=1),))
-    # Only the root holds a config, and its invalid value is what the command reports.
-    write_bench_config(root, samples=0)
-    nested = Path(root) / "packages" / "core"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-
-    result = runner.invoke(app, ["iterate"])
-
-    error = strip_ansi(result.stderr)
-    assert result.exit_code == 2
-    assert "samples" in error
-    assert "got 0" in error
 
 
 # ---------------------------------------------------------------------------

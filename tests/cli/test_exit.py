@@ -22,6 +22,7 @@ import pytest
 import typer
 
 from gymrat.adapters.contract import AdapterError
+from gymrat.cli.console import set_color_override
 from gymrat.cli.exit import (
     BUGS_URL,
     exit_with_error,
@@ -29,6 +30,7 @@ from gymrat.cli.exit import (
     run_cli,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from tests._ansi import SGR_RE
 from tests._process_helpers import run_with_closed_reader
 from tests._rich import unwrap_panel
 from tests._streams import RaisingStream
@@ -197,7 +199,20 @@ def test_format_cli_error_when_plain_error_does_render_the_bare_message(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert output.splitlines()[0] == "Error: boom"
+    first = output.splitlines()[0]
+    assert first.endswith("boom")
+    assert "ValueError" not in first
+
+
+def test_format_cli_error_when_color_override_off_does_render_without_ansi_despite_force_color(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    set_color_override(override=False)
+
+    output = format_cli_error(GymratError("boom"))
+
+    assert not SGR_RE.search(output)
 
 
 # ---------------------------------------------------------------------------

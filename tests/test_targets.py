@@ -103,5 +103,6 @@ def test_resolve_target_when_path_stat_fails_does_raise_resolve_error(
         resolve_target(str(stat_failing_target), repo)
 
     message = str(exc_info.value)
-    assert message.count(str(stat_failing_target)) == 2
     assert isinstance(exc_info.value.__cause__, OSError)
+    assert str(stat_failing_target) in message
+    assert str(exc_info.value.__cause__) in message

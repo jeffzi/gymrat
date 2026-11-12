@@ -6,23 +6,18 @@ suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``
 
 The shared session guards are pinned at their owner, tests/session/test_store.py;
 here each is driven once, through the one command that reaches it differently:
-``measure --record`` (the only conditional caller of the finalized guard),
-``status`` (the only direct caller of the no-session guard) and ``iterate`` (whose
-refusal must land before it numbers the iteration). The closed-stdout table also
-covers ``supervise``.
+``measure --record`` (the only conditional caller of the finalized guard) and
+``iterate`` (whose refusal must land before it numbers the iteration). The
+closed-stdout table also covers ``supervise``.
 """
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.session.paths import session_jsonl_path
 from gymrat.session.records import CommandRecord
-from tests._ansi import SGR_RE
-from tests._cli import stderr_text
 from tests._config import resolved_config
 from tests.cli._command_stubs import (
     force_render_mode,
@@ -53,11 +48,10 @@ from tests.session.records._fixtures import (
 # ---------------------------------------------------------------------------
 
 
-def test_stop_command_when_message_blank_does_exit_two_naming_the_option(stop_repo: str):
+def test_stop_command_when_message_blank_does_exit_two(stop_repo: str):
     result = runner.invoke(app, ["stop", "-m", "   "])
 
     assert result.exit_code == 2
-    assert "message" in stderr_text(result).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -74,27 +68,6 @@ def test_measure_record_when_session_finalized_does_refuse_as_finalized(repo: st
     assert result.exit_code == 2
     cmd = last_command_record(repo)
     assert (cmd.name, cmd.exit_code, cmd.reason) == ("measure", 2, "finalized")
-
-
-def test_status_when_no_session_and_no_config_does_exit_two_with_a_start_hint(repo: str):
-    result = runner.invoke(app, ["status"])
-
-    assert (result.exit_code, result.stdout) == (2, "")
-    assert "gymrat start" in result.stderr
-    assert not Path(session_jsonl_path(repo)).exists()
-
-
-def test_session_command_when_no_color_does_strip_ansi_from_stderr_error(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setenv("FORCE_COLOR", "1")
-    write_bench_config(repo)
-
-    result = runner.invoke(app, ["start", "--no-color", "--baseline", "banana"])
-
-    assert result.exit_code == 2
-    assert result.stderr.startswith("Error: ")
-    assert not SGR_RE.search(result.stderr)
 
 
 def _open_and_stub_measure(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:

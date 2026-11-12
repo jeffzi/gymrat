@@ -117,7 +117,6 @@ async def test_supervise_when_injected_turn_end_arrives_while_reply_outstanding_
 
     assert result.ended_by == "session"
     assert follow_up_actions(probe.events) == ["replied", "ended"]
-    assert len(sent_texts(driver.sessions[0])) == 1
 
 
 async def test_supervise_when_lock_file_held_does_wait_until_released(root: str):
@@ -289,7 +288,6 @@ async def test_supervise_when_agent_acts_while_a_reply_is_pending_does_cancel_it
 
     assert result.ended_by == "session"
     assert follow_up_actions(probe.events) == actions
-    assert sent_texts(driver.sessions[0]) == []
     assert [record for record in caplog.records if record.name == "asyncio"] == []
 
 

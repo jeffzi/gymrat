@@ -78,29 +78,16 @@ def test_load_config_file_collecting_when_key_unknown_does_report_its_path(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def _wrong_type(content: dict[str, object], key_path: str, expected: str, label: str) -> object:
-    return pytest.param(content, key_path, expected, id=f"{key_path}-{label}")
-
-
-@pytest.mark.parametrize(
-    ("content", "key_path", "expected"),
-    [
-        _wrong_type({"metrics": 42}, "metrics", "an object", "integer"),
-        _wrong_type({"bench": " "}, "bench", "a non-empty string", "space"),
-        _wrong_type({"bench": "\u00a0"}, "bench", "a non-empty string", "no-break-space"),
-        _wrong_type({"samples": 1.5}, "samples", "an integer", "fraction"),
-    ],
-)
-def test_load_config_file_collecting_when_value_invalid_does_name_key_path_and_expected_shape(
-    tmp_path: Path, content: dict[str, object], key_path: str, expected: str
+def test_load_config_file_collecting_when_metrics_not_a_mapping_does_name_key_path_and_expected_shape(
+    tmp_path: Path,
 ):
-    config_path = write_config(tmp_path, content)
+    config_path = write_config(tmp_path, {"metrics": 42})
 
     result = load_config_file_collecting(config_path, required=False)
 
     assert (result.config_file, len(result.problems)) == (None, 1)
-    assert key_path in result.problems[0]
-    assert expected in result.problems[0]
+    assert "metrics" in result.problems[0]
+    assert "an object" in result.problems[0]
 
 
 def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(

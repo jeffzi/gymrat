@@ -92,7 +92,7 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
 
     output = stderr_text(result)
     assert result.exit_code == 2, output
-    assert "No spans recorded" in output
+    assert SESSION_ID in output
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,6 @@ def test_export_when_session_log_missing_does_exit_two_reporting_no_session_with
 
     first_line = stderr_text(result).splitlines()[0]
     assert result.exit_code == 2
-    assert "No session found" in first_line
     assert session_log in first_line
     assert BUGS_URL not in combined_output(result)
 

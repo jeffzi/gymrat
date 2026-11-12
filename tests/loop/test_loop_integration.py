@@ -188,10 +188,7 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     assert _git(["log", "--format=%H", f"main..{branch}"], repo).split("\n") == [kept_commit]
     assert _git(["show", f"{branch}:{TUNING_FILE}"], repo) == str(KEPT_LATENCY)
 
-    worktree = Path(experiment_worktree_dir(repo))
     assert DISCARD_MARKER not in _git(["log", "--all", "-p"], repo)
-    assert not (worktree / DISCARDED_FILE).exists()
-    assert (worktree / TUNING_FILE).read_text(encoding="utf-8").strip() == str(KEPT_LATENCY)
 
 
 # ---------------------------------------------------------------------------

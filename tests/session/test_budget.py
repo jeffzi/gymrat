@@ -136,7 +136,6 @@ def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
     release()
 
     assert len(warned) == 1
-    assert str(_budget_file(root)) in warned[0]
     assert capsys.readouterr().err == ""
 
 

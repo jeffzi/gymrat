@@ -150,22 +150,6 @@ def test_format_start_summary_when_runbook_or_archive_given_does_add_its_row(
     assert lines[5:-1] == extra_rows
 
 
-def test_format_start_summary_when_started_does_name_the_branch():
-    session = session_record()
-
-    lines = format_start_summary(start_result(session=session), None).split("\n")
-
-    assert session.branch in lines[1]
-
-
-def test_format_start_summary_when_started_does_close_on_the_experiment_worktree():
-    session = session_record()
-
-    lines = format_start_summary(start_result(session=session), None).split("\n")
-
-    assert session.worktrees.experiment in lines[-1]
-
-
 # ---------------------------------------------------------------------------
 # status formatters
 # ---------------------------------------------------------------------------

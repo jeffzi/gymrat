@@ -27,7 +27,7 @@ from tests._exec_fixtures import (
     capped_result,
     install_exec,
 )
-from tests.loop.iterate._hooks import HookScripts, expected_hook_record, labeled_lines
+from tests.loop.iterate._hooks import HookScripts, labeled_lines
 from tests.session.records._fixtures import SESSION_ID, iteration_record
 
 
@@ -38,7 +38,7 @@ def hooks(tmp_path: Path) -> HookScripts:
 
 
 # ---------------------------------------------------------------------------
-# run_hook — payload and worktree
+# run_hook — payload
 # ---------------------------------------------------------------------------
 
 
@@ -81,16 +81,6 @@ async def test_run_hook_when_command_runs_does_hand_stage_payload_on_stdin(
             "iteration_count": iteration_count,
         },
     }
-
-
-async def test_run_hook_when_command_runs_does_run_in_experiment_worktree(
-    hooks: HookScripts,
-) -> None:
-    command = hooks.hook_command('open("landed.txt", "w", encoding="utf-8").write("here")')
-
-    await run_hook(hooks.invocation_of(command))
-
-    assert (Path(hooks.experiment_dir) / "landed.txt").read_text(encoding="utf-8") == "here"
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +186,7 @@ async def test_run_hook_when_hook_exits_nonzero_does_surface_the_failure(
         True,
         "no warm copy",
     )
-    assert run.record.model_copy(update={"duration_ms": 0, "at": 0}) == expected_hook_record(
-        stage="before", seq=2, exit_code=3, stdout_bytes=18, stderr_bytes=13
-    )
+    assert run.record.exit_code == 3
 
 
 async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(

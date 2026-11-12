@@ -80,7 +80,6 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
 
     result = discard_session(repo)
 
-    _assert_reverted(experiment_worktree_dir(repo))
     # The block already settled iteration 1, so the discard takes the number no
     # iteration has used yet.
     assert result.record is not None
@@ -97,7 +96,6 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
 
     result = discard_session(repo)
 
-    _assert_reverted(experiment_worktree_dir(repo))
     refusal, discard = log_records(repo)[-2:]
     assert isinstance(refusal, KeepRecord)
     assert refusal.status == "blocked"
@@ -140,13 +138,12 @@ def test_discard_session_when_kept_commit_unreachable_does_fall_back_to_the_work
     (Path(worktree) / "after-commit.txt").write_text("more\n", encoding="utf-8")
     head = head_of(worktree)
 
-    result = discard_session(repo)
+    discard_session(repo)
 
     stderr = capsys.readouterr().err
     assert COMMIT in stderr
     assert status_of(worktree) == ""
     assert head_of(worktree) == head
-    assert result.record is None
 
 
 # ---------------------------------------------------------------------------

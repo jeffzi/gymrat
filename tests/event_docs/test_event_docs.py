@@ -18,6 +18,7 @@ tells the reader to run ``task schemas``.
 """
 
 import json
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -349,34 +350,26 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
 # closed objects — sections state that unlisted keys are rejected
 # ---------------------------------------------------------------------------
 
-#: The line a section carries when its schema sets ``additionalProperties: false``.
-_CLOSED_NOTE = "Rejects keys not listed above."
+
+def _dirty_info_lines(md: str) -> Counter[str]:
+    # Stop at the next heading of any level so a nested section's lines stay out.
+    section = md_section(md, "\n#### `DirtyInfo`\n", "\n#")
+    return Counter(line for line in section.split("\n") if line.strip())
 
 
-def _carries_closed_note(md: str, heading: str) -> bool:
-    # Stop at the next heading of any level so a nested section's note stays out.
-    return _CLOSED_NOTE in md_section(md, f"\n{heading}\n", "\n#").split("\n")
-
-
-@pytest.mark.parametrize(
-    ("channel", "definition", "closed"),
-    [
-        pytest.param(_SESSION_LOG, "BaselineRef", False, id="opened-baseline-ref"),
-        pytest.param(_SUPERVISOR_LOG, "DirtyInfo", True, id="closed-dirty-info"),
-    ],
-)
-def test_render_reference_when_schema_closure_changes_does_follow_the_schema(
-    channel: _Channel, definition: str, closed: bool
-):
+def test_render_reference_when_schema_closed_does_add_one_prose_line_to_its_section():
     schemas = render_json_schemas()
-    object_schema = schemas[channel.schema_index]["$defs"][definition]
-    object_schema.pop("additionalProperties", None)
-    if closed:
-        object_schema["additionalProperties"] = False
+    dirty_info = schemas[_SUPERVISOR_LOG.schema_index]["$defs"]["DirtyInfo"]
+    dirty_info.pop("additionalProperties", None)
+    open_lines = _dirty_info_lines(render_reference(schemas))
+    dirty_info["additionalProperties"] = False
 
-    md = render_reference(schemas)
+    closed_md = render_reference(schemas)
 
-    assert _carries_closed_note(md, f"#### `{definition}`") is closed
+    closed_lines = _dirty_info_lines(closed_md)
+    assert open_lines - closed_lines == Counter()
+    (note,) = (closed_lines - open_lines).elements()
+    assert not note.startswith("|")
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +415,7 @@ _DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository"
         pytest.param(_DUBIOUS_OWNERSHIP, id="git-declines-without-hint"),
     ],
 )
-def test_main_when_repository_lookup_fails_does_report_error_to_stderr_without_writing(
+def test_main_when_repository_lookup_fails_does_report_error_to_stderr(
     git_stderr: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -439,4 +432,3 @@ def test_main_when_repository_lookup_fails_does_report_error_to_stderr_without_w
 
     assert exc_info.value.code == TOOL_FAILURE_EXIT_CODE
     assert capsys.readouterr() == ("", expected_stderr)
-    assert [rel for rel in sorted(render_all()) if (tmp_path / rel).exists()] == []

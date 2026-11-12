@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, create_autospec
@@ -28,7 +27,6 @@ from gymrat.exec import (
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions
 from tests._exec_fixtures import expected_result
-from tests._platform import needs_posix_process_groups
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -37,20 +35,6 @@ from tests._platform import needs_posix_process_groups
 
 def _text_of(result: dict[str, Any]) -> str:
     return result["content"][0]["text"]
-
-
-def _real_host(
-    tmp_path: pathlib.Path,
-    abort: asyncio.Event | None = None,
-    script: str = "import time; time.sleep(60)",
-) -> ToolHost:
-    """Build a ToolHost with a real subprocess prefix (no mock)."""
-    return ToolHost(
-        root=str(tmp_path),
-        abort=abort or asyncio.Event(),
-        extra_env={},
-        argv_prefix=[sys.executable, "-c", script],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +72,12 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
     ],
     indirect=["host"],
 )
-async def test_probe_when_called_does_run_in_the_root_with_the_composed_child_env(
-    tmp_path: pathlib.Path, host: ToolHost, fake_exec: AsyncMock, expected_env: dict[str, str]
+async def test_probe_when_called_does_compose_the_child_env(
+    host: ToolHost, fake_exec: AsyncMock, expected_env: dict[str, str]
 ) -> None:
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
-    assert opts.cwd == str(tmp_path)
     assert opts.env is not None
     assert {key: opts.env.get(key) for key in expected_env} == expected_env
     assert opts.env.get("PATH") == os.environ.get("PATH")
@@ -137,11 +120,11 @@ async def test_tool_host_when_child_fails_without_output_does_return_an_error_na
     assert [fragment for fragment in fragments if fragment not in _text_of(result)] == []
 
 
-async def test_probe_when_json_object_padded_with_whitespace_does_return_document(
+async def test_probe_when_child_exits_on_the_gate_with_a_document_does_return_it(
     host: ToolHost,
     fake_exec: AsyncMock,
 ) -> None:
-    stdout = '\n  {"ok": true}\n'
+    stdout = '{"ok": true}'
     fake_exec.return_value = expected_result(stdout=stdout, exit_code=1)
 
     result = await host.probe({})
@@ -224,18 +207,6 @@ async def test_probe_when_run_times_out_without_stderr_does_return_an_error_nami
 
 
 # ---------------------------------------------------------------------------
-# helpers: concurrency and gate-file child scripts
-# ---------------------------------------------------------------------------
-
-
-async def _wait_for_gate(gate: pathlib.Path) -> None:
-    """Poll until a gate file exists, raising ``TimeoutError`` after five seconds."""
-    async with asyncio.timeout(5.0):
-        while not await asyncio.to_thread(gate.exists):  # noqa: ASYNC110 -- a child process creates the gate file, which no asyncio.Event can observe
-            await asyncio.sleep(0.05)
-
-
-# ---------------------------------------------------------------------------
 # serialization
 # ---------------------------------------------------------------------------
 
@@ -300,23 +271,21 @@ async def test_probe_when_concurrent_refused_does_not_leave_host_busy(busy_host:
 # ---------------------------------------------------------------------------
 
 
-@needs_posix_process_groups
 async def test_probe_when_abort_fires_after_partial_json_does_return_killed(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, fake_exec: AsyncMock
 ) -> None:
-    ready = tmp_path / "ready"
     abort = asyncio.Event()
-    script = (
-        "import pathlib, sys, time; "
-        'sys.stdout.write(\'{"kind": "probe", \'); sys.stdout.flush(); '
-        f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)"
-    )
-    host = _real_host(tmp_path, abort=abort, script=script)
-    task = asyncio.create_task(host.probe({}))
-    await _wait_for_gate(ready)
-
     abort.set()
-    result = await task
+    fake_exec.return_value = expected_result(stdout='{"kind": "probe", ', exit_code=1)
+    host = ToolHost(
+        root=str(tmp_path),
+        abort=abort,
+        extra_env={},
+        argv_prefix=["gym", "rat"],
+        _exec_fn=fake_exec,
+    )
+
+    result = await host.probe({})
 
     assert result["is_error"] is True
     assert '{"kind": "probe"' not in _text_of(result)

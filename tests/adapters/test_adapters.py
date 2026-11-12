@@ -3,7 +3,6 @@ import pytest
 from gymrat.adapters.contract import (
     MEMORY_SUFFIX,
     AdapterError,
-    MetricDefaults,
     defaults_from_suffixes,
 )
 from gymrat.adapters.metric_lines import metric_lines_adapter
@@ -35,20 +34,16 @@ def test_get_adapter_when_name_unknown_does_raise_gymrat_error_describing_valid_
 @pytest.mark.parametrize(
     ("metric_name", "expected"),
     [
-        pytest.param(
-            f"bench{MEMORY_SUFFIX}",
-            MetricDefaults(
-                direction="lower", unit="bytes", kind="memory", short_name="bench", resolution=1.0
-            ),
-            id="memory-suffix",
-        ),
-        pytest.param("foo", MetricDefaults(direction="lower"), id="no-suffix"),
+        pytest.param(f"bench{MEMORY_SUFFIX}", ("bench", "memory"), id="memory-suffix"),
+        pytest.param("foo", (None, None), id="no-suffix"),
     ],
 )
 def test_defaults_from_suffixes_when_kind_suffix_varies_does_derive_defaults_from_it(
-    metric_name: str, expected: MetricDefaults
+    metric_name: str, expected: tuple[str | None, str | None]
 ):
-    assert defaults_from_suffixes(metric_name) == expected
+    defaults = defaults_from_suffixes(metric_name)
+
+    assert (defaults.short_name, defaults.kind) == expected
 
 
 # ---------------------------------------------------------------------------

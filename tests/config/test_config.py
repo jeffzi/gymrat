@@ -362,19 +362,13 @@ def test_inspect_config_when_cwd_inside_git_repo_does_find_config_at_repo_root(
     assert result.config.checks == "repo-checks"
 
 
-@pytest.mark.parametrize(
-    ("runbook", "expected"),
-    [
-        pytest.param("RUNBOOK.md", Path("settings") / "RUNBOOK.md", id="beside-config"),
-        pytest.param("../docs/RUNBOOK.md", Path("docs") / "RUNBOOK.md", id="climbs-out-normalized"),
-    ],
-)
 def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_runbook_from_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runbook: str, expected: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     config_dir = tmp_path / "settings"
     config_dir.mkdir()
     (tmp_path / "docs").mkdir()
+    runbook = "../docs/RUNBOOK.md"
     write_config(config_dir, {"bench": "a-bench", "runbook": runbook})
     (config_dir / runbook).write_text("# Steps\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -383,7 +377,7 @@ def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_ru
 
     assert result.problems == []
     assert result.config is not None
-    assert result.config.runbook == str(expected)
+    assert result.config.runbook == str(Path("docs") / "RUNBOOK.md")
 
 
 # ---------------------------------------------------------------------------

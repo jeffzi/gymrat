@@ -16,6 +16,7 @@ from gymrat.report.table.grid import (
     GroupBlock,
     MetricBlock,
     TitleLine,
+    is_grouped,
     plan_body,
     plan_sections,
     section_annotation,
@@ -112,3 +113,20 @@ def test_plan_body_when_sole_kind_switched_off_in_config_does_tag_it_from_that_c
     title = body[0]
     assert isinstance(title, TitleLine)
     assert title.text == section_annotation(layout.sections[0], config_kinds)
+
+
+# ---------------------------------------------------------------------------
+# is_grouped — how a table names its rows
+# ---------------------------------------------------------------------------
+
+
+def test_is_grouped_when_kinds_differ_without_groups_does_name_rows_as_grouped():
+    layout = plan_sections(
+        {"decode#time": _metric(kind="time"), "encode#memory": _metric(kind="memory")},
+        _measure,
+    )
+    body = plan_body(layout, None, None)
+
+    grouped = is_grouped(layout, body)
+
+    assert grouped is True

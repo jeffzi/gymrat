@@ -1,7 +1,8 @@
-"""Tests for reading a candidate's geomeans back out and pairing them with each scope's outcomes."""
+"""Tests for a verdict's shown parts, a candidate's geomeans, and each scope's outcomes."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,6 +16,7 @@ from gymrat.report.text.comparison_rows import (
     comparison_row_builder,
     group_geomean_of,
     kind_geomean_of,
+    shown_verdict,
 )
 from tests.report._comparisons import (
     NWayCandidate,
@@ -24,12 +26,12 @@ from tests.report._comparisons import (
     n_way_kind_metric,
     time_kind,
 )
-from tests.report._verdicts import geomean_of
+from tests.report._verdicts import geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.model import GeomeanResult
+    from gymrat.model import GeomeanResult, PermutationVerdict
     from gymrat.report.table.grid import AggregateRows
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,36 @@ def test_group_geomean_of_when_looking_up_a_group_does_return_its_geomean_or_no_
     geomean = group_geomean_of(candidate, kind, group)
 
     assert geomean == expected
+
+
+# ---------------------------------------------------------------------------
+# shown_verdict — which rows show a noise band and a detectable change
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("verdict", "with_band", "expected"),
+    [
+        pytest.param(
+            permutation_verdict(verdict="no-signal"), True, (True, "2.1%"), id="within-noise"
+        ),
+        pytest.param(permutation_verdict(verdict="improved"), True, (True, ""), id="improved"),
+        pytest.param(permutation_verdict(verdict="unstable"), True, (False, ""), id="unstable"),
+        pytest.param(permutation_verdict(n=3), True, (False, ""), id="inconclusive"),
+        pytest.param(
+            permutation_verdict(verdict="no-signal"), False, (False, ""), id="without-band"
+        ),
+    ],
+)
+def test_shown_verdict_when_verdict_carries_a_detectable_change_does_state_it_only_on_banded_within_noise_rows(
+    verdict: PermutationVerdict, with_band: bool, expected: tuple[bool, str]
+):
+    detecting = replace(verdict, detectable_pct=2.1)
+
+    shown = shown_verdict(detecting, 10, with_band=with_band)
+
+    assert shown is not None
+    assert (shown.parts.band != "", shown.parts.detects) == expected
 
 
 # ---------------------------------------------------------------------------

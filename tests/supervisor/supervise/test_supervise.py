@@ -278,7 +278,10 @@ async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_
         deadline_ms=supervisor_clock.deadline_ms,
     )
 
-    assert (result.ended_by, cap_actions(probe.events)) == ("spend-cap", [("spend-cap", "ending")])
+    assert (result.ended_by, [cap for cap, _ in cap_actions(probe.events)]) == (
+        "spend-cap",
+        ["spend-cap"],
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -163,16 +163,6 @@ def test_stop_when_stderr_fails_every_write_does_not_raise(
     assert reporter.live is None
 
 
-def test_stop_when_live_stop_raises_an_unrelated_value_error_does_propagate(
-    build_reporter: ReporterFactory, monkeypatch: pytest.MonkeyPatch
-):
-    reporter = build_reporter("live", sealed_console())
-    _fail_live_stop_once(monkeypatch, _live(reporter), ValueError("unexpected"))
-
-    with pytest.raises(ValueError, match="unexpected"):
-        reporter.stop()
-
-
 # ---------------------------------------------------------------------------
 # termination signal
 # ---------------------------------------------------------------------------

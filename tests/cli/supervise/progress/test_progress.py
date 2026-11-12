@@ -29,6 +29,7 @@ from unittest.mock import Mock
 import pytest
 
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
+from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.store import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
@@ -654,19 +655,18 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_wit
 _WAITING_LOCK = ExitPhase(kind="waiting-lock", pid=4242)
 
 
+_SETTLING = ExitPhase(kind="settling", pid=None)
+
+
 @pytest.mark.parametrize(
-    ("second", "expected_lines"),
+    ("second", "expected_phases"),
     [
-        pytest.param(
-            ExitPhase(kind="settling", pid=None),
-            ["waiting for gymrat (PID 4242)", "settling…"],
-            id="phase-changes",
-        ),
-        pytest.param(_WAITING_LOCK, ["waiting for gymrat (PID 4242)"], id="same-phase-repeats"),
+        pytest.param(_SETTLING, [_WAITING_LOCK, _SETTLING], id="phase-changes"),
+        pytest.param(_WAITING_LOCK, [_WAITING_LOCK], id="same-phase-repeats"),
     ],
 )
 def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
-    second: ExitPhase, expected_lines: list[str]
+    second: ExitPhase, expected_phases: list[ExitPhase]
 ):
     kit, writes = _plain()
     kit.reporter.observer(launch_event(1000))
@@ -676,7 +676,7 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
     kit.clock.now = 5000
     kit.reporter.exit_phase(second)
 
-    assert writes[writes_at_launch:] == expected_lines
+    assert writes[writes_at_launch:] == [exit_phase_text(phase) for phase in expected_phases]
 
 
 # ---------------------------------------------------------------------------

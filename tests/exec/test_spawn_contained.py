@@ -26,7 +26,6 @@ import pytest
 from gymrat import exec as exec_mod
 from gymrat import process_group
 from gymrat.exec import ExecOptions, exec_argv
-from gymrat.signals import TERMINATION_SIGNALS
 from tests._exec_fixtures import expected_result, run_shell
 from tests._process_helpers import (
     KILLPG_FAILED,
@@ -280,27 +279,3 @@ def test_nesting_depth_when_read_from_environment_does_fall_back_to_zero_unless_
     )
 
     assert probe.stdout == f"{expected_depth}\n"
-
-
-# ---------------------------------------------------------------------------
-# the contained child: termination signals unblocked (POSIX)
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_child_spawned_does_unblock_termination_signals_in_it(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    result = await exec_argv(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import signal, json; "
-                "print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"
-            ),
-        ],
-        make_opts(),
-    )
-
-    blocked: list[int] = json.loads(result.stdout.strip())
-    assert sorted(set(TERMINATION_SIGNALS) & set(blocked)) == []

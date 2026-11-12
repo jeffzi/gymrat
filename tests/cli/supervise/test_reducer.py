@@ -154,35 +154,6 @@ def emit(
 
 
 # ---------------------------------------------------------------------------
-# advance — caps, launch, usage
-# ---------------------------------------------------------------------------
-
-
-def test_advance_when_cap_fires_does_freeze_liveness_without_touching_the_last_decision():
-    before = make_state(last_decision="turn 1 ended · replied")
-
-    after = advance(before, cap_event("wall-clock", action="ending"), None)
-
-    assert after.liveness == Capped("wall-clock", "ending")
-    assert after.last_decision == "turn 1 ended · replied"
-
-
-def test_advance_when_launch_does_start_the_run_on_the_passed_session():
-    session = read_result()
-
-    after = advance(make_state(), launch_event(1000), session)
-
-    assert after.launch_timestamp == 1000
-    assert after.session_result is session
-
-
-def test_advance_when_usage_update_does_record_the_cost():
-    after = advance(make_state(), usage_event(1.42), None)
-
-    assert after.cost_usd == 1.42
-
-
-# ---------------------------------------------------------------------------
 # advance — tool start
 # ---------------------------------------------------------------------------
 
@@ -716,7 +687,7 @@ def test_plain_line_when_the_loop_text_changes_does_return_the_loop_line():
 
     _, line = emit(state, tool_end_event("Bash", "bash-1", 3000), session)
 
-    assert line == "2/20 iterations · 1 kept · 1 discarded · last +3.2% regressed"
+    assert line == loop_plain_text(session, 20)
 
 
 def test_plain_line_when_the_loop_text_is_unchanged_does_return_nothing():

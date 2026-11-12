@@ -1,8 +1,8 @@
 """Tests for the ``init`` scaffold that writes the config, runbook, and skill.
 
 Each case uses ``tmp_path`` as the base directory and drives ``scaffold`` with a
-``ScaffoldRequest``. The suite pins the config key ordering, the hand-written
-TOML format (``json.dumps`` for string escaping), the validate-before-any-write
+``ScaffoldRequest``. The suite pins the config's keys and values, string
+escaping in the hand-written TOML (``json.dumps``), the validate-before-any-write
 ordering (a broken bench leaves nothing behind), the runbook/skill status
 reporting, and the re-run behavior over an existing ``gymrat.toml`` (left
 byte-identical, remaining artifacts still filled in).
@@ -52,8 +52,7 @@ def test_scaffold_when_defaults_does_create_every_artifact(
         "created",
         "created",
     )
-    raw = (tmp_path / "gymrat.toml").read_text(encoding="utf-8")
-    assert raw == f'bench = "npm run bench"\nrunbook = "{DEFAULT_RUNBOOK_PATH}"\n'
+    assert _read_config(tmp_path) == {"bench": "npm run bench", "runbook": DEFAULT_RUNBOOK_PATH}
     assert (tmp_path / DEFAULT_RUNBOOK_PATH).is_file()
     skill_text = (tmp_path / SKILL_RELATIVE_PATH).read_text(encoding="utf-8")
     assert skill_text == read_bundled_skill()

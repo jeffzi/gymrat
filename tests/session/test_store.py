@@ -42,6 +42,7 @@ from gymrat.session.store import (
     require_settled,
     session_header,
 )
+from gymrat.utils import os_error_reason
 from tests._json_lines import with_raw_number
 from tests.session._store_records import (
     BASELINE,
@@ -55,7 +56,6 @@ from tests.session.records._fixtures import (
     COMMIT,
     TORN_PREFIX,
     append_raw,
-    append_records,
     baseline_record,
     blocked_keep,
     command_record,
@@ -282,19 +282,7 @@ def test_read_records_when_log_exists_but_cannot_be_read_does_raise_naming_the_l
     cause = excinfo.value.__cause__
     assert isinstance(cause, OSError)
     assert jsonl_path in str(excinfo.value)
-    assert excinfo.value.hint == f"{cause.strerror}."
-
-
-def test_read_records_when_log_holds_appended_records_does_return_them_in_file_order(
-    fresh_root: str,
-):
-    jsonl_path = session_jsonl_path(fresh_root)
-    written: list[SessionLogRecord] = [SESSION, ITERATION_1]
-    append_records(fresh_root, *written)
-
-    records = read_records(jsonl_path)
-
-    assert records == written
+    assert os_error_reason(cause) in (excinfo.value.hint or "")
 
 
 def _names_line(hint: str | None, line_number: int) -> bool:

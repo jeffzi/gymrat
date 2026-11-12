@@ -276,13 +276,8 @@ def _failed(
     stderr: str,
     stdout_bytes: int,
     stderr_bytes: int,
-    *,
-    stdout_truncated: bool = False,
-    stderr_truncated: bool = False,
 ) -> ExecResult:
-    return ExecResult(
-        stdout, stderr, 1, stdout_bytes, stderr_bytes, stdout_truncated, stderr_truncated
-    )
+    return ExecResult(stdout, stderr, 1, stdout_bytes, stderr_bytes)
 
 
 def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
@@ -351,15 +346,6 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             8,
             None,
             id="both-labelled-stderr-first",
-        ),
-        pytest.param(
-            _failed("s", "e", 1, 50, stderr_truncated=True),
-            _IN_PLACE_X,
-            _RUN_ONLY,
-            (*_FAILED_HEAD, "50"),
-            8,
-            None,
-            id="both-one-truncated",
         ),
         pytest.param(
             _failed("", "", 0, 0),

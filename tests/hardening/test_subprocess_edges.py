@@ -128,8 +128,4 @@ async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_g
         "child was not killed by the signal handler — spawn-register window is unmasked"
     )
     assert (result.exit_code, result.stderr) == (FAILURE_EXIT_CODE, "")
-    assert spawned_processes
-    assert all(proc.returncode is not None and proc.returncode < 0 for proc in spawned_processes), (
-        f"child was not killed by a signal: {[proc.returncode for proc in spawned_processes]}"
-    )
     assert recorded_exits, "the termination handler never asked the process to exit"

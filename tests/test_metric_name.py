@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
-from rich.text import Text
 
 from gymrat.metric_name import (
     EmptyKindError,
@@ -90,12 +89,3 @@ def test_format_inline_when_name_well_formed_does_render_it_literally(
     rendered = render_lines(format_inline(name), color=False)
 
     assert rendered == raw_name
-
-
-def test_format_inline_when_group_and_kind_present_does_dim_them_around_the_case():
-    markup = format_inline(parse("node/access#time"))
-
-    text = Text.from_markup(markup)
-
-    styled = [text.plain[span.start : span.end] for span in text.spans]
-    assert (text.plain, styled) == ("node/access#time", ["node/", "#time"])

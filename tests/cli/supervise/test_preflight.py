@@ -210,16 +210,19 @@ def _leave_tree_clean(_repo: str) -> None:
     """Leave the seeded repository untouched."""
 
 
+def test_preflight_when_checks_not_configured_does_print_one_warning_to_stderr(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+
+    _run_preflight(repo, config=resolved_config(checks=None))
+
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
 @pytest.mark.parametrize(
     ("arrange", "config_overrides", "preflight_kwargs", "named"),
     [
-        pytest.param(
-            _leave_tree_clean,
-            {"checks": None},
-            {},
-            "checks",
-            id="checks-not-configured",
-        ),
         pytest.param(
             _leave_tree_clean,
             {"checks": "npm test", "stop": StopConfig(max_iterations=0)},

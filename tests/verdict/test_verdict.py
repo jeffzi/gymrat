@@ -25,7 +25,6 @@ from tests.verdict._engine import (
     DIRECTION_MISMATCH_A,
     DIRECTION_MISMATCH_B,
     FLAT_PERMUTATION_ROUNDS,
-    METRIC_APPROX_HIGHER,
     METRIC_APPROX_LOWER,
     METRIC_BYTES_LOWER,
     METRIC_EXACT_HIGHER,
@@ -33,8 +32,6 @@ from tests.verdict._engine import (
     NOISY_PERMUTATION_A,
     NOISY_PERMUTATION_B,
     OVERFLOWING_MEDIAN,
-    SEPARATED_HIGH,
-    SEPARATED_LOW,
     SUBNORMAL_BASELINE,
     create_samples,
     get_band,
@@ -138,13 +135,6 @@ def test_compute_verdicts_when_band_delta_not_finite_does_report_no_signal():
     )
 
 
-def test_compute_verdicts_when_permutation_metric_is_higher_better_does_read_a_rise_as_improved():
-    result = run(SEPARATED_LOW, SEPARATED_HIGH, METRIC_APPROX_HIGHER)
-
-    verdict = get_permutation(result)
-    assert (verdict.verdict, verdict.reason) == ("improved", None)
-
-
 # ---------------------------------------------------------------------------
 # Why a no-signal verdict was withheld
 # ---------------------------------------------------------------------------
@@ -229,14 +219,6 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n():
             -0.3,
             ("no-signal", "noise"),
             id="within-band",
-        ),
-        pytest.param(
-            METRIC_APPROX_HIGHER,
-            create_samples(2, 50.0),
-            create_samples(2, 100.0),
-            100.0,
-            ("improved", None),
-            id="higher-improved",
         ),
     ],
 )

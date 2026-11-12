@@ -1,7 +1,6 @@
 """Tests for the single-candidate comparison text report, flat and sectioned.
 
-A within-noise row states its detectable change last, and no other row carries
-one. Baseline, candidate, kind, group and member names carrying square brackets
+Baseline, candidate, kind, group and member names carrying square brackets
 print as written. The scoped geomean label counts kept metrics against the total.
 """
 
@@ -28,30 +27,10 @@ from tests.report._assertions import (
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,
-    detecting_metric,
-    every_class_metrics,
     gating_kind,
     kind_metric,
 )
 from tests.report._verdicts import geomean_of
-
-# ---------------------------------------------------------------------------
-# detectable change on within-noise rows
-# ---------------------------------------------------------------------------
-
-
-def test_render_report_when_every_class_carries_a_detectable_change_does_state_it_on_within_noise_rows_only():
-    metrics = {
-        name: detecting_metric(metric, 2.1) for name, metric in every_class_metrics().items()
-    }
-    result = create_comparison_result(metrics=metrics)
-
-    rows = [stripped_cells(row) for row in table_rows(render_report(result))]
-
-    assert [
-        (cells[0], cells[-1].rsplit("  ", 1)[-1]) for cells in rows if "detects" in cells[-1]
-    ] == [("flat/time", "detects ≥2.1%")]
-
 
 # ---------------------------------------------------------------------------
 # bracketed names render literally

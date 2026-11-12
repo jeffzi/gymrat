@@ -36,7 +36,6 @@ from tests.session.records._wire import (
             ),
             id="iteration-nulled-deltas",
         ),
-        pytest.param(COMMAND_RECORD, id="command"),
         pytest.param(COMMAND_RECORD_SUCCESS, id="command-success-no-reason"),
     ],
 )

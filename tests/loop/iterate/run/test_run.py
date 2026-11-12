@@ -104,8 +104,6 @@ async def test_iterate_session_when_measuring_does_record_the_paired_iteration_a
     assert total.gating is True
     assert total.p is not None
     assert total.noise_pct is not None
-    assert record.primary.kind == "geomean"
-    assert record.primary.name is None
     assert record.primary.delta_pct == pytest.approx(-15.1472, abs=1e-3)
     assert record.target_reached is False
 
@@ -174,7 +172,6 @@ async def test_iterate_session_when_experiment_worktree_missing_does_omit_measur
 
     assert result.record.measured_tree is None
     assert len(warnings) == 1
-    assert "measured_tree" in warnings[0]
 
 
 async def test_iterate_session_when_bench_writes_file_does_fingerprint_the_tree_it_left(

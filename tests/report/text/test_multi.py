@@ -6,7 +6,6 @@ metric names and candidate labels, and the per-candidate summary lines.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -29,7 +28,6 @@ from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     create_comparison_result,
-    detecting_metric,
     multi_candidate_result,
     n_way_metric,
 )
@@ -114,16 +112,6 @@ def test_render_report_when_colored_does_style_each_cell_verdict_on_its_own(
     line = line_containing(render_report(make_result(), ReportOptions(color=True)), row)
 
     assert styles_at(line, token) == codes
-
-
-def test_render_report_when_many_candidates_carry_detectable_changes_does_not_state_them():
-    result = _dimming_result()
-    detecting = detecting_metric(result.metrics["flat/time"], 2.1)
-
-    report = render_report(replace(result, metrics={**result.metrics, "flat/time": detecting}))
-
-    assert "~" in line_starting_with(report, "flat/time")
-    assert "detects" not in report
 
 
 @pytest.mark.parametrize(

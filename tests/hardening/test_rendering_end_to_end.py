@@ -14,7 +14,7 @@ import os
 import subprocess
 from typing import TYPE_CHECKING
 
-from tests._ansi import SGR_RE, strip_ansi
+from tests._ansi import SGR_RE
 from tests._cli import run_cli
 from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
 from tests._git import write_committed_bench as _write_committed_bench
@@ -80,7 +80,6 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
     returncode, stderr, output = _run_report_on_pty(["measure", *BENCH_ONCE_FLAGS], repo)
 
     assert returncode == 0, stderr
-    assert "gymrat measure" in strip_ansi(output)
     assert SGR_RE.search(output)
 
 

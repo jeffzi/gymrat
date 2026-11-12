@@ -57,7 +57,6 @@ BASELINE_REF = "main"
 # The id the session after SESSION_ID opens on, for a workspace built over an
 # earlier one's leftovers.
 NEXT_SESSION_ID = "20260808-152045-b7c1"
-NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
 
 
 def _both_worktrees_exist(root: str) -> bool:
@@ -130,7 +129,7 @@ def test_create_workspace_when_worktree_add_dies_does_raise_naming_that_step_lea
 
 
 @needs_posix_kill
-def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_once_with_the_delete_command(
+def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_naming_the_branch(
     repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
 ):
     kill_git_during_worktree_add(repo)
@@ -139,24 +138,21 @@ def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_once_wi
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, SESSION_ID, baseline)
 
-    assert capsys.readouterr().err.count(BRANCH) == 2
+    assert BRANCH in capsys.readouterr().err
     assert experiment_worktree_dir(repo) in str(excinfo.value)
 
 
 def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_its_own_entries_only(
-    repo: str, repo_head: str, baseline: BaselineRef
+    repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
     shutil.rmtree(baseline_worktree_dir(repo))
     absent = register_absent_worktree(repo)
 
-    result = create_workspace(repo, NEXT_SESSION_ID, baseline)
+    create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    registered = list_worktree_dirs(repo, include_main=False)
-    assert checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
-    assert head_of(result.worktrees.baseline) == repo_head
-    assert absent in registered
+    assert absent in list_worktree_dirs(repo, include_main=False)
 
 
 def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
@@ -223,6 +219,18 @@ def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it_
 
     assert len(warnings) == 1, warnings
     assert worktree in warnings[0]
+
+
+def test_unwind_workspace_when_git_cannot_delete_the_branch_does_warn_once_naming_it(
+    repo: str, baseline: BaselineRef
+):
+    workspace = create_workspace(repo, SESSION_ID, baseline)
+    refuse_session_branch_deletion(repo)
+
+    warnings = unwind_workspace(repo, workspace)
+
+    assert len(warnings) == 1, warnings
+    assert BRANCH in warnings[0]
 
 
 # ---------------------------------------------------------------------------

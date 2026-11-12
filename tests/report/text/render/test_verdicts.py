@@ -422,7 +422,7 @@ def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_
 
     output = render_report(result)
 
-    assert "gymrat compare --samples 8 " in output
+    assert "--samples 8 " in output
 
 
 def test_render_report_when_verbose_and_all_exact_does_end_on_the_highlights_without_a_footer():

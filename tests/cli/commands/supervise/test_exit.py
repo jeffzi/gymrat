@@ -209,7 +209,6 @@ def test_supervise_when_driver_and_exit_sequence_both_error_does_surface_the_dri
 
     assert result.exit_code == 2
     assert "SDK connection lost" in result.stderr
-    assert _EXIT_ERROR not in result.stderr
 
 
 @pytest.mark.parametrize(

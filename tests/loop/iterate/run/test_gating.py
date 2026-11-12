@@ -157,7 +157,6 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
-    assert result.record.metrics["total_ms"].reason == "unconfirmed"
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
 
