@@ -234,6 +234,18 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
     assert (cmd.args, cmd.traceparent) == expected
 
 
+async def test_with_repo_lock_when_no_endpoint_is_set_does_record_the_command_without_a_span_warning(
+    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    seeded_session(repo)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+    await with_repo_lock("measure", _ok_body)
+
+    assert _closing_command_record(repo_root()).name == "measure"
+    assert capsys.readouterr().err == ""
+
+
 async def _gate_body(trace: CommandTrace) -> str:
     trace.gate = True
     trace.reason = "gating-regression"
