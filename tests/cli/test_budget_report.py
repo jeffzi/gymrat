@@ -28,10 +28,16 @@ from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import ReportOptions
 from gymrat.session.budget import Budget
-from gymrat.session.paths import repo_root, session_jsonl_path, supervise_lockfile_path
+from gymrat.session.paths import (
+    repo_root,
+    repository_lookup_error,
+    session_jsonl_path,
+    supervise_lockfile_path,
+)
 from gymrat.session.records import IterationRecord
 from gymrat.utils import format_duration, format_time_left
 from tests._clock import freeze_now_ms
+from tests._git import refuse_git_lookups
 from tests._lock import held_supervise_lock, lock_probe_error
 from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
 from tests.session.records._fixtures import (
@@ -246,6 +252,26 @@ def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_
 
     with pytest.raises(RuntimeError, match="patched wrong"):
         _warn()
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        pytest.param(lambda: _emit("text"), id="emit-report"),
+        pytest.param(_warn, id="warn-duration-over-budget"),
+    ],
+)
+@pytest.mark.usefixtures("_in_non_repo")
+def test_budget_lookup_when_git_declines_the_repository_lookup_does_raise_git_diagnostic(
+    run: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+):
+    refusal = refuse_git_lookups(monkeypatch)
+    expected = str(repository_lookup_error(str(Path.cwd()), refusal))
+
+    with pytest.raises(GymratError) as exc:
+        run()
+
+    assert str(exc.value) == expected
 
 
 def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(repo: str):
