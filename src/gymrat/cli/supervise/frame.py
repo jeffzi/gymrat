@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, assert_never
 from rich.console import Group
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn
-from rich.table import Table
+from rich.table import Column, Table
 from rich.text import Text
 
 from gymrat.cli.style import (
@@ -65,6 +65,10 @@ if TYPE_CHECKING:
 # (Read, Edit, Bash); ceiling prevents a long name from pushing the layout.
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
+
+# Every summary row (time, cost, loop, best, turns) starts its content at this
+# column, so the values line up under one another.
+_SUMMARY_LABEL_WIDTH = 7
 
 # Shown for a finished tool whose start was never seen, so its duration is not
 # known.
@@ -122,7 +126,9 @@ def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
     elapsed = format_duration(elapsed_ms)
     remaining = format_duration(max(0, max_ms - elapsed_ms))
     progress = Progress(
-        TextColumn("time"),
+        # The progress puts one space between columns, so the label column is
+        # one narrower than the label width.
+        TextColumn("time", table_column=Column(width=_SUMMARY_LABEL_WIDTH - 1)),
         BarColumn(bar_width=None),
         TextColumn(
             f"[{STYLE_RUNNING}]{elapsed}[/{STYLE_RUNNING}]"
@@ -136,13 +142,10 @@ def _build_time_bar(elapsed_ms: int, max_minutes: float) -> RenderableType:
 
 
 def _build_cost_text(cost_usd: float | None, max_usd: float | None) -> Text:
-    cost_str = format_cost(cost_usd if cost_usd is not None else 0.0)
-    text = Text()
-    text.append("cost ", style=STYLE_META)
-    text.append(cost_str)
+    text = Text(format_cost(cost_usd if cost_usd is not None else 0.0))
     if max_usd is not None:
         text.append(f" / {format_cost(max_usd)}")
-    return text
+    return _meta_row("cost", text)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +296,7 @@ def _build_finished_tool_line(tool: FinishedTool, tz: tzinfo | None, *, tool_col
 
 def _meta_row(label: str, content: Text | str) -> Text:
     """A summary row: a dim label followed by content that keeps its own styles."""
-    row = Text(label, style=STYLE_META)
+    row = Text(label.ljust(_SUMMARY_LABEL_WIDTH), style=STYLE_META)
     row.append(content)
     return row
 
@@ -304,14 +307,14 @@ def _build_summary_table(state: ReporterState, elapsed_ms: int) -> Table:
     summary.add_row(_build_time_bar(elapsed_ms, state.max_minutes))
     summary.add_row(_build_cost_text(state.cost_usd, state.max_usd))
     loop_text = build_loop_text(state.session_result, state.max_iterations)
-    summary.add_row(_meta_row("loop   ", loop_text))
+    summary.add_row(_meta_row("loop", loop_text))
 
     best_text = build_best_text(state.session_result)
     if best_text is not None:
-        summary.add_row(_meta_row("best ", best_text))
+        summary.add_row(_meta_row("best", best_text))
 
     if state.last_decision is not None:
-        summary.add_row(_meta_row("turns  ", state.last_decision))
+        summary.add_row(_meta_row("turns", state.last_decision))
 
     return summary
 

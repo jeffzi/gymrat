@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal, override
 
 from gymrat import utils
 from gymrat.cli.console import stderr_console
-from gymrat.cli.live_display import LiveDisplayMixin
+from gymrat.cli.live_display import LiveDisplayMixin, format_timestamp
 from gymrat.cli.supervise.frame import build_frame
 from gymrat.cli.supervise.reducer import (
     ReporterState,
@@ -158,7 +158,14 @@ class _DashboardShell(LiveDisplayMixin):
         if self._is_live:
             super().warn(message)
         else:
-            self._plain_write(message)
+            self._write_plain_line(message, self._now())
+
+    def _write_plain_line(self, line: str, at_ms: int) -> None:
+        # A line stamped before the launch, or written before there is one,
+        # reads zero elapsed rather than a negative time.
+        launch_ms = self.state.launch_timestamp
+        stamp_ms = at_ms if launch_ms is None else max(at_ms, launch_ms)
+        self._plain_write(f"{format_timestamp(stamp_ms, launch_ms)} {line}")
 
     def _read_session(self) -> ReadSessionResult | None:
         try:
@@ -195,7 +202,7 @@ class _DashboardShell(LiveDisplayMixin):
             return
         line = plain_line(before, self.state, event)
         if line is not None:
-            self._plain_write(line)
+            self._write_plain_line(line, event.at // utils.NS_PER_MS)
 
     def refresh_session(self) -> None:
         """Re-read the session, keeping the previous result when the read fails."""
@@ -218,7 +225,7 @@ class _DashboardShell(LiveDisplayMixin):
         if self._is_live:
             self._refresh_live()
         else:
-            self._plain_write(exit_phase_text(phase))
+            self._write_plain_line(exit_phase_text(phase), self._now())
 
 
 @dataclass(frozen=True, slots=True)

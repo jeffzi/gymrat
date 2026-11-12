@@ -185,7 +185,7 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
     frame = render_frame(kit.reporter)
 
     assert _rows_below_loop(frame) == [
-        "best -6.8% geomean (iteration 3)",
+        "best   -6.8% geomean (iteration 3)",
         "waiting  0s",
         "00:00:03  Bash   ...  1s",
     ]
@@ -611,7 +611,26 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once():
     kit.reporter.refresh_session()
     kit.reporter.refresh_session()
 
-    assert writes == ["session read failed: no session file"]
+    assert writes == ["[00:00:00] session read failed: no session file"]
+
+
+@pytest.mark.parametrize(
+    ("launch_ms", "usage_ms", "expected_line"),
+    [
+        pytest.param(1000, 3_726_000, "[01:02:05] cost $1.42", id="after-launch"),
+        pytest.param(5000, 1000, "[00:00:00] cost $1.42", id="stamped-before-launch"),
+    ],
+)
+def test_plain_when_event_line_written_does_stamp_the_event_time_since_launch(
+    launch_ms: int, usage_ms: int, expected_line: str
+):
+    kit, writes = _plain()
+    kit.reporter.observer(launch_event(launch_ms))
+    writes_at_launch = len(writes)
+
+    kit.reporter.observer(usage_event(1.42, usage_ms))
+
+    assert writes[writes_at_launch:] == [expected_line]
 
 
 # ---------------------------------------------------------------------------
@@ -626,14 +645,25 @@ _SETTLING = ExitPhase(kind="settling", pid=None)
 
 
 @pytest.mark.parametrize(
-    ("second", "expected_phases"),
+    ("second", "expected_lines"),
     [
-        pytest.param(_SETTLING, [_WAITING_LOCK, _SETTLING], id="phase-changes"),
-        pytest.param(_WAITING_LOCK, [_WAITING_LOCK], id="same-phase-repeats"),
+        pytest.param(
+            _SETTLING,
+            [
+                f"[00:00:00] {exit_phase_text(_WAITING_LOCK)}",
+                f"[00:00:04] {exit_phase_text(_SETTLING)}",
+            ],
+            id="phase-changes",
+        ),
+        pytest.param(
+            _WAITING_LOCK,
+            [f"[00:00:00] {exit_phase_text(_WAITING_LOCK)}"],
+            id="same-phase-repeats",
+        ),
     ],
 )
-def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
-    second: ExitPhase, expected_phases: list[ExitPhase]
+def test_exit_phase_when_plain_does_write_a_stamped_line_only_when_the_phase_changes(
+    second: ExitPhase, expected_lines: list[str]
 ):
     kit, writes = _plain()
     kit.reporter.observer(launch_event(1000))
@@ -643,7 +673,7 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
     kit.clock.now = 5000
     kit.reporter.exit_phase(second)
 
-    assert writes[writes_at_launch:] == [exit_phase_text(phase) for phase in expected_phases]
+    assert writes[writes_at_launch:] == expected_lines
 
 
 # ---------------------------------------------------------------------------
