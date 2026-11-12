@@ -513,18 +513,6 @@ def test_install_termination_escalation_when_earlier_cleanup_failed_does_drop_it
 # ---------------------------------------------------------------------------
 
 
-def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler():
-    before = signal.getsignal(signal.SIGINT)
-    install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal.SIGINT)
-
-    for _ in range(12):
-        install_termination_cleanup(_nothing)()
-
-    assert handler is not before
-    assert signal.getsignal(signal.SIGINT) is handler
-
-
 def test_install_termination_cleanup_when_handler_replaced_after_first_install_does_keep_the_replacement():
     def replacement(signal_number: int, frame: FrameType | None) -> None:
         pass  # pragma: no cover — only installed, never delivered

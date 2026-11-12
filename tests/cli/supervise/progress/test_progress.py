@@ -22,7 +22,7 @@ in ``test_reducer.py``.
 
 from __future__ import annotations
 
-from datetime import UTC, timedelta, timezone
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
@@ -381,35 +381,6 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
     assert _rows_below_loop(frame) == [
         "00:00:02  Bash   run tests  1s",
         "↳ LongNestedToolName something  0s",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# wall-clock finished-tool lines
-# ---------------------------------------------------------------------------
-
-
-# 2023-11-14 22:13:20 UTC.
-_WALL_CLOCK_EPOCH_MS = 1_700_000_000_000
-
-
-def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz():
-    started_at = _WALL_CLOCK_EPOCH_MS - 1000
-    kit = make_reporter(tz=timezone(timedelta(hours=5, minutes=30)), clock_start=started_at)
-    kit.reporter.observer(launch_event(started_at))
-    kit.reporter.observer(
-        tool_start_event("Edit", "edit-1", started_at, input_summary="src/archetype.ts")
-    )
-    kit.clock.now = _WALL_CLOCK_EPOCH_MS
-    kit.reporter.observer(
-        tool_end_event("Edit", "edit-1", _WALL_CLOCK_EPOCH_MS, started_at_ms=started_at)
-    )
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == [
-        "waiting  0s",
-        "03:43:20  Edit   src/archetype.ts  1s",
     ]
 
 

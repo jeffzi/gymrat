@@ -8,22 +8,24 @@ import itertools
 import json
 import shlex
 import signal
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import create_autospec
 
 import pytest
 from rich.console import Console
-from syrupy.assertion import SnapshotAssertion
 
 from gymrat.cli.app import app
 from gymrat.cli.console import stderr_console
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.progress_events import PassFinished, PassStarted, ProgressEvent
+from gymrat.cli.iterate.state import IterationFacts
+from gymrat.config import CONFIG_DEFAULTS
+from gymrat.progress_events import ProgressEvent
 from gymrat.sampling import SamplingOptions
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import SidecarWriter
+from gymrat.utils import MS_PER_SECOND
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
@@ -32,7 +34,7 @@ from tests._ansi import (
 from tests._clock import install_monotonic_clock
 from tests._platform import needs_posix_signals
 from tests._process_helpers import wait_for_pid_file_blocking
-from tests._rich import Clock, frame_text, sealed_console
+from tests._rich import Clock, sealed_console
 from tests.cli._command_stubs import (
     force_render_mode,
 )
@@ -104,19 +106,6 @@ def test_iterate_command_when_run_ends_does_remove_the_progress_sidecar(
 _LIVE_SCREEN_HEIGHT = 40
 
 
-def _three_second_pass(clock: Clock[float]) -> Callable[[SamplingOptions], Awaitable[None]]:
-    """A sampling hook that reports one pass taking three seconds on ``clock``."""
-
-    async def run_pass(options: SamplingOptions) -> None:
-        assert options.on_progress is not None
-        pass_fields = {"round": 1, "total_rounds": 1, "target_count": 2, "label": "experiment"}
-        options.on_progress(PassStarted(**pass_fields, at_ms=clock()))
-        clock.tick(3000.0)
-        options.on_progress(PassFinished(**pass_fields, at_ms=clock()))
-
-    return run_pass
-
-
 def _install_live_console(monkeypatch: pytest.MonkeyPatch) -> Console:
     """Force live mode onto a sealed console the command renders into; return the console."""
     console = sealed_console(height=_LIVE_SCREEN_HEIGHT, get_time=Clock(0.0))
@@ -141,23 +130,47 @@ def _capture_renderers(monkeypatch: pytest.MonkeyPatch) -> list[IterateRenderer]
     return built
 
 
-def test_iterate_command_when_live_does_render_the_session_dashboard(
-    repo: str, monkeypatch: pytest.MonkeyPatch, snapshot: SnapshotAssertion
+def _capture_renderer_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[IterationFacts, Callable[[], float]]]:
+    """Keep the real ``IterateRenderer``, collecting the facts and clock each one is built with."""
+    built: list[tuple[IterationFacts, Callable[[], float]]] = []
+
+    class _CapturedRenderer(IterateRenderer):
+        def __init__(
+            self,
+            mode: Literal["live", "plain"],
+            console: Console,
+            facts: IterationFacts,
+            *,
+            clock: Callable[[], float],
+            verbose: bool = False,
+        ) -> None:
+            super().__init__(mode, console, facts, clock=clock, verbose=verbose)
+            built.append((facts, clock))
+
+    monkeypatch.setattr("gymrat.cli.commands.loop.IterateRenderer", _CapturedRenderer)
+    return built
+
+
+def test_iterate_command_when_run_does_hand_the_renderer_the_session_facts_and_a_seconds_clock(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    write_iterate_session(repo)
-    _install_live_console(monkeypatch)
-    renderers = _capture_renderers(monkeypatch)
-    # The bench pass takes three seconds on the clock the renderer reads its timings through.
+    header = write_iterate_session(repo)
+    install_improved_samples(monkeypatch, repo)
+    inputs = _capture_renderer_inputs(monkeypatch)
     clock = install_monotonic_clock(monkeypatch)
-    run_before_each_call(
-        monkeypatch, install_improved_samples(monkeypatch, repo), _three_second_pass(clock)
-    )
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    (renderer,) = renderers
+    ((facts, renderer_clock),) = inputs
     assert result.exit_code == 0
-    assert frame_text(renderer.frame()) == snapshot
+    assert (facts.seq, facts.session_id, facts.sample_count) == (
+        1,
+        header.session_id,
+        CONFIG_DEFAULTS.samples,
+    )
+    assert renderer_clock() == clock() / MS_PER_SECOND
 
 
 async def _raise_bench_exploded(_options: SamplingOptions) -> None:

@@ -24,20 +24,31 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
 
 
 @pytest.mark.parametrize(
-    ("annotation", "value", "expected"),
+    ("annotation", "value", "bound"),
     [
         pytest.param(
             Annotated[int, Field(le=MAX_SAFE_INTEGER)],
             MAX_SAFE_INTEGER + 1,
-            "a number at or below 9007199254740991",
+            "9007199254740991",
             id="less-than-equal-large-bound",
         ),
-        pytest.param(
-            Annotated[float, Field(gt=0)], -1.0, "a number above 0", id="greater-than-whole"
-        ),
-        pytest.param(
-            Annotated[float, Field(gt=0.5)], 0.5, "a number above 0.5", id="greater-than-fraction"
-        ),
+        pytest.param(Annotated[float, Field(gt=0)], -1.0, "0", id="greater-than-whole"),
+        pytest.param(Annotated[float, Field(gt=0.5)], 0.5, "0.5", id="greater-than-fraction"),
+    ],
+)
+def test_phrase_for_error_when_constraint_fails_does_insert_the_bound(
+    annotation: object, value: object, bound: str
+):
+    error = _validation_error(annotation, value).errors()[0]
+
+    phrase = phrase_for_error(error)
+
+    assert phrase.endswith(f" {bound}")
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value", "expected"),
+    [
         pytest.param(
             Annotated[str, Field(min_length=1)], "", "a non-empty string", id="empty-string"
         ),

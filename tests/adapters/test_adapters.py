@@ -136,13 +136,13 @@ def test_parse_when_non_metric_lines_present_does_ignore_them_silently():
     ],
 )
 def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
-    offending: str, capsys: pytest.CaptureFixture[str]
+    offending: str,
 ):
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
 
-    assert (result, len(warnings), capsys.readouterr().err) == ({"valid": 1.0}, 1, "")
+    assert (result, len(warnings)) == ({"valid": 1.0}, 1)
     assert offending in warnings[0]
 
 

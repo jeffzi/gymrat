@@ -8,9 +8,6 @@ doctor report opens with, and :func:`doctor_report` and
 
 from __future__ import annotations
 
-from dataclasses import replace
-from typing import Any
-
 from gymrat.doctor import (
     Check,
     CheckSection,
@@ -20,23 +17,21 @@ from gymrat.doctor import (
 )
 
 
-def environment_info(**overrides: Any) -> EnvironmentInfo:
-    """The version and platform context a doctor report opens with, any field overridable."""
-    default = EnvironmentInfo(gymrat_version="0.5.0", python_version="3.13.0", platform="darwin")
-    return replace(default, **overrides)
+def environment_info() -> EnvironmentInfo:
+    """The version and platform context a doctor report opens with."""
+    return EnvironmentInfo(gymrat_version="0.5.0", python_version="3.13.0", platform="darwin")
 
 
-def doctor_report(sections: list[CheckSection], **env_overrides: Any) -> DoctorReport:
+def doctor_report(sections: list[CheckSection]) -> DoctorReport:
     """A doctor report over ``sections``, opened by :func:`environment_info`.
 
     Args:
         sections: The report's check sections, in order.
-        **env_overrides: Fields of the opening environment context to override.
 
     Returns:
         The assembled report, its counts aggregated from ``sections``.
     """
-    return create_doctor_report(environment_info(**env_overrides), sections)
+    return create_doctor_report(environment_info(), sections)
 
 
 def single_check_report(check: Check, title: str = "Environment") -> DoctorReport:

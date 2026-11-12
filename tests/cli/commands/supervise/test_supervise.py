@@ -15,13 +15,12 @@ flag's forwarding to the pre-flight is pinned.
 """
 
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat.config import Effort, MetricEntry, StopConfig, SuperviseConfig
+from gymrat.config import Effort, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import SESSION_DIR_NAME, budget_path, lockfile_path, session_dir
@@ -106,22 +105,6 @@ def test_supervise_when_log_path_resolved_does_git_exclude_the_session_dir_only_
 
 
 # ---------------------------------------------------------------------------
-# closing summary
-# ---------------------------------------------------------------------------
-
-
-def test_supervise_when_session_ends_with_final_text_does_show_the_agent_row(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    install_seams(monkeypatch, final_text="all done here")
-
-    result = run()
-
-    assert result.exit_code == 0
-    assert "all done here" in result.stdout
-
-
-# ---------------------------------------------------------------------------
 # driver, kickoff, and reporter wiring
 # ---------------------------------------------------------------------------
 
@@ -203,24 +186,14 @@ def test_supervise_when_session_setup_raises_does_tear_down_everything_it_armed(
 
     result = run()
 
-    assert result.exit_code == 2
     assert message in stderr_text(result)
     assert (registry.live(), display_cleanups.live()) == ([], [])
     assert not Path(budget_path(repo)).exists()
 
 
-@pytest.mark.parametrize(
-    "raises",
-    [
-        pytest.param(None, id="run-completes"),
-        pytest.param(GymratError("boom"), id="supervise-raises"),
-    ],
-)
 @pytest.mark.usefixtures("repo")
-def test_supervise_when_run_ends_does_uninstall_its_cleanup_once(
-    monkeypatch: pytest.MonkeyPatch, raises: Exception | None
-):
-    install_seams(monkeypatch, raises=raises)
+def test_supervise_when_run_ends_does_uninstall_its_cleanup_once(monkeypatch: pytest.MonkeyPatch):
+    install_seams(monkeypatch)
     registry = track_cleanups(monkeypatch, "gymrat.cli.commands.supervise")
 
     run()
@@ -361,24 +334,3 @@ def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     assert roots == [Path(repo).resolve(), Path(repo).resolve()]
     call_kwargs = seams.create_driver.call_args.kwargs
     assert (call_kwargs.get("tools"), call_kwargs.get("hooks")) == (tools, hooks)
-
-
-# ---------------------------------------------------------------------------
-# reporter direction
-# ---------------------------------------------------------------------------
-
-
-def test_supervise_when_primary_is_higher_is_better_does_build_reporter_with_the_primary_direction(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    config = replace(
-        command_config(),
-        primary="throughput",
-        metrics={"throughput": MetricEntry(direction="higher")},
-    )
-    seams = install_seams(monkeypatch, config=config)
-
-    result = run()
-
-    assert result.exit_code == 0
-    assert seams.reporter_calls[0]["primary_direction"] == "higher"

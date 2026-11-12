@@ -17,7 +17,14 @@ from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import UsageUpdateEvent, to_json_line
 from gymrat.telemetry.provider import span_id_of
 from gymrat.telemetry.replay import replay_session
-from gymrat.telemetry.run_spans import run_span_key
+from gymrat.telemetry.run_spans import (
+    EVENT_TURN_END,
+    RUN_COST_USD,
+    RUN_SPAN,
+    SESSION_SPAN,
+    TURN_SESSION_COST_USD,
+    run_span_key,
+)
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     SESSION_ID,
@@ -104,7 +111,7 @@ def test_replay_session_when_called_does_span_the_session_from_header_to_latest_
 
     spans = _replay(session_log, sup_log)
 
-    session_span = span_by_name(spans, "gymrat.session")
+    session_span = span_by_name(spans, SESSION_SPAN)
     assert (session_span.start_time, session_span.end_time) == (T0, session_end)
 
 
@@ -123,8 +130,8 @@ def test_replay_session_when_usage_update_in_supervisor_does_set_cost_usd(
 
     spans = _replay(session_log, sup_log)
 
-    run_span = span_by_name(spans, "gymrat.run")
-    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(1.23)
+    run_span = span_by_name(spans, RUN_SPAN)
+    assert run_span.attributes[RUN_COST_USD] == pytest.approx(1.23)
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +155,8 @@ def test_replay_session_when_command_record_present_does_create_command_span(
 @pytest.mark.parametrize(
     ("command_at", "run_end", "parent"),
     [
-        pytest.param(T2, T4, "gymrat.run", id="inside-the-run-parents-under-it"),
-        pytest.param(T5, T2, "gymrat.session", id="after-every-run-parents-under-the-session"),
+        pytest.param(T2, T4, RUN_SPAN, id="inside-the-run-parents-under-it"),
+        pytest.param(T5, T2, SESSION_SPAN, id="after-every-run-parents-under-the-session"),
     ],
 )
 def test_replay_session_when_command_time_falls_in_or_out_of_a_run_does_parent_it_accordingly(
@@ -170,8 +177,8 @@ def test_replay_session_when_command_time_falls_in_or_out_of_a_run_does_parent_i
 @pytest.mark.parametrize(
     ("linked_span_key", "expected_parent"),
     [
-        pytest.param(run_span_key(T1), "gymrat.run", id="links-to-the-run"),
-        pytest.param(run_span_key(0), "gymrat.session", id="links-to-no-run"),
+        pytest.param(run_span_key(T1), RUN_SPAN, id="links-to-the-run"),
+        pytest.param(run_span_key(0), SESSION_SPAN, id="links-to-no-run"),
     ],
 )
 def test_replay_session_when_command_outside_run_range_has_traceparent_does_parent_by_its_link(
@@ -253,7 +260,7 @@ def test_replay_session_when_records_follow_every_command_does_add_them_as_event
 
     spans = _replay(session_log, sup_log)
 
-    assert _event_carriers(spans, ("gymrat.baseline",)) == {"gymrat.baseline": ["gymrat.session"]}
+    assert _event_carriers(spans, ("gymrat.baseline",)) == {"gymrat.baseline": [SESSION_SPAN]}
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +302,7 @@ def test_replay_session_when_supervisor_line_unrecognized_does_skip_it(log_paths
 
     spans = _replay(session_log, sup_log)
 
-    run_span = span_by_name(spans, "gymrat.run")
+    run_span = span_by_name(spans, RUN_SPAN)
     assert (run_span.start_time, run_span.end_time) == (T1, T3)
 
 
@@ -343,7 +350,7 @@ def test_replay_session_when_supervisor_log_not_a_launch_of_this_session_does_sk
 
     spans = _replay(session_log, sup_log)
 
-    assert (spans_by_prefix(spans, "gymrat.run"), capsys.readouterr().err) == ([], "")
+    assert (spans_by_prefix(spans, RUN_SPAN), capsys.readouterr().err) == ([], "")
 
 
 def _make_directory(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,7 +382,7 @@ def test_replay_session_when_supervisor_log_cannot_be_read_does_skip_it_with_a_w
     spans = _replay(session_log, sup_log)
 
     _assert_one_stderr_warning_naming(capsys.readouterr().err, sup_log)
-    assert spans_by_prefix(spans, "gymrat.run") == []
+    assert spans_by_prefix(spans, RUN_SPAN) == []
 
 
 # ---------------------------------------------------------------------------
@@ -457,9 +464,8 @@ def test_replay_session_when_session_line_fails_validation_does_skip_it_with_std
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
 
-def test_replay_session_when_supervisor_line_undecodable_does_skip_it_silently(
+def test_replay_session_when_supervisor_line_undecodable_does_mirror_the_lines_after_it(
     log_paths: tuple[str, str],
-    capsys: pytest.CaptureFixture[str],
 ):
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
@@ -473,15 +479,12 @@ def test_replay_session_when_supervisor_line_undecodable_does_skip_it_silently(
 
     spans = _replay(session_log, sup_log)
 
-    run_span = span_by_name(spans, "gymrat.run")
+    run_span = span_by_name(spans, RUN_SPAN)
     turn_end_costs = [
-        ev.attributes["gymrat.turn.session_cost_usd"]
-        for ev in run_span.events
-        if ev.name == "gymrat.turn_end"
+        ev.attributes[TURN_SESSION_COST_USD] for ev in run_span.events if ev.name == EVENT_TURN_END
     ]
-    assert run_span.attributes["gymrat.run.cost_usd"] == pytest.approx(0.42)
+    assert run_span.attributes[RUN_COST_USD] == pytest.approx(0.42)
     assert turn_end_costs == [pytest.approx(0.10), pytest.approx(0.42)]
-    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

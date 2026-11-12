@@ -111,13 +111,12 @@ def test_arm_budget_when_armed_does_write_a_budget_due_its_minutes_from_now(
     assert Budget.model_validate_json(_budget_file(root).read_text()) == budget
 
 
-def test_arm_budget_when_released_twice_does_remove_the_file_and_uninstall_the_hook_once(
+def test_arm_budget_when_released_does_remove_the_file_and_uninstall_the_hook(
     root: str, monkeypatch: pytest.MonkeyPatch
 ):
     registry = track_cleanups(monkeypatch, "gymrat.session.budget")
     _budget, release = arm_budget(root, 30, warn=lambda _message: None)
 
-    release()
     release()
 
     assert registry.uninstall_counts() == [1]

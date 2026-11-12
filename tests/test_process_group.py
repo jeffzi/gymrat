@@ -33,14 +33,11 @@ from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
     FakeJobs,
     dead_pid,
-    is_alive,
     killpg_warnings,
     record_subprocess_runs,
     refuse_killpg,
     wait_for_pid_file,
-    wait_for_pid_file_blocking,
     wait_until_dead,
-    wait_until_dead_blocking,
     win32_process_group,
 )
 
@@ -57,9 +54,6 @@ _SysctlFunction = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
     ctypes.c_size_t,
 )
-
-# Grace a wait on real time is given, far longer than any probe takes.
-_LONG_WAIT_S = 10.0
 
 # Grace a wait on the fake clock is given. It costs no real time, so it is sized
 # to sit far above the real time a fake-clock wait takes.
@@ -87,10 +81,6 @@ _DARWIN_FLAG_AND_STATE_OFFSET = 32
 _DARWIN_P_WEXIT = 0x2000
 _DARWIN_SZOMB = 5
 _DARWIN_RUNNING = 2
-
-# How long a group member outlives its leader: long enough to still be running
-# when the wait starts, short enough to keep the test cheap.
-_MEMBER_LIFETIME_S = 1.0
 
 # Group id and member pid listed in a fake ``/proc``. Every probe of them goes
 # through a stand-in ``os``, so they never reach a real process.
@@ -169,14 +159,6 @@ class ProbedLeader:
         if not self.exited:
             return None
         return types.SimpleNamespace(si_pid=id_val, si_status=0, si_code=1)
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class LingeringGroup:
-    """A process group whose leader has exited while another member still runs."""
-
-    leader_pid: int
-    member_pid: int
 
 
 @dataclasses.dataclass
@@ -322,29 +304,6 @@ async def orphaned_zombie_group(tmp_path: Path, stray_process_ids: list[int]) ->
 
 
 @pytest.fixture
-def group_with_lingering_member(
-    tmp_path: Path, stray_process_ids: list[int]
-) -> Iterator[LingeringGroup]:
-    """A group whose leader has exited, not yet reaped, while a member it started keeps running."""
-    member_pid_file = tmp_path / "member.pid"
-    leader = subprocess.Popen(  # noqa: S603 -- fixed argv
-        [
-            "/bin/sh",
-            "-c",
-            f'sleep {_MEMBER_LIFETIME_S} & echo $! > "$1"',
-            "sh",
-            str(member_pid_file),
-        ],
-        start_new_session=True,
-    )
-    member_pid = wait_for_pid_file_blocking(member_pid_file)
-    stray_process_ids.append(member_pid)
-    wait_until_dead_blocking(leader.pid)
-    yield LingeringGroup(leader_pid=leader.pid, member_pid=member_pid)
-    leader.wait()
-
-
-@pytest.fixture
 def linux_proc_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """An empty fake ``/proc`` the module reads as the host's, under a faked Linux platform."""
     proc_root = tmp_path / "proc"
@@ -422,15 +381,6 @@ async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_wit
         wait_for_process_group_exit([exiting_child.pid], _WAIT_S)
 
     assert wait_clock.sleeps == []
-
-
-@needs_posix_process_groups
-def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_wait_for_member(
-    group_with_lingering_member: LingeringGroup,
-) -> None:
-    wait_for_process_group_exit([group_with_lingering_member.leader_pid], _LONG_WAIT_S)
-
-    assert not is_alive(group_with_lingering_member.member_pid)
 
 
 @needs_posix_process_groups

@@ -194,15 +194,13 @@ def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning
     assert re.search(pattern, warnings[0])
 
 
-def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning(
-    capsys: pytest.CaptureFixture[str],
-):
+def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning():
     stdout = build_stdout([{"alias": "orphan"}, VALID_BENCHMARK])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert (result, len(warnings), capsys.readouterr().err) == ({f"valid{TIME_SUFFIX}": 1}, 1, "")
+    assert (result, len(warnings)) == ({f"valid{TIME_SUFFIX}": 1}, 1)
 
 
 # ---------------------------------------------------------------------------

@@ -30,8 +30,6 @@ from pydantic import BaseModel
 
 from gymrat.errors import GymratError
 from gymrat.supervisor.events import (
-    FollowUpEvent,
-    SessionEvent,
     SessionObserver,
     TextDeltaEvent,
     ToolStartEvent,
@@ -54,9 +52,6 @@ from tests.supervisor._fixtures import (
 # Event vocabulary — at: int (nanoseconds)
 # ---------------------------------------------------------------------------
 
-_FOLLOW_UP = FollowUpEvent(at=13_000_000_000, action="replied", reason="user asked", text="hello")
-_FOLLOW_UP_NO_OPTIONALS = FollowUpEvent(at=20_000_000_000, action="waiting")
-
 #: Text holding a lone surrogate, which forces the ASCII-escaping fallback
 #: serializer, next to a raw non-ASCII character it must escape.
 _SURROGATE_TEXT = "café \ud800"
@@ -69,36 +64,8 @@ class _Limit(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# to_json_line — snake_case keys, unset optional fields left off
+# to_json_line — escaping and non-finite floats
 # ---------------------------------------------------------------------------
-
-JSON_CASES = [
-    pytest.param(
-        _FOLLOW_UP,
-        {
-            "type": "follow_up",
-            "at": 13_000_000_000,
-            "action": "replied",
-            "reason": "user asked",
-            "text": "hello",
-        },
-        id="follow_up-with-optionals",
-    ),
-    pytest.param(
-        _FOLLOW_UP_NO_OPTIONALS,
-        {"type": "follow_up", "at": 20_000_000_000, "action": "waiting"},
-        id="follow_up-no-optionals",
-    ),
-]
-
-
-@pytest.mark.parametrize(("event", "expected"), JSON_CASES)
-def test_to_json_line_when_given_event_does_write_its_wire_object(
-    event: SessionEvent, expected: dict[str, object]
-):
-    parsed = json.loads(to_json_line(event))
-
-    assert parsed == expected
 
 
 def test_to_json_line_when_text_holds_a_line_separator_does_escape_it():

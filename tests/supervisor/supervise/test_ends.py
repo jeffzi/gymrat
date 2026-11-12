@@ -156,57 +156,25 @@ def _ended_markers(markers: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _DetectionCase:
-    """Records landing before a tool end, the end that follows them, and the ending they earn."""
-
-    appended: tuple[SessionLogRecord, ...]
-    stop: StopConfig | None
-    ended_by: str
-    reason: str
-
-
-@pytest.mark.parametrize(
-    "case",
-    [
-        pytest.param(
-            _DetectionCase(
-                appended=(_FAILED_HOOK,),
-                stop=None,
-                ended_by="hook-failure",
-                reason=_FAILED_HOOK_REASON,
-            ),
-            id="hook-failure",
-        ),
-        pytest.param(
-            _DetectionCase(
-                appended=(iteration_record(seq=1),),
-                stop=StopConfig(max_iterations=1),
-                ended_by="stop-condition",
-                reason=_MAX_ITERATIONS_REASON,
-            ),
-            id="stop-condition-met-during-run",
-        ),
-    ],
-)
 async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after_that_tool_end(
     root: str,
-    case: _DetectionCase,
 ):
     driver = create_mock_driver([
-        append_step(root, *case.appended),
+        append_step(root, iteration_record(seq=1)),
         _tool_end(),
         blocked_step(),
     ])
 
-    result = await run_supervised(root, driver, config=benchless_config(stop=case.stop))
+    result = await run_supervised(
+        root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
+    )
 
     markers = event_log_markers(root)
     ended = _ended_markers(markers)
-    assert result.ended_by == case.ended_by
-    assert result.end_reason == case.reason
+    assert result.ended_by == "stop-condition"
+    assert result.end_reason == _MAX_ITERATIONS_REASON
     assert result.outcome.reason == "interrupted"
-    assert ended == [f"follow_up:ended:{case.reason}"]
+    assert ended == [f"follow_up:ended:{_MAX_ITERATIONS_REASON}"]
     assert markers.index(ended[0]) > markers.index("tool_end:t1")
 
 

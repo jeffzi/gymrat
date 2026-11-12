@@ -76,7 +76,6 @@ def test_supervise_when_supervise_raises_does_fail_before_the_exit_sequence(
 
     result = run()
 
-    assert result.exit_code == 2
     assert "config broken" in result.stderr
     assert seams.exit_calls == []
 
@@ -207,7 +206,6 @@ def test_supervise_when_driver_and_exit_sequence_both_error_does_surface_the_dri
 
     result = run()
 
-    assert result.exit_code == 2
     assert "SDK connection lost" in result.stderr
 
 

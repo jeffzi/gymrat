@@ -238,8 +238,6 @@ def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
         frame: RenderableType | None,
         *,
         auto_refresh: bool = False,
-        redirect_stdout: bool = False,
-        redirect_stderr: bool = False,
         get_renderable: Callable[[], RenderableType] | None = None,
     ) -> ErasableLive:
         live = ErasableLive(
@@ -247,8 +245,8 @@ def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
             console=console,
             auto_refresh=auto_refresh,
             refresh_per_second=100,
-            redirect_stdout=redirect_stdout,
-            redirect_stderr=redirect_stderr,
+            redirect_stdout=False,
+            redirect_stderr=False,
             get_renderable=get_renderable,
         )
         mounted.append((live, mount_live(live)))

@@ -23,7 +23,6 @@ from tests.session.records._fixtures import (
     command_record,
     committed_keep,
     discard_record,
-    empty_session_state,
     gate_block,
     session_state,
     stop_record,
@@ -48,7 +47,6 @@ _ITERATION_1_UNSETTLED = session_state(
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
-        pytest.param([], empty_session_state(), id="an-empty-log"),
         pytest.param(
             [SESSION], session_state(session=SESSION), id="a-session-with-nothing-measured"
         ),

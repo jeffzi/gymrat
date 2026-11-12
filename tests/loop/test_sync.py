@@ -105,9 +105,11 @@ def test_sync_to_experiment_when_git_reports_session_dir_does_not_sync_it(
 # ---------------------------------------------------------------------------
 
 
-def test_sync_to_experiment_when_working_tree_clean_does_return_empty_file_list(
+def test_sync_to_experiment_when_working_tree_clean_does_not_read_the_experiment_worktree(
     session_repo: str,
 ):
+    shutil.rmtree(experiment_worktree_dir(session_repo))
+
     result = sync_to_experiment(session_repo)
 
     assert result.files == ()

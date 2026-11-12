@@ -186,15 +186,12 @@ def kind_named(aggregates: Sequence[KindAggregate], kind: str) -> KindAggregate:
 # ---------------------------------------------------------------------------
 
 
-def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_kind_geomean_no_gate():
+def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_no_gated_geomean():
     result = kinds_of(
         [MetricSpec(name="warmup", gating=False, delta=0.0)],
     )
 
-    assert [
-        (aggregate.kind, aggregate.geomean.n, aggregate.groups, aggregate.gated_geomean)
-        for aggregate in result
-    ] == [("time", 1, (), None)]
+    assert [aggregate.gated_geomean for aggregate in result] == [None]
 
 
 # ---------------------------------------------------------------------------

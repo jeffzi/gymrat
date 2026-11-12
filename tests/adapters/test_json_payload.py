@@ -91,7 +91,7 @@ def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_
     # depth comes from arrays under one key; one ``{`` keeps it to one attempt.
     stdout = '{"a":' + "[" * 500_000
 
-    with pytest.raises(AdapterError, match=r"^Failed to parse JSON: Exceeded maximum recursion"):
+    with pytest.raises(AdapterError, match="Exceeded maximum recursion"):
         _FIRST.parse(stdout)
 
 

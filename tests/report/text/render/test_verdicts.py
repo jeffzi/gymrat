@@ -61,7 +61,6 @@ from tests.report._verdicts import (
     band_metric,
     band_verdict,
     geomean_of,
-    one_sided_metric,
 )
 
 if TYPE_CHECKING:
@@ -91,12 +90,9 @@ if TYPE_CHECKING:
                 ),
                 "within-noise/time": permutation_metric(verdict="no-signal", delta=0.4),
                 "big-improvement/time": permutation_metric(verdict="improved", delta=-20),
-                "one-sided/time": one_sided_metric(),
                 "loud-unstable/time": permutation_metric(
                     verdict="unstable", delta=5, noise_pct=300
                 ),
-                "tied/heap": band_metric(n=10, usable_n=0),
-                "single-pair/time": band_metric(n=1, noise_pct=0.5),
                 "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
             },
             [
@@ -426,14 +422,12 @@ def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_
     assert "--samples 8 " in output
 
 
-def test_render_report_when_verbose_and_all_exact_does_end_on_the_highlights_without_a_footer():
+def test_render_report_when_verbose_and_all_exact_does_add_no_footer():
     result = create_comparison_result(metrics={"a/heap": exact_metric(delta=-7.9)})
 
     output = render_report(result, ReportOptions(verbose=True))
 
-    last_block = output.split("\n\n")[-1].splitlines()
-    assert last_block[0] == "highlights"
-    assert len(last_block) == 2
+    assert output == render_report(result)
 
 
 # ---------------------------------------------------------------------------

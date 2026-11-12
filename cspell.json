@@ -141,7 +141,6 @@
   ],
   "useGitignore": true,
   "ignorePaths": [
-    "tests/event_docs/vendor/**",
     "uv.lock"
   ]
 }

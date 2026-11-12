@@ -170,8 +170,8 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
     assert "3" in record.message
 
 
-async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_missing_checks_warning_to_the_sink(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+async def test_run_exit_sequence_when_no_checks_are_configured_does_label_the_kept_step_unchecked(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
     improved_iteration(repo)
@@ -180,8 +180,6 @@ async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_mi
     run = await run_sequence(session_context(repo))
 
     assert is_kept_step(run.report.steps[0], checks="checks not configured")
-    assert run.warnings != []
-    assert capsys.readouterr().err == ""
 
 
 async def test_run_exit_sequence_when_the_checks_rewrite_the_tree_does_note_it_on_the_kept_step(

@@ -411,24 +411,6 @@ async def wait_for_file(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) 
         await asyncio.sleep(_POLL_INTERVAL_S)
 
 
-def wait_for_file_blocking(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> None:
-    """Block until ``path`` exists.
-
-    The synchronous twin of ``wait_for_file``, for tests that drive a
-    subprocess without an event loop.
-
-    Args:
-        path: The file to wait for.
-        timeout_s: Seconds to poll before giving up.
-
-    Raises:
-        TimeoutError: ``path`` has not appeared within ``timeout_s``.
-    """
-    poll_until_blocking(
-        path.exists, timeout_s, lambda: TimeoutError(f"file never appeared at {path}")
-    )
-
-
 @contextlib.contextmanager
 def reaped[P: subprocess.Popen[Any]](proc: P) -> Generator[P]:
     """Hand ``proc`` back, then kill and reap it on the way out if it is still running.

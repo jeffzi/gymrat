@@ -615,20 +615,14 @@ def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> type
 
 
 def spawn_children_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop the creation flags from every asyncio spawn, so no child starts suspended."""
+    """Drop the creation flags from every asyncio exec spawn, so no child starts suspended."""
     spawn_exec = asyncio.create_subprocess_exec
-    spawn_shell = asyncio.create_subprocess_shell
 
     async def exec_running(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
         kwargs.pop("creationflags", None)
         return await spawn_exec(*args, **kwargs)
 
-    async def shell_running(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
-        kwargs.pop("creationflags", None)
-        return await spawn_shell(command, **kwargs)
-
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_running)
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

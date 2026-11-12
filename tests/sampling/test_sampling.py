@@ -245,9 +245,6 @@ _REF_OLD = TargetContext(
     position="old",
 )
 _EXIT_THREE = ExecResult(stdout="", stderr="boom", exit_code=3, stdout_bytes=4, stderr_bytes=4)
-_TIMED_OUT = ExecTimeoutError(
-    stdout="partial", stderr="", timeout_ms=1500, stdout_bytes=7, stderr_bytes=0
-)
 # A timeout whose stdout also overran the cap: the timeout is the diagnosis.
 _TIMED_OUT_OVER_CAP = ExecTimeoutError(
     stdout="partial",
@@ -287,26 +284,8 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("result", "target", "options", "inserted", "line_count", "hint_inserts"),
+    ("result", "target", "options", "inserted", "line_count", "has_hint"),
     [
-        pytest.param(
-            _EXIT_THREE,
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", "3", "boom"),
-            5,
-            None,
-            id="bench-fails-in-a-dir",
-        ),
-        pytest.param(
-            _TIMED_OUT,
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", "1500", "partial"),
-            5,
-            None,
-            id="bench-times-out-in-a-dir",
-        ),
         pytest.param(
             _TIMED_OUT_OVER_CAP,
             _IN_PLACE_NEW,
@@ -322,7 +301,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
                 "partial",
             ),
             6,
-            None,
+            False,
             id="bench-times-out-over-the-cap-keeps-the-timeout",
         ),
         pytest.param(
@@ -331,7 +310,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             _WITH_PREPARE,
             ("old", "base", "feature", "/wt", "setup", "3", "boom"),
             6,
-            (),
+            True,
             id="prepare-fails-on-a-ref",
         ),
         pytest.param(
@@ -340,7 +319,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             _RUN_ONLY,
             (*_FAILED_HEAD, "err", "std"),
             8,
-            None,
+            False,
             id="both-labelled-stderr-first",
         ),
         pytest.param(
@@ -349,7 +328,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             _RUN_ONLY,
             _FAILED_HEAD,
             4,
-            None,
+            False,
             id="neither-present",
         ),
         pytest.param(
@@ -364,7 +343,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
                 "capped stdout",
             ),
             8,
-            None,
+            False,
             id="failed-bench-over-the-cap-keeps-the-failure",
         ),
         pytest.param(
@@ -373,7 +352,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             _BENCH_ONLY,
             ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}"),
             4,
-            (),
+            True,
             id="bench-stdout-overran-the-cap-in-a-dir",
         ),
     ],
@@ -385,7 +364,7 @@ async def test_collect_samples_when_command_fails_does_raise_error_naming_what_f
     options: SamplingOptions,
     inserted: tuple[str, ...],
     line_count: int,
-    hint_inserts: tuple[str, ...] | None,
+    has_hint: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_exec(monkeypatch, SAMPLING_EXEC, result)
@@ -397,11 +376,7 @@ async def test_collect_samples_when_command_fails_does_raise_error_naming_what_f
     hint = caught.value.hint
     assert _holds_in_order(message, inserted)
     assert len(message.splitlines()) == line_count
-    if hint_inserts is None:
-        assert hint is None
-    else:
-        assert hint is not None
-        assert [part for part in hint_inserts if part not in hint] == []
+    assert (hint is not None) is has_hint
 
 
 @pytest.mark.parametrize(

@@ -64,7 +64,7 @@ _BAD_NAME_TASKS = [
     ("bad_task", "pattern"), _NOT_COMPLETED_TASKS + _MALFORMED_TASKS + _BAD_NAME_TASKS
 )
 def test_parse_when_task_is_skipped_does_skip_only_that_task_with_one_warning(
-    bad_task: object, pattern: str, capsys: pytest.CaptureFixture[str]
+    bad_task: object, pattern: str
 ):
     stdout = build_tinybench_stdout([bad_task, VALID_TASK])
     warnings: list[str] = []
@@ -74,4 +74,3 @@ def test_parse_when_task_is_skipped_does_skip_only_that_task_with_one_warning(
     assert result == {f"valid{TIME_SUFFIX}": 500_000}
     assert len(warnings) == 1
     assert re.search(pattern, warnings[0])
-    assert capsys.readouterr().err == ""

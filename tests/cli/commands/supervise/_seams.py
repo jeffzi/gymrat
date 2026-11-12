@@ -83,7 +83,6 @@ class Seams:
     exit_hook: Callable[[dict[str, Any]], None] | None = None
     exit_calls: list[dict[str, Any]] = field(default_factory=list)
     session_result: ReadSessionResult | None = None
-    final_text: str | None = None
     create_driver: Mock = field(init=False)
     install_cleanup: Mock = field(
         default_factory=lambda: create_autospec(
@@ -201,7 +200,7 @@ def _install_fake_reporter(monkeypatch: pytest.MonkeyPatch, seams: Seams) -> Non
             warn=seams.warnings.append,
             refresh_session=refresh_session,
             session_result=lambda: shown.session,
-            final_text=lambda: seams.final_text,
+            final_text=lambda: None,
         )
 
     monkeypatch.setattr(
@@ -215,7 +214,6 @@ def install_seams(
     *,
     config: ResolvedConfig | None = None,
     result: SupervisionResult | None = None,
-    final_text: str | None = None,
     raises: Exception | None = None,
     branch: str | None = None,
     real_reporter: bool = False,
@@ -226,7 +224,6 @@ def install_seams(
         monkeypatch: The fixture the replacements are installed through.
         config: The config the resolve seam returns; a default command config when omitted.
         result: The supervision result the supervisor seam hands back.
-        final_text: The agent's final message the reporter reports.
         raises: An error the supervisor seam raises instead of returning ``result``.
         branch: The session branch the fake pre-flight's start result carries.
         real_reporter: Keep the real dashboard reporter instead of the recording
@@ -237,7 +234,6 @@ def install_seams(
         The recorders and doubles the run is wired to.
     """
     seams = Seams()
-    seams.final_text = final_text
     resolved = config if config is not None else command_config()
     handed_back = result if result is not None else make_supervision_result()
 

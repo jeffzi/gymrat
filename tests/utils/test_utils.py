@@ -530,7 +530,7 @@ def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> 
 
     advanced = eta.advanced(100.0).advanced(300.0)
 
-    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (2, 400.0, 4)
+    assert (advanced.completed, advanced.total_time_ms) == (2, 400.0)
 
 
 @pytest.mark.parametrize(

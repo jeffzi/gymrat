@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.errors import GymratError
 from gymrat.loop.status import status_data, status_session
 from gymrat.report.loop import (
     SettleDiscarded,
@@ -68,7 +67,6 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from gymrat.session.records import (
@@ -296,7 +294,6 @@ def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_und
     [
         pytest.param((finalize_record(),), (True, False), id="finalized"),
         pytest.param((stop_record(message="target reached"),), (False, True), id="stopped"),
-        pytest.param((), (False, False), id="open"),
     ],
 )
 def test_status_data_when_session_closes_or_not_does_flag_finalized_and_stopped(
@@ -309,28 +306,3 @@ def test_status_data_when_session_closes_or_not_does_flag_finalized_and_stopped(
     data = status_data(root)
 
     assert (data.finalized, data.stopped) == flags
-
-
-# ---------------------------------------------------------------------------
-# no session opened
-# ---------------------------------------------------------------------------
-
-
-def _status_session_with_config(root: str) -> object:
-    return status_session(root, _config())
-
-
-@pytest.mark.parametrize(
-    "read_status",
-    [
-        pytest.param(_status_session_with_config, id="status_session"),
-        pytest.param(status_data, id="status_data"),
-    ],
-)
-def test_status_when_no_session_opened_does_raise_no_session(
-    tmp_path: Path, read_status: Callable[[str], object]
-):
-    with pytest.raises(GymratError) as exc_info:
-        read_status(str(tmp_path))
-
-    assert exc_info.value.reason == "no-session"

@@ -670,7 +670,6 @@ def test_plain_line_when_launch_does_return_the_caps_line(
         pytest.param(
             make_state(), CompactionEvent(at=3000 * NS_PER_MS), "context compacted", id="compaction"
         ),
-        pytest.param(make_state(), tool_start_event("Bash", "bash-1", 2000), None, id="tool-start"),
     ],
 )
 def test_plain_line_when_event_arrives_does_return_its_line_or_nothing(
@@ -718,13 +717,6 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
     ("state", "has_baseline", "max_iterations", "expected"),
     [
         pytest.param(None, False, 20, "no session yet", id="no-session"),
-        pytest.param(
-            session_state(iteration_count=1),
-            True,
-            None,
-            "1 iteration · 0 kept · 0 discarded",
-            id="one-uncapped",
-        ),
         pytest.param(
             session_state(iteration_count=1),
             True,

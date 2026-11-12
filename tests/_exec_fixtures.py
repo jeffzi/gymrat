@@ -6,7 +6,6 @@ import dataclasses
 import os
 import shlex
 import signal
-import sys
 from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,7 @@ import pytest
 from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
-from tests._process_helpers import SLEEPER_ARGV, capture_spawns, poll_until
+from tests._process_helpers import capture_spawns, poll_until
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
 
@@ -199,21 +198,6 @@ async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutE
     return await exec_argv(args, options)
 
 
-def shell_grandchild(pid_file: Path) -> str:
-    """A shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and waits."""
-    return f"sleep 30 & echo $! > '{pid_file}'; wait"
-
-
-def _argv_grandchild(pid_file: Path) -> tuple[str, ...]:
-    script = (
-        "import subprocess, time\n"
-        f"p = subprocess.Popen({list(SLEEPER_ARGV)!r})\n"
-        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
-        "time.sleep(30)\n"
-    )
-    return (sys.executable, "-c", script)
-
-
 def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str:
     """Build a shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and exits.
 
@@ -227,28 +211,6 @@ def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str
     """
     redirects = "</dev/null >/dev/null 2>&1" if detached else ">/dev/null"
     return f"sleep 30 {redirects} & echo $! > {shlex.quote(str(pid_file))}; exit 0"
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class Runner:
-    """One entry point and the grandchild-spawning arguments a shared test hands it.
-
-    Attributes:
-        run: The entry point.
-        grandchild: Builds the arguments for a child that starts a sleeping
-            grandchild, writes the grandchild's pid to the given file, then
-            sleeps for 30 s itself.
-    """
-
-    run: ExecRun
-    grandchild: Callable[[Path], str | tuple[str, ...]]
-
-
-SHELL_RUNNER = Runner(run_shell, shell_grandchild)
-"""``exec`` with a shell command line."""
-
-ARGV_RUNNER = Runner(run_argv, _argv_grandchild)
-"""``exec_argv`` with a program and its arguments."""
 
 
 # ---------------------------------------------------------------------------

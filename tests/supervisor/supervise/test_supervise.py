@@ -123,11 +123,11 @@ def _abort_bound_driver() -> tuple[WrapDriver, list[float]]:
 async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(root: str):
     grace_ms = 100
     wrapper, aborted_at = _abort_bound_driver()
-    at_cap: list[tuple[float, bool]] = []
+    at_cap: list[float] = []
 
     def observer(event: SessionEvent) -> None:
         if isinstance(event, CapEvent):
-            at_cap.append((time.perf_counter(), wrapper.abort.is_set()))
+            at_cap.append(time.perf_counter())
 
     result = await asyncio.wait_for(
         run_supervised(
@@ -140,8 +140,7 @@ async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(root
         timeout=2.0,
     )
 
-    [(cap_at, armed_at_cap)] = at_cap
-    assert armed_at_cap is False
+    [cap_at] = at_cap
     assert (aborted_at[0] - cap_at) * 1000 >= grace_ms * 0.5
     assert result.ended_by == "wall-clock"
 

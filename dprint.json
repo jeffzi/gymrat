@@ -5,8 +5,7 @@
   ],
   "excludes": [
     "schemas/**",
-    "docs/event-reference.md",
-    "tests/event_docs/vendor/**"
+    "docs/event-reference.md"
   ],
   "lineWidth": 100,
   "markdown": {

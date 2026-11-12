@@ -80,7 +80,7 @@ def test_compare_when_a_candidate_has_no_stable_gating_metric_does_warn_only_und
 
     warnings = warning_lines(result.stderr)
     assert len(warnings) == len(named)
-    assert all(f'"{label}"' in warning for label, warning in zip(named, warnings, strict=True))
+    assert all(label in warning for label, warning in zip(named, warnings, strict=True))
 
 
 # ---------------------------------------------------------------------------

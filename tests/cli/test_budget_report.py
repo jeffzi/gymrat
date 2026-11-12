@@ -221,9 +221,8 @@ def _warn() -> None:
 
 
 def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
-    session_root: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
     _fail_getcwd(monkeypatch, RuntimeError("patched wrong"))
 
     with pytest.raises(RuntimeError, match="patched wrong"):

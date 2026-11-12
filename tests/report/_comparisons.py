@@ -305,42 +305,6 @@ def permutation_candidate(
     )
 
 
-def detecting_candidate(candidate: CandidateMetric, pct: float) -> CandidateMetric:
-    """``candidate`` with its verdict carrying a ``pct`` detectable change.
-
-    Args:
-        candidate: A candidate judged by an approximate method.
-        pct: The smallest change, in percent, the verdict could have detected.
-
-    Returns:
-        The candidate with the detectable change set on its verdict.
-
-    Raises:
-        AssertionError: ``candidate`` has no verdict or an exact one, which carries no
-            detectable change.
-    """
-    if candidate.verdict is None or candidate.verdict.method == "exact":
-        msg = f"no approximate verdict to carry a detectable change on {candidate!r}"
-        raise AssertionError(msg)
-    return replace(candidate, verdict=replace(candidate.verdict, detectable_pct=pct))
-
-
-def detecting_metric(metric: MetricComparison, pct: float) -> MetricComparison:
-    """``metric`` with every candidate's verdict carrying a ``pct`` detectable change.
-
-    Args:
-        metric: A metric whose candidates are all judged by an approximate method.
-        pct: The smallest change, in percent, each verdict could have detected.
-
-    Returns:
-        The metric with the detectable change set on every candidate's verdict.
-
-    Raises:
-        AssertionError: A candidate has no verdict or an exact one.
-    """
-    return replace(metric, candidates=tuple(detecting_candidate(c, pct) for c in metric.candidates))
-
-
 def shared_baseline_metric(
     candidates: Sequence[CandidateMetric], *, name: str = "time"
 ) -> MetricComparison:

@@ -303,30 +303,14 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
 }
 
 
-@pytest.mark.parametrize(
-    ("block", "parent"),
-    [
-        pytest.param(
-            ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT),
-            "tu_parent",
-            id="client-tool-under-a-parent",
-        ),
-        pytest.param(
-            ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
-            None,
-            id="server-tool",
-        ),
-    ],
-)
-async def test_start_when_tool_use_block_does_emit_tool_start(
-    block: ToolUseBlock | ServerToolUseBlock,
-    parent: str | None,
-):
-    events = await run_with_messages([assistant(block, parent_tool_use_id=parent)])
+async def test_start_when_tool_use_block_does_emit_tool_start():
+    block = ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT)
+
+    events = await run_with_messages([assistant(block, parent_tool_use_id="tu_parent")])
 
     starts = events_of(events, ToolStartEvent)
     assert len(starts) == 1
-    assert starts[0].parent_tool_use_id == parent
+    assert starts[0].parent_tool_use_id == "tu_parent"
     assert starts[0].tool_use_id == block.id
     assert starts[0].tool_name == block.name
     assert starts[0].input == block.input

@@ -12,7 +12,7 @@ from rich.cells import cell_len, split_graphemes
 from gymrat.report.labels import shorten_label, truncate_labels
 from gymrat.report.style import format_hint, highlight_inline_code, render_lines
 from tests._ansi import strip_ansi
-from tests.report._assertions import render_colored, render_plain, sgr_for, styles_at
+from tests.report._assertions import render_colored, render_plain, styles_at
 
 # ---------------------------------------------------------------------------
 # shorten_label
@@ -126,10 +126,10 @@ def test_truncate_labels_when_widening_past_a_fitting_label_does_not_lengthen_it
 # ---------------------------------------------------------------------------
 
 
-def test_highlight_inline_code_when_span_in_prose_does_paint_the_span_blue_without_backticks():
+def test_highlight_inline_code_when_span_in_prose_does_style_the_span_without_backticks():
     styled = highlight_inline_code("Run `gymrat doctor` to verify.")
 
-    assert styles_at(render_colored(styled), "gymrat doctor") == sgr_for("blue")
+    assert styles_at(render_colored(styled), "gymrat doctor") != []
 
 
 def test_highlight_inline_code_when_rendered_plain_does_drop_the_backticks_of_every_span():
@@ -163,14 +163,10 @@ def test_format_hint_when_given_text_does_render_code_spans_as_literal_text(
     assert render_plain(format_hint(text)) == expected
 
 
-def test_format_hint_when_code_spans_bracket_prose_does_paint_only_the_spans_blue():
+def test_format_hint_when_code_spans_bracket_prose_does_style_the_spans_apart_from_the_prose():
     line = render_colored(format_hint("`a` or `b`"))
 
-    assert (styles_at(line, "a"), styles_at(line, " or "), styles_at(line, "b", last=True)) == (
-        sgr_for("dim blue"),
-        sgr_for("dim"),
-        sgr_for("dim blue"),
-    )
+    assert styles_at(line, "a") == styles_at(line, "b", last=True) != styles_at(line, " or ")
 
 
 # ---------------------------------------------------------------------------

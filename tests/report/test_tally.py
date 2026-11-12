@@ -115,7 +115,7 @@ def test_verdict_summary_parts_when_mixed_does_color_only_each_count_by_its_clas
     ] == [([], [])] * len(_GLYPHS)
 
 
-def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
+def test_verdict_summary_parts_when_zero_count_does_style_the_whole_part():
     only_improved: MetricComparisons = {
         "faster/time": permutation_metric(verdict="improved", delta=-10)
     }
@@ -123,8 +123,9 @@ def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
     parts = verdict_summary_parts(only_improved, 0)
 
     assert [
-        styles_at(render_colored(part), glyph) for part, glyph in zip(parts, _GLYPHS, strict=True)
-    ] == [[], *[sgr_for("dim")] * 5]
+        bool(styles_at(render_colored(part), glyph))
+        for part, glyph in zip(parts, _GLYPHS, strict=True)
+    ] == [False, True, True, True, True, True]
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

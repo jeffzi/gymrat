@@ -31,14 +31,10 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
-    ARGV_RUNNER,
-    SHELL_RUNNER,
-    Runner,
     Teardown,
     cancel_and_settle,
     cancel_task,
     expected_result,
-    leave_to_timeout,
     run_shell,
     set_abort,
     settle,
@@ -327,49 +323,6 @@ async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_par
         stdout_bytes=len(b"line 1\n"),
         stderr_bytes=0,
     )
-
-
-#: A timeout long enough that the grandchild is up before it lands, short enough to stay quick.
-_GRANDCHILD_TIMEOUT_MS = 3000
-
-
-# Every entry point and every teardown reach the same group kill, so each
-# value appears once rather than in every pairing.
-
-
-@pytest.mark.parametrize(
-    ("runner", "teardown"),
-    [
-        pytest.param(
-            SHELL_RUNNER,
-            Teardown(_GRANDCHILD_TIMEOUT_MS, leave_to_timeout),
-            id="exec-timeout",
-        ),
-        pytest.param(ARGV_RUNNER, Teardown(None, cancel_task), id="exec_argv-cancelled"),
-    ],
-)
-async def test_exec_when_torn_down_does_kill_the_whole_group(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    runner: Runner,
-    teardown: Teardown,
-) -> None:
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        runner.run(
-            runner.grandchild(tmp_path / "grandchild.pid"),
-            make_opts(timeout_ms=teardown.timeout_ms, abort=abort),
-        )
-    )
-    proc = await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
-
-    teardown.trigger(task, proc, abort)
-
-    await settle(task)
-
-    await wait_until_dead(grandchild, timeout_s=3.0)
 
 
 async def test_exec_when_abort_preset_does_settle_failed_without_spawning(

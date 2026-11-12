@@ -9,12 +9,23 @@ from opentelemetry.context import Context
 from opentelemetry.trace import StatusCode
 
 from gymrat.session.records import (
+    ITERATION_DELTA_PCT,
+    ITERATION_OUTCOME,
+    ITERATION_SEQ,
     CommandRecord,
     IterationPrimary,
     SessionLogRecord,
     record_event,
 )
-from gymrat.telemetry.command_span import command_attributes, start_command_span
+from gymrat.telemetry.command_span import (
+    COMMAND_DURATION_MS,
+    COMMAND_EXIT_CODE,
+    COMMAND_NAME,
+    COMMAND_REASON,
+    command_attributes,
+    start_command_span,
+)
+from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_KEY
 from tests.session.records._fixtures import (
     SESSION_ID,
     baseline_record,
@@ -50,12 +61,12 @@ from tests.telemetry._fixtures import memory_tracing, span_by_name
                 },
             ),
             {
-                "gymrat.session.id": SESSION_ID,
-                "gymrat.command.name": "measure",
-                "gymrat.command.exit_code": 0,
-                "gymrat.command.duration_ms": 1234,
-                "gymrat.command.reason": "budget-exceeded",
-                "gymrat.iteration.seq": 3,
+                SESSION_ID_KEY: SESSION_ID,
+                COMMAND_NAME: "measure",
+                COMMAND_EXIT_CODE: 0,
+                COMMAND_DURATION_MS: 1234,
+                COMMAND_REASON: "budget-exceeded",
+                ITERATION_SEQ: 3,
                 "gymrat.command.args.ref": "main",
                 "gymrat.command.args.samples": 5,
                 "gymrat.command.args.verbose": True,
@@ -66,10 +77,10 @@ from tests.telemetry._fixtures import memory_tracing, span_by_name
         pytest.param(
             command_record(name="measure", reason=None, seq=None, args={}),
             {
-                "gymrat.session.id": SESSION_ID,
-                "gymrat.command.name": "measure",
-                "gymrat.command.exit_code": 1,
-                "gymrat.command.duration_ms": 1840,
+                SESSION_ID_KEY: SESSION_ID,
+                COMMAND_NAME: "measure",
+                COMMAND_EXIT_CODE: 1,
+                COMMAND_DURATION_MS: 1840,
             },
             id="no-reason-seq-or-args",
         ),
@@ -150,9 +161,9 @@ def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_gi
             (
                 "gymrat.iteration",
                 {
-                    "gymrat.iteration.seq": 3,
-                    "gymrat.iteration.outcome": "improved",
-                    "gymrat.iteration.delta_pct": -7.2,
+                    ITERATION_SEQ: 3,
+                    ITERATION_OUTCOME: "improved",
+                    ITERATION_DELTA_PCT: -7.2,
                 },
             ),
             id="iteration",
@@ -161,7 +172,7 @@ def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_gi
             iteration_record(primary=IterationPrimary(kind="geomean", delta_pct=None)),
             (
                 "gymrat.iteration",
-                {"gymrat.iteration.seq": 1, "gymrat.iteration.outcome": "improved"},
+                {ITERATION_SEQ: 1, ITERATION_OUTCOME: "improved"},
             ),
             id="iteration-without-delta",
         ),
@@ -170,7 +181,7 @@ def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_gi
             (
                 "gymrat.keep",
                 {
-                    "gymrat.iteration.seq": 1,
+                    ITERATION_SEQ: 1,
                     "gymrat.keep.status": "committed",
                     "gymrat.keep.commit": "b" * 40,
                     "gymrat.keep.message": "cache the regex",

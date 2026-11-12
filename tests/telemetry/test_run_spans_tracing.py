@@ -16,14 +16,30 @@ from gymrat.supervisor.events import (
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import SupervisionResult
+from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_KEY
 from gymrat.telemetry.provider import SESSION_SPAN_KEY, span_id_of, start_span
 from gymrat.telemetry.run_spans import (
+    CAP_NAME,
+    EVENT_CAP,
+    EVENT_COMPACTION,
+    EVENT_FOLLOW_UP,
+    EVENT_TURN_END,
+    FOLLOW_UP_ACTION,
+    FOLLOW_UP_REASON,
+    GEN_AI_MODEL,
     GEN_AI_PROVIDER,
     RUN_COST_USD,
     RUN_DURATION_MS,
+    RUN_EFFORT,
     RUN_END_REASON,
     RUN_ENDED_BY,
+    RUN_HEAD_SHA,
+    RUN_MAX_MINUTES,
+    RUN_MAX_USD,
     RUN_SPAN,
+    TURN_BUDGET_EXHAUSTED,
+    TURN_ORIGIN,
+    TURN_SESSION_COST_USD,
     TracingState,
     create_run_span_observer,
     finalize_tracing,
@@ -56,9 +72,9 @@ _OUTCOME_KEYS = (RUN_COST_USD, RUN_ENDED_BY, RUN_END_REASON, RUN_DURATION_MS)
 
 
 _LAUNCH_RUN_ATTRIBUTES = {
-    "gymrat.session.id": SESSION_ID,
-    "gymrat.run.head_sha": "abc123def",
-    "gymrat.run.max_minutes": 60.0,
+    SESSION_ID_KEY: SESSION_ID,
+    RUN_HEAD_SHA: "abc123def",
+    RUN_MAX_MINUTES: 60.0,
 }
 
 
@@ -80,9 +96,9 @@ _LAUNCH_RUN_ATTRIBUTES = {
             ),
             {
                 **_LAUNCH_RUN_ATTRIBUTES,
-                "gymrat.run.max_usd": 5.0,
-                "gymrat.run.effort": "high",
-                "gen_ai.request.model": "claude-sonnet-4-20250514",
+                RUN_MAX_USD: 5.0,
+                RUN_EFFORT: "high",
+                GEN_AI_MODEL: "claude-sonnet-4-20250514",
             },
             id="options-set-are-recorded",
         ),
@@ -108,11 +124,11 @@ def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_of
             make_turn_end(at=1_000_000_000, text="done", cost_usd=0.05),
             [
                 (
-                    "gymrat.turn_end",
+                    EVENT_TURN_END,
                     {
-                        "gymrat.turn.session_cost_usd": pytest.approx(0.05),
-                        "gymrat.turn.origin": "agent",
-                        "gymrat.turn.budget_exhausted": False,
+                        TURN_SESSION_COST_USD: pytest.approx(0.05),
+                        TURN_ORIGIN: "agent",
+                        TURN_BUDGET_EXHAUSTED: False,
                     },
                     1_000_000_000,
                 )
@@ -123,8 +139,8 @@ def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_of
             FollowUpEvent(at=2_000_000_000, action="replied", reason="user asked"),
             [
                 (
-                    "gymrat.follow_up",
-                    {"gymrat.follow_up.action": "replied", "gymrat.follow_up.reason": "user asked"},
+                    EVENT_FOLLOW_UP,
+                    {FOLLOW_UP_ACTION: "replied", FOLLOW_UP_REASON: "user asked"},
                     2_000_000_000,
                 )
             ],
@@ -132,17 +148,17 @@ def test_run_attributes_when_called_does_map_the_launch_leaving_unset_options_of
         ),
         pytest.param(
             FollowUpEvent(at=3_000_000_000, action="waiting"),
-            [("gymrat.follow_up", {"gymrat.follow_up.action": "waiting"}, 3_000_000_000)],
+            [(EVENT_FOLLOW_UP, {FOLLOW_UP_ACTION: "waiting"}, 3_000_000_000)],
             id="follow-up-without-reason",
         ),
         pytest.param(
             CapEvent(at=4_000_000_000, cap="wall-clock", action="interrupting"),
-            [("gymrat.cap", {"gymrat.cap.name": "wall-clock"}, 4_000_000_000)],
+            [(EVENT_CAP, {CAP_NAME: "wall-clock"}, 4_000_000_000)],
             id="cap",
         ),
         pytest.param(
             CompactionEvent(at=5_000_000_000),
-            [("gymrat.compaction", {}, 5_000_000_000)],
+            [(EVENT_COMPACTION, {}, 5_000_000_000)],
             id="compaction",
         ),
         pytest.param(

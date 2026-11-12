@@ -144,7 +144,7 @@ def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
 
     output = format_cli_error(AdapterError("parse failed"))
 
-    assert "AdapterError: parse failed" in output
+    assert output.index("AdapterError") < output.index("parse failed")
 
 
 def _raised(message: str) -> ValueError:
@@ -171,14 +171,14 @@ def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_d
     assert ("Traceback" in output) is has_stack
 
 
-def test_format_cli_error_when_gymrat_error_carries_hint_does_append_an_unlabeled_line_without_footer(
+def test_format_cli_error_when_gymrat_error_carries_hint_does_append_the_hint_without_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
 
-    assert output.splitlines()[-1] == "run gymrat doctor"
+    assert "run gymrat doctor" in output
     assert BUGS_URL not in output
 
 

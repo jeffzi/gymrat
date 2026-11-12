@@ -78,7 +78,7 @@ def _drain(fd: int, chunks: list[bytes]) -> None:
 
 
 @contextlib.contextmanager
-def pty_capture(size: tuple[int, int] | None = None) -> Generator[PtyCapture]:
+def pty_capture(size: tuple[int, int]) -> Generator[PtyCapture]:
     """Open a pseudo-terminal and collect everything drawn on it until the block exits.
 
     On exit the capture closes its own copy of the slave, waits for the reader
@@ -88,15 +88,14 @@ def pty_capture(size: tuple[int, int] | None = None) -> Generator[PtyCapture]:
 
     Args:
         size: The ``(rows, columns)`` the terminal reports, so a renderer in the
-            child draws at a known geometry; ``None`` leaves the pty's default.
+            child draws at a known geometry.
 
     Yields:
         The capture, whose ``slave`` the caller hands to the child.
     """
     master, slave = pty.openpty()
-    if size is not None:
-        rows, columns = size
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("4H", rows, columns, 0, 0))
+    rows, columns = size
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("4H", rows, columns, 0, 0))
     capture = PtyCapture(slave)
     reader = threading.Thread(target=_drain, args=(master, capture.chunks))
     reader.start()

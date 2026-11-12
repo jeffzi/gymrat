@@ -34,7 +34,6 @@ from tests._config import resolved_config
 from tests._doctor_fixtures import single_check_report
 from tests.cli._session import make_discard_repo
 from tests.loop._settle import start_with
-from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
@@ -62,22 +61,21 @@ def start_open_session(repo: str) -> None:
     start_with(repo, config=resolved_config())
 
 
-def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[None]:
     """Replace the baseline measurement path so no real bench runs.
 
     Args:
         monkeypatch: The fixture that installs the stand-in measurement.
 
     Returns:
-        A list that records each call's keyword arguments.
+        A list that gains one entry per measurement call.
     """
-    calls: list[dict[str, Any]] = []
+    calls: list[None] = []
 
     async def fake_measure(target: object, run_options: object) -> Any:
-        calls.append({"target": target, "run_options": run_options})
-        record = baseline_record(duration_ms=5000)
-        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
-        return result, record
+        del target, run_options
+        calls.append(None)
+        return None, baseline_record(duration_ms=5000)
 
     monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
     return calls

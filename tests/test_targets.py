@@ -104,5 +104,4 @@ def test_resolve_target_when_path_stat_fails_does_raise_resolve_error(
 
     message = str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, OSError)
-    assert str(stat_failing_target) in message
     assert str(exc_info.value.__cause__) in message

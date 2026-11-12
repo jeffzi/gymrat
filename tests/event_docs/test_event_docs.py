@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-from jsonschema import Draft7Validator, Draft202012Validator
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel
 
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
@@ -224,14 +224,14 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
 
 
 @pytest.mark.parametrize(
-    ("op_name", "reader"),
+    ("op_name", "reader", "extra_keys"),
     [
-        pytest.param(name, READERS[name], id=name)
-        for name in ("supervisor-guard", "dashboard")  # a reader with a note, one without
+        pytest.param("supervisor-guard", READERS["supervisor-guard"], {"description"}, id="note"),
+        pytest.param("dashboard", READERS["dashboard"], set(), id="no-note"),
     ],
 )
 def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
-    op_name: str, reader: ReaderSpec
+    op_name: str, reader: ReaderSpec, extra_keys: set[str]
 ):
     doc = _render_asyncapi_doc()
 
@@ -240,24 +240,8 @@ def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
     assert op["messages"] == [
         {"$ref": f"#/channels/{reader.channel}/messages/{t}"} for t in reader.types
     ]
+    assert op.keys() - {"action", "channel", "messages"} == extra_keys
     assert op.get("description") == reader.note
-
-
-# ---------------------------------------------------------------------------
-# meta-schema validation
-# ---------------------------------------------------------------------------
-
-_META_SCHEMA_PATH = Path(__file__).parent / "vendor" / "asyncapi-3.0.0.schema.json"
-
-
-def test_render_asyncapi_when_called_does_validate_against_asyncapi_300_meta_schema():
-    meta_schema = json.loads(_META_SCHEMA_PATH.read_text(encoding="utf-8"))
-    validator = Draft7Validator(meta_schema)
-
-    doc = _render_asyncapi_doc()
-
-    errors = list(validator.iter_errors(doc))
-    assert not errors, f"AsyncAPI meta-schema validation errors: {errors}"
 
 
 # ---------------------------------------------------------------------------

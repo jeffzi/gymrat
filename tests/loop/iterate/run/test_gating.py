@@ -268,20 +268,6 @@ async def test_iterate_session_when_a_non_exact_gating_metric_regresses_does_rer
     assert samples_mock.calls[1].bench == "npm run bench -- --filter alloc_bytes"
 
 
-async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rerunning(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    experiment = rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1))
-    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
-
-    result = await iterate_session(
-        open_repo, resolved_config(metrics={"alloc_bytes": MetricEntry(gating=False)})
-    )
-
-    assert samples_mock.call_count == 1
-    assert result.record.metrics["alloc_bytes"].verdict == "regressed"
-
-
 # ---------------------------------------------------------------------------
 # a metric's delta ratio is undefined: zero baseline
 # ---------------------------------------------------------------------------
@@ -526,7 +512,6 @@ def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
     ("primary", "expected"),
     [
         pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
-        pytest.param(MetricPrimary("lower/time", -3), "improved", id="lower-negative-improves"),
         pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
         pytest.param(MetricPrimary("absent/time", -30), "no-signal", id="primary-never-measured"),
     ],

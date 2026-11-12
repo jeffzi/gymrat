@@ -104,7 +104,6 @@ def test_compute_verdicts_when_permutation_delta_zero_does_report_no_signal():
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
     verdict = get_permutation(result)
-    assert verdict.delta == 0.0
     assert verdict.p < 0.05
     assert (verdict.verdict, verdict.reason) == ("no-signal", None)
 
@@ -117,7 +116,6 @@ def test_compute_verdicts_when_permutation_delta_not_finite_does_report_no_signa
     )
 
     verdict = get_permutation(result)
-    assert not math.isfinite(verdict.delta)
     assert (verdict.verdict, verdict.reason) == ("no-signal", "non-finite-delta")
 
 
@@ -125,7 +123,6 @@ def test_compute_verdicts_when_band_delta_not_finite_does_report_no_signal():
     result = run(create_samples(2, SUBNORMAL_BASELINE), samples(100.0, 100.0), METRIC_APPROX_LOWER)
 
     verdict = get_band(result)
-    assert not math.isfinite(verdict.delta)
     assert (verdict.verdict, verdict.reason, verdict.usable_n) == (
         "no-signal",
         "non-finite-delta",

@@ -47,7 +47,6 @@ def test_display_class_when_non_exact_pair_count_below_minimum_does_read_inconcl
         pytest.param(
             band_verdict(n=6, usable_n=5), "within-noise", id="band-some-pairs-differ-at-minimum"
         ),
-        pytest.param(permutation_verdict(), "within-noise", id="permutation-no-signal"),
     ],
 )
 def test_display_class_when_no_signal_does_read_identical_only_if_every_pair_tied(

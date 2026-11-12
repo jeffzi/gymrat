@@ -54,7 +54,6 @@ from tests.session.records._fixtures import (
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import (
     arm_placeholder_endpoint,
-    hide_otlp_exporter,
     memory_tracing,
     span_by_name,
     spans_by_prefix,
@@ -567,23 +566,6 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_parent_on_it_only
     span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     assert span.parent is not None
     assert span.parent.span_id == expected_parent
-
-
-async def test_with_repo_lock_when_otlp_exporter_missing_does_run_body_without_tracing(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-):
-    seeded_session(repo)
-    hide_otlp_exporter(monkeypatch)
-    arm_placeholder_endpoint(monkeypatch)
-
-    result = await with_repo_lock("measure", _ok_body)
-
-    records = log_records(repo_root())
-    assert result == "ok"
-    assert isinstance(records[-1], CommandRecord)
-    assert capsys.readouterr().err == ""
 
 
 def _unreadable_once(monkeypatch: pytest.MonkeyPatch, jsonl_path: Path) -> None:

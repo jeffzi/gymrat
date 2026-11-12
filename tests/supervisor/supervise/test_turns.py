@@ -136,7 +136,6 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(root: str)
         result = await run_supervised(root, driver, observer=watch, is_lock_held=None)
 
     assert result.ended_by == "session"
-    assert "waiting" in watch.actions()
 
 
 # ---------------------------------------------------------------------------

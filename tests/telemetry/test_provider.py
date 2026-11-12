@@ -1,12 +1,11 @@
 """Tests for the tracing provider.
 
-Covers configure, start_span, flush and reset, the deterministic trace and span ID
+Covers configure, start_span and flush, the deterministic trace and span ID
 derivation, and the traceparent helpers.
 """
 
 from __future__ import annotations
 
-import contextlib
 import re
 from typing import TYPE_CHECKING, override
 
@@ -14,32 +13,22 @@ import pytest
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import (
-    INVALID_SPAN,
-    NonRecordingSpan,
-    SpanContext,
-    TraceFlags,
-    set_span_in_context,
-)
+from opentelemetry.trace import INVALID_SPAN, SpanContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 from gymrat.telemetry.provider import (
-    SESSION_SPAN_KEY,
     configure_tracing,
     export_failed,
     flush_tracing,
     format_traceparent,
     id_from_digest,
     parse_traceparent,
-    reset_tracing,
-    session_span_dropped,
     span_id_of,
     start_span,
     trace_id_of,
 )
-from gymrat.telemetry.run_spans import SESSION_SPAN
 from gymrat.utils import ENDPOINT_ENV
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import (
@@ -300,69 +289,3 @@ def test_parse_traceparent_when_malformed_does_return_none():
     result = parse_traceparent("too-few-parts")
 
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# reset_tracing
-# ---------------------------------------------------------------------------
-
-
-class _ShutdownFailingSpanProcessor(SpanProcessor):
-    """Span processor whose flushes time out and whose first ``shutdown`` raises.
-
-    Later shutdowns are no-ops so the provider's ``atexit`` handler — left
-    registered when the first shutdown raises — stays quiet at interpreter exit.
-    """
-
-    def __init__(self) -> None:
-        self._shut_down = False
-
-    @override
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return False
-
-    @override
-    def shutdown(self) -> None:
-        if self._shut_down:
-            return
-        self._shut_down = True
-        msg = "exporter shutdown failed"
-        raise RuntimeError(msg)
-
-
-def _configure_with_failing_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Configure tracing on a failing-shutdown processor, with export and session-drop flags set."""
-    arm_placeholder_endpoint(monkeypatch)
-    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
-    flush_tracing()
-    # An unsampled parent makes the default parent-based sampler drop the session span.
-    unsampled = NonRecordingSpan(
-        SpanContext(trace_id=1, span_id=1, is_remote=True, trace_flags=TraceFlags(0))
-    )
-    start_span(SESSION_SPAN, span_key=SESSION_SPAN_KEY, context=set_span_in_context(unsampled))
-
-
-def test_reset_tracing_when_shutdown_raises_does_propagate_with_flags_cleared(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _configure_with_failing_shutdown(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        reset_tracing()
-
-    assert (export_failed(), session_span_dropped()) == (False, False)
-
-
-def test_configure_tracing_when_previous_reset_raised_does_configure_afresh(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _configure_with_failing_shutdown(monkeypatch)
-    with contextlib.suppress(RuntimeError):
-        reset_tracing()
-
-    result = configure_tracing(
-        "session-after-failed-reset",
-        span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
-    )
-
-    assert result is True

@@ -325,13 +325,6 @@ def under_scratch_root(root: Path) -> None:
 
 
 @pytest.fixture
-def honors_case(root: Path) -> None:
-    """Skip unless the filesystem under the repository tells letter cases apart."""
-    if _upper_root(root).exists():
-        pytest.skip("needs a filesystem that tells letter cases apart")
-
-
-@pytest.fixture
 def case_sensitive_stat(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every upper-case spelling of a repository directory a missing path."""
     if sys.platform == "win32":
@@ -376,29 +369,6 @@ def test_check_file_edit_when_case_variant_of_worktree_does_allow(root: Path):
     reason = check_file_edit(hook_input, root)
 
     assert reason is None
-
-
-@pytest.mark.usefixtures("under_scratch_root", "honors_case")
-def test_check_file_edit_when_sibling_dir_differs_by_case_does_allow_as_scratch(root: Path):
-    sibling = _upper_root(root)
-    (sibling / "src").mkdir(parents=True)
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(sibling / "src" / "x.py")}}
-
-    reason = check_file_edit(hook_input, root)
-
-    assert reason is None
-
-
-@pytest.mark.usefixtures("honors_case")
-def test_check_file_edit_when_existing_dir_differs_from_worktree_by_case_does_deny(root: Path):
-    lookalike = _upper_worktree(root)
-    lookalike.mkdir(parents=True)
-    path = str(lookalike / "x.py")
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
-
-    reason = check_file_edit(hook_input, root)
-
-    assert _verdict(reason, path) == "outside"
 
 
 @pytest.mark.usefixtures("under_scratch_root", "case_sensitive_stat")

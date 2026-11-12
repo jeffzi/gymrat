@@ -217,34 +217,17 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
     assert _iteration_fields(experiment_dir, "after") == (2, as_logged(result.record), 2)
 
 
-@pytest.mark.parametrize(
-    ("with_after", "expected_stages", "expected_events"),
-    [
-        pytest.param(False, [], [], id="no-hooks"),
-        pytest.param(
-            True,
-            ["after"],
-            [(HookStarted, "after"), (HookFinished, "after")],
-            id="only-after",
-        ),
-    ],
-)
 async def test_iterate_session_when_before_stage_absent_does_run_nothing_for_it(
     hooks_setup: tuple[str, str, HookScripts],
-    *,
-    with_after: bool,
-    expected_stages: list[str],
-    expected_events: list[tuple[type[HookStarted | HookFinished], str]],
 ):
     repo, _experiment_dir, hooks = hooks_setup
-    hooks_config = HooksConfig(after=hooks.printing("bye")) if with_after else None
-    config = resolved_config(hooks=hooks_config)
+    config = resolved_config(hooks=HooksConfig(after=hooks.printing("bye")))
     events: list[ProgressEvent] = []
 
     await iterate_session(repo, config, options=IterateOptions(on_progress=events.append))
 
-    assert [record.stage for record in records_of_type(repo, HookRecord)] == expected_stages
-    assert _hook_events(events) == expected_events
+    assert [record.stage for record in records_of_type(repo, HookRecord)] == ["after"]
+    assert _hook_events(events) == [(HookStarted, "after"), (HookFinished, "after")]
 
 
 # ---------------------------------------------------------------------------

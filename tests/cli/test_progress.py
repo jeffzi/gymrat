@@ -5,7 +5,7 @@ output through ``sealed_console``.  Frame content is pinned with syrupy
 golden snapshots; plain-mode milestones use exact-line equality; live wiring
 assertions check ``Live`` attributes directly.
 
-The pure reducer behind the bar (``advance``, ``plain_line``) is driven
+The pure reducer behind the bar (``advance``) is driven
 terminal-free: ``advance`` takes ``now`` from the event's own ``at_ms``, so a
 state transition is fully determined by ``(state, event)``.
 """
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal
 
 import pytest
 
-from gymrat.cli.progress import ProgressReporter, ProgressState, RunShape, advance, plain_line
+from gymrat.cli.progress import ProgressReporter, ProgressState, RunShape, advance
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 def _reporter(
     mode: Literal["live", "plain"],
     *,
-    width: int = 80,
     height: int = 24,
     target_count: int = 1,
     sample_count: int = 3,
@@ -57,7 +56,7 @@ def _reporter(
 ) -> tuple[Console, Clock[float], ProgressReporter]:
     """Wire a progress reporter to a sealed console and a hand-advanced clock."""
     clock = Clock(0.0)
-    console = sealed_console(width=width, height=height, get_time=clock)
+    console = sealed_console(width=80, height=height, get_time=clock)
     reporter = ProgressReporter(
         mode=mode,
         console=console,
@@ -190,17 +189,6 @@ def test_advance_when_unrelated_event_does_return_state_unchanged(state: Progres
     result = advance(state, HookStarted(stage="before", at_ms=7_000))
 
     assert result == state
-
-
-# ---------------------------------------------------------------------------
-# plain_line
-# ---------------------------------------------------------------------------
-
-
-def test_plain_line_when_event_is_not_a_milestone_does_return_none(state: ProgressState):
-    event = _pass_started(1, 3, at_ms=7_000)
-
-    assert plain_line(state, advance(state, event), event) is None
 
 
 # ---------------------------------------------------------------------------
