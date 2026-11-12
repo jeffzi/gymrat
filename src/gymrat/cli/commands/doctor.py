@@ -48,7 +48,7 @@ def doctor_command(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring th
     color: ColorOption = None,
     debug: DebugOption = False,
 ) -> None:
-    """Run all doctor checks and exit ``GATE_EXIT_CODE`` if any check fails."""
+    """Run all doctor checks and exit 1 if any check fails."""
     apply_command_flags(debug=debug, color=color)
     flags = SharedFlags(
         bench=bench,

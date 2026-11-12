@@ -47,6 +47,7 @@ def export_command(
     Replays the session log, plus every supervisor log in its directory whose
     launch line names the same session, as spans sent over OTLP HTTP.
 
+    \f
     Args:
         session_log: Path to the session's ``session.jsonl``, or ``None`` for
             the current repository's session log.
@@ -60,7 +61,7 @@ def export_command(
     Raises:
         typer.Exit: With the tool-failure code once any failure has been
             reported on stderr.
-    """
+    """  # noqa: D301 -- the form feed is deliberate: click cuts --help at it, hiding these sections
     apply_command_flags(debug=debug, color=color)
 
     run_guarded(lambda: _export(session_log, endpoint))
