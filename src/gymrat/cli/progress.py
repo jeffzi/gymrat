@@ -237,7 +237,7 @@ def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
     return text
 
 
-class _ClockColumn(ProgressColumn):
+class ClockColumn(ProgressColumn):
     """Media-player clock: elapsed over the projected total run time.
 
     The total is the row's elapsed time plus the remaining estimate last handed
@@ -325,7 +325,7 @@ def _clocked_progress(
     console: Console,
     clock: Callable[[], float] | None,
     *columns: ProgressColumn,
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build a ``Progress`` from ``columns`` plus a trailing clock column.
 
     Args:
@@ -335,9 +335,9 @@ def _clocked_progress(
         *columns: The columns to show before the clock column.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
-    clock_col = _ClockColumn()
+    clock_col = ClockColumn()
     progress = Progress(
         *columns,
         clock_col,
@@ -350,7 +350,7 @@ def _clocked_progress(
 
 def compact_progress(
     console: Console, *, clock: Callable[[], float] | None = None
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build a single-row compact progress bar for narrow terminals.
 
     Callers can update the remaining estimate as passes complete via the
@@ -362,7 +362,7 @@ def compact_progress(
             ``time.monotonic``.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
     return _clocked_progress(
         console,
@@ -377,7 +377,7 @@ def compact_progress(
 
 def passes_progress(
     console: Console, *, clock: Callable[[], float] | None = None
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build the sampling bar row shared by the measure/compare and iterate views.
 
     Callers can update the remaining estimate as passes complete via the
@@ -389,7 +389,7 @@ def passes_progress(
             ``time.monotonic``.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
     return _clocked_progress(
         console,
@@ -454,7 +454,7 @@ class ProgressReporter(LiveDisplayMixin):
             target_count=shape.target_count, sample_count=shape.sample_count
         )
 
-        self._clock_column: _ClockColumn | None = None
+        self._clock_column: ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None

@@ -233,15 +233,16 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             fail_on=_serialize_fail_on(flags.fail_on) or None,
         )
 
-        async def body(trace: CommandTrace) -> ComparisonResult:
+        async def body(trace: CommandTrace) -> tuple[ComparisonResult, bool]:
             comparison = await _compare_body(flags, baseline, candidates)
             warn_empty_geomean_gates(flags.fail_on, comparison)
-            if should_fail_gate(flags.fail_on, comparison):
+            gate_tripped = should_fail_gate(flags.fail_on, comparison)
+            if gate_tripped:
                 trace.gate = True
                 trace.reason = "fail-on"
-            return comparison
+            return comparison, gate_tripped
 
-        result = await with_repo_lock("compare", body, args=trace_args)
+        result, gate_tripped = await with_repo_lock("compare", body, args=trace_args)
         emit_report(
             result,
             flags,
@@ -249,7 +250,7 @@ def compare(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             text=render_report,
             json=render_json,
         )
-        if should_fail_gate(flags.fail_on, result):
+        if gate_tripped:
             raise typer.Exit(GATE_EXIT_CODE)
 
     run_cli(run)

@@ -160,11 +160,11 @@ def _raised(message: str) -> ValueError:
     [
         pytest.param(_raised("boom"), True, True, id="debug"),
         pytest.param(_raised("boom"), False, False, id="no-debug"),
-        pytest.param("boom", True, False, id="debug-and-not-an-exception"),
+        pytest.param(ValueError("boom"), True, False, id="debug-and-never-raised"),
     ],
 )
 def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_debug(
-    error: object, debug: bool, has_stack: bool
+    error: Exception, debug: bool, has_stack: bool
 ):
     output = format_cli_error(error, debug=debug)
 

@@ -358,6 +358,10 @@ def _pass_started(state: IterateState, event: PassStarted) -> IterateState:
     )
 
 
+def _measure_passes_complete(state: IterateState) -> bool:
+    return state.pass_phase.eta.completed >= state.total
+
+
 def _pass_finished(state: IterateState, event: PassFinished) -> IterateState:
     counters = state.confirm_phase if event.phase == "confirm" else state.pass_phase
     advanced = replace(counters, eta=counters.eta.advanced(event.at_ms - counters.start_ms))
@@ -366,7 +370,7 @@ def _pass_finished(state: IterateState, event: PassFinished) -> IterateState:
         return replace(state, confirm_phase=advanced)
 
     sampled = replace(state, pass_phase=advanced)
-    if advanced.eta.completed < state.total:
+    if not _measure_passes_complete(sampled):
         return sampled
     done = replace(
         state.nodes.passes,
@@ -471,7 +475,7 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
     match event:
         case PrepareFinished():
             return prepare_milestone(event.label, event.at_ms - before.prepare_current_start_ms)
-        case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
+        case PassFinished(phase="measure") if _measure_passes_complete(after):
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():
             segments = judge_segments(_judge_detail(before, event))
