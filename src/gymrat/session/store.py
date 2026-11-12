@@ -27,7 +27,7 @@ import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import assert_never
+from typing import NoReturn, assert_never
 
 from pydantic_core import PydanticSerializationError
 
@@ -299,6 +299,11 @@ def _first_non_blank_line(path: Path) -> tuple[str, int] | None:
     return None
 
 
+def _raise_unreadable_log(jsonl_path: str, error: OSError) -> NoReturn:
+    message = f"Cannot read session log at {jsonl_path}"
+    raise GymratError(message, hint=f"{os_error_reason(error)}.") from error
+
+
 def read_session_header(jsonl_path: str) -> SessionRecord | None:
     """Read the session header from the first non-blank line of the log at ``jsonl_path``.
 
@@ -315,13 +320,15 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
         only blank lines.
 
     Raises:
-        GymratError: When the first non-blank line is not valid UTF-8, is
-            not JSON, matches no record schema, or holds a record other than a
-            session header.
-        OSError: When the log exists but cannot be read, such as a directory
-            or a file without read permission.
+        GymratError: When the log exists but cannot be read, such as a
+            directory or a file without read permission; or when the first
+            non-blank line is not valid UTF-8, is not JSON, matches no record
+            schema, or holds a record other than a session header.
     """
-    found = _first_non_blank_line(Path(jsonl_path))
+    try:
+        found = _first_non_blank_line(Path(jsonl_path))
+    except OSError as error:
+        _raise_unreadable_log(jsonl_path, error)
     if found is None:
         return None
     line, line_number = found
@@ -355,7 +362,7 @@ def session_header(root: str) -> SessionRecord | None:
     """
     try:
         return read_session_header(session_jsonl_path(root))
-    except (OSError, GymratError):
+    except GymratError:
         return None
 
 
@@ -543,8 +550,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     except FileNotFoundError:
         return []
     except OSError as error:
-        message = f"Cannot read session log at {jsonl_path}"
-        raise GymratError(message, hint=f"{os_error_reason(error)}.") from error
+        _raise_unreadable_log(jsonl_path, error)
 
     records: list[SessionLogRecord] = []
     for line_number, raw_line in enumerate(complete_lines(raw), start=1):

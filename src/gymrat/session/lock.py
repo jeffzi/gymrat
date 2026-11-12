@@ -34,7 +34,7 @@ from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict
 
 from gymrat.errors import GymratError
-from gymrat.utils import read_sidecar, warn_to_stderr
+from gymrat.utils import os_error_reason, read_sidecar, warn_to_stderr
 
 __all__ = [
     "LockContentionError",
@@ -302,7 +302,7 @@ def _raise_contention_error(lock_path: str) -> NoReturn:
 
 
 def _open_failure_message(os_lock_path: str, error: OSError) -> str:
-    return f"Lock file {os_lock_path} could not be opened: {error!s}"
+    return f"Lock file {os_lock_path} could not be opened: {os_error_reason(error)}"
 
 
 def _raise_permission_error(os_lock_path: str, error: OSError) -> NoReturn:

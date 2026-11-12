@@ -17,7 +17,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import read_session_header
-from gymrat.utils import ENDPOINT_ENV, os_error_reason, otlp_endpoint, write_and_flush
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, write_and_flush
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionRecord
@@ -67,11 +67,7 @@ def export_command(
 
 
 def _read_header(session_log: str) -> SessionRecord:
-    try:
-        header = read_session_header(session_log)
-    except OSError as error:
-        msg = f"Cannot read session log at {session_log}"
-        raise GymratError(msg, hint=f"{os_error_reason(error)}.") from error
+    header = read_session_header(session_log)
     if header is None:
         msg = f"No session found in {session_log}"
         raise GymratError(msg)

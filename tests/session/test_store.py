@@ -270,14 +270,21 @@ def test_read_records_when_log_missing_or_final_line_unterminated_does_return_on
     assert records == expected
 
 
-def test_read_records_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
-    fresh_root: str,
+@pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(read_records, id="read-records"),
+        pytest.param(read_session_header, id="read-session-header"),
+    ],
+)
+def test_session_log_reader_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
+    fresh_root: str, reader: Callable[[str], object]
 ):
     jsonl_path = session_jsonl_path(fresh_root)
     Path(jsonl_path).mkdir(parents=True)
 
     with pytest.raises(GymratError) as excinfo:
-        read_records(jsonl_path)
+        reader(jsonl_path)
 
     cause = excinfo.value.__cause__
     assert isinstance(cause, OSError)
@@ -412,8 +419,27 @@ def test_read_session_header_when_line_holds_only_non_ascii_whitespace_does_rais
 # ---------------------------------------------------------------------------
 
 
-def test_session_header_when_first_line_unusable_does_return_none(fresh_root: str):
-    _jsonl_holding_bytes(fresh_root, b"{not json\n")
+def _unusable_first_line(root: str) -> None:
+    """Write a session log whose first line is not JSON."""
+    _jsonl_holding_bytes(root, b"{not json\n")
+
+
+def _unreadable_log(root: str) -> None:
+    """Put a directory where the session log belongs, so opening it fails."""
+    Path(session_jsonl_path(root)).mkdir(parents=True)
+
+
+@pytest.mark.parametrize(
+    "make_log",
+    [
+        pytest.param(_unusable_first_line, id="first-line-unusable"),
+        pytest.param(_unreadable_log, id="log-unreadable"),
+    ],
+)
+def test_session_header_when_log_unusable_does_return_none(
+    fresh_root: str, make_log: Callable[[str], None]
+):
+    make_log(fresh_root)
 
     header = session_header(fresh_root)
 
