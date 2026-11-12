@@ -323,14 +323,14 @@ class StatusSummary:
     stop: StopConfig | None = None
 
 
-OUTCOME_GLYPHS: dict[Outcome, DisplayClass] = {
+OUTCOME_DISPLAY_CLASSES: dict[Outcome, DisplayClass] = {
     "improved": "improved",
     "regressed": "regressed",
     "no-signal": "within-noise",
 }
-"""The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+"""The comparison table's display class each outcome borrows, which picks the glyph it wears.
 
-A no-signal iteration takes the table's within-noise glyph: both say the same
+A no-signal iteration takes the table's within-noise class: both say the same
 thing — the figure moved by nothing the run can stand behind.
 """
 
@@ -408,7 +408,9 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     Returns:
         The iteration as a single rich-markup line.
     """
-    glyph = markup(GLYPHS[OUTCOME_GLYPHS[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome])
+    glyph = markup(
+        GLYPHS[OUTCOME_DISPLAY_CLASSES[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome]
+    )
     return join_header_parts([
         f"iteration {iteration.seq}",
         f"{glyph}{_format_primary_delta(iteration.delta_pct)}",

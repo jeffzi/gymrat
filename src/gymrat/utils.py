@@ -35,6 +35,7 @@ MS_PER_SECOND = 1000
 NS_PER_MS = 1_000_000
 """Nanoseconds in one millisecond; shared conversion factor, declared once."""
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
+_MINUTES_PER_HOUR = 60
 
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
 """Environment variable every tracing entry point reads the OTLP endpoint from."""
@@ -851,7 +852,7 @@ def hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
         and hours are unbounded.
     """
     minutes, seconds = divmod(total_seconds, SECONDS_PER_MINUTE)
-    hours, minutes = divmod(minutes, SECONDS_PER_MINUTE)
+    hours, minutes = divmod(minutes, _MINUTES_PER_HOUR)
     return hours, minutes, seconds
 
 

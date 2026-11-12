@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.markup import escape
@@ -169,8 +169,8 @@ Every report block and table renders against it.
 """
 
 
-def make_capture_console(*, color: bool | None) -> Console:
-    """Build a rich console that captures its output to an in-memory buffer.
+def make_capture_console(buffer: io.StringIO, *, color: bool | None) -> Console:
+    """Build a rich console that captures its output to ``buffer``.
 
     Wide content is never wrapped or cropped (``soft_wrap``), so
     :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
@@ -178,6 +178,7 @@ def make_capture_console(*, color: bool | None) -> Console:
     literally (``lat:100:p99`` stays as written).
 
     Args:
+        buffer: The in-memory buffer the console writes everything to.
         color: The explicit color choice, resolved without touching
             :data:`os.environ`:
 
@@ -190,10 +191,8 @@ def make_capture_console(*, color: bool | None) -> Console:
               buffer is not a TTY, so the output is plain.
 
     Returns:
-        A console whose ``file`` is an :class:`io.StringIO` holding everything
-        printed through it.
+        A console writing to ``buffer``.
     """
-    buffer = io.StringIO()
     resolved = color if color is not None else color_from_env()
 
     force_terminal: bool | None
@@ -244,14 +243,14 @@ def render_line_list(*renderables: RenderableType, color: bool | None = None) ->
         Exactly the visible lines with no soft wrapping, with no trailing
         whitespace on any line and no trailing empty line.
     """
-    console = make_capture_console(color=color)
+    buffer = io.StringIO()
+    console = make_capture_console(buffer, color=color)
     for renderable in renderables:
         # The report styles every span deliberately; rich's repr highlighter would
         # otherwise embolden bare numbers (a delta, a sample count) and split a
         # styled `-17.5%` at the `%`, so it is switched off here.
         console.print(renderable, soft_wrap=True, highlight=False)
 
-    buffer = cast("io.StringIO", console.file)
     lines = buffer.getvalue().split("\n")
     if lines and lines[-1] == "":
         lines.pop()

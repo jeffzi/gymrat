@@ -78,7 +78,7 @@ from gymrat.utils import balancing_cycle, collapse_whitespace, pluralize
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.model import GeomeanResult, MetricVerdict, ResolvedMetricMeta
     from gymrat.report.table.grid import SectionedMetric
     from gymrat.report.types import (
         CandidateComparison,
@@ -264,8 +264,8 @@ def select_highlights(
 UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
 
 
-def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
-    """The name a highlight is reported under, its kind named ahead of it when qualified.
+def highlight_label(name: str, meta: ResolvedMetricMeta, *, qualify: bool) -> str:
+    """The name a highlighted metric is reported under, its kind named ahead of it when qualified.
 
     The highlights sit below the table, away from the section titles that told the
     reader which kind a row belonged to, so a multi-kind run has to carry the kind
@@ -274,7 +274,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     with the bare metric name.
 
     Args:
-        highlight: The highlight to name.
+        name: The metric's full name.
+        meta: The metric's metadata, which carries its kind and short name.
         qualify: Whether to prefix the metric's kind and short name, as a run
             spanning several kinds does.
 
@@ -282,9 +283,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
         The reported name.
     """
     if qualify:
-        meta = highlight.metric.meta
         return scope_label(escape(meta.kind), escape(meta.short_name))
-    return format_inline(parse_metric_name(highlight.name))
+    return format_inline(parse_metric_name(name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,7 +311,10 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         return HighlightBlock(entries=(), unstable=False)
 
     qualify = spans_many_kinds(metrics)
-    labels = [highlight_label(highlight, qualify=qualify) for highlight in highlights]
+    labels = [
+        highlight_label(highlight.name, highlight.metric.meta, qualify=qualify)
+        for highlight in highlights
+    ]
     # Measure the text the capture console prints: it leaves `:word:` codes as typed.
     label_widths = [cell_len(Text.from_markup(label, emoji=False).plain) for label in labels]
     name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
@@ -432,10 +435,7 @@ def _hidden_regression_lines(
             continue
         if verdict.verdict != "regressed" or display_class(verdict) == "regressed":
             continue
-        label = highlight_label(
-            MetricHighlight(name=judged.name, metric=judged.metric, verdict=verdict),
-            qualify=qualify,
-        )
+        label = highlight_label(judged.name, judged.metric.meta, qualify=qualify)
         delta = format_percent_delta(verdict.delta)
         lines.append(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {label} regressed {markup(delta, style)} "

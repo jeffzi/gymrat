@@ -61,6 +61,7 @@ from tests.report._verdicts import (
     band_metric,
     band_verdict,
     geomean_of,
+    metric_meta,
 )
 
 if TYPE_CHECKING:
@@ -236,6 +237,23 @@ def test_render_report_when_no_gate_condition_trips_does_list_no_gate(
             ReportOptions(fail_on=(RegressedFailOn(),)),
             ["slow/time", "+8.0%", "4 pairs"],
             id="regressed-trips-on-inconclusive",
+        ),
+        pytest.param(
+            create_comparison_result(
+                metrics={
+                    "slow#time": replace(
+                        band_metric(verdict="regressed", delta=8, n=4),
+                        meta=metric_meta("slow", kind="time"),
+                    ),
+                    "slow#memory": replace(
+                        band_metric(), meta=metric_meta("slow", kind="memory", unit="bytes")
+                    ),
+                },
+                candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+            ),
+            ReportOptions(fail_on=(RegressedFailOn(),)),
+            ["time · slow", "+8.0%"],
+            id="regressed-trips-in-a-multi-kind-run",
         ),
         pytest.param(
             _tripping_result(1, 5),

@@ -193,7 +193,7 @@ async def with_repo_lock[T](
             )
             if appended is not None and pre_body_records is not None:
                 try:
-                    _, tracing_active = _maybe_configure_tracing(root)
+                    tracing_active = _maybe_configure_tracing(root)
                     if tracing_active:
                         _emit_command_span(
                             appended,
@@ -296,7 +296,7 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
         return session_id, None
 
 
-def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
+def _maybe_configure_tracing(root: str) -> bool:
     """Configure tracing for the session whose log is at ``root`` now.
 
     Runs after the body, so a body that opens a session (``start``, the
@@ -307,24 +307,23 @@ def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
         root: The repository whose session header names the session.
 
     Returns:
-        The session id (empty when there is no endpoint or no session) and
-        whether a tracer provider is now active.
+        Whether a tracer provider is now active: never without an endpoint or
+        a session.
 
     Raises:
         ValueError: When tracing is already configured for another session.
     """
     if otlp_endpoint_from_env() is None:
-        return "", False
+        return False
     header = session_header(root)
     if header is None:
-        return "", False
+        return False
 
     from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
         configure_tracing,
     )
 
-    active = configure_tracing(header.session_id)
-    return header.session_id, active
+    return configure_tracing(header.session_id)
 
 
 def _jsonl_is_empty(jsonl_path: str) -> bool:
@@ -408,7 +407,7 @@ def _emit_command_span(
     with start_command_span(
         cmd_record,
         session_id=session_id,
-        line_number=len(records),
+        position=len(records),
         context=parent_ctx,
         start_time=start_ns,
     ) as span:

@@ -166,7 +166,7 @@ def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay co
     cmd_span = start_command_span(
         rec,
         session_id=session_id,
-        line_number=position,
+        position=position,
         context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
         start_time=rec.at - rec.duration_ms * NS_PER_MS,
     )
@@ -191,7 +191,8 @@ def _decode_object_line(raw: bytes) -> dict[str, object] | None:
     """Decode one raw UTF-8 log line as a JSON object.
 
     Args:
-        raw: The line's bytes, without its trailing newline.
+        raw: The line's bytes; a trailing line feed is ignored like any other
+            JSON whitespace.
 
     Returns:
         The decoded object, or ``None`` when the line is not valid UTF-8, is not

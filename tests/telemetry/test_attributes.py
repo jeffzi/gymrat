@@ -102,7 +102,7 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
 def _start_and_end_command_span(record: CommandRecord) -> Any:
     with memory_tracing(SESSION_ID) as exporter:
         start_command_span(
-            record, session_id=SESSION_ID, line_number=2, context=Context(), start_time=1
+            record, session_id=SESSION_ID, position=2, context=Context(), start_time=1
         ).end()
     return span_by_name(exporter.get_finished_spans(), f"gymrat.command.{record.name}")
 
