@@ -9,6 +9,7 @@ import asyncio
 import shlex
 import signal
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -72,13 +73,17 @@ _CLEANER_PID_FILE = "cleaner.pid"
 
 _CLEANED_MARKER = "cleaned.marker"
 
-# A stand-in for a nested gymrat run: on SIGTERM it spends ``argv[1]`` seconds
-# cleaning up, writes ``argv[2]``, then exits. It writes its pid to ``argv[3]``
-# once its handler is in place.
+_STOP_REQUESTED_MARKER = "stop-requested.marker"
+
+# A stand-in for a nested gymrat run: on SIGTERM it writes ``argv[4]``, spends
+# ``argv[1]`` seconds cleaning up, writes ``argv[2]``, then exits. It writes its
+# pid to ``argv[3]`` once its handler is in place.
 _CLEANER_SCRIPT = """
 import os, signal, sys, time
 
 def clean_up(_signal_number, _frame):
+    with open(sys.argv[4], "w") as marker:
+        marker.write("stop requested\\n")
     time.sleep(float(sys.argv[1]))
     with open(sys.argv[2], "w") as marker:
         marker.write("cleaned\\n")
@@ -117,6 +122,7 @@ def slow_cleanup_command(
         str(cleanup_s),
         _CLEANED_MARKER,
         _CLEANER_PID_FILE,
+        _STOP_REQUESTED_MARKER,
     ])
     if release_stdio:
         cleaner = f"{cleaner} </dev/null >/dev/null 2>&1"
@@ -148,10 +154,18 @@ async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_t
     task = asyncio.create_task(run_exec(command, make_opts()))
     await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
 
+    started = time.monotonic()
     escalate_termination(raise_signal)
+    escalation_s = time.monotonic() - started
 
     await task
-    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed before the cleaner finished"
+    # On failure, name which way the cleaner lost: never asked to stop, or asked
+    # but killed before its cleanup ran out, and how long the sweep waited.
+    assert (tmp_path / _CLEANED_MARKER).exists(), (
+        "the group was killed before the cleaner finished "
+        f"(stop requested: {(tmp_path / _STOP_REQUESTED_MARKER).exists()}, "
+        f"escalation took {escalation_s:.2f}s of a {_ROOMY_ESCALATION_GRACE_S}s grace)"
+    )
 
 
 # ---------------------------------------------------------------------------
