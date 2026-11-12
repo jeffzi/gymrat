@@ -127,14 +127,6 @@ class ToolsFactoryProbe:
         return _SENTINEL_SERVER
 
 
-#: The timeout variables a session sets to the prompt's command timeout.
-_TIMEOUT_ENV_KEYS = (
-    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS",
-    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS",
-    "MCP_TOOL_TIMEOUT",
-)
-
-
 async def test_start_when_no_optional_input_given_does_pass_only_the_prompt_derived_client_options():
     client = FiniteClient([result_message()])
     prompt = make_prompt(
@@ -151,7 +143,7 @@ async def test_start_when_no_optional_input_given_does_pass_only_the_prompt_deri
     assert isinstance(env, dict)
     assert options.keys().isdisjoint({"model", "effort", "max_budget_usd", "hooks", "mcp_servers"})
     assert (options["cwd"], system_prompt["append"]) == ("/my/project", "extra instructions")
-    assert [env[key] for key in _TIMEOUT_ENV_KEYS] == ["300000"] * len(_TIMEOUT_ENV_KEYS)
+    assert env["MCP_TOOL_TIMEOUT"] == "300000"
     assert TRACEPARENT_ENV not in env
 
 

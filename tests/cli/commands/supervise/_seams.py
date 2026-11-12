@@ -106,16 +106,6 @@ class Seams:
             create_claude_driver, name="create_claude_driver", return_value=object()
         )
 
-    def _record_supervise_call(self, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
-        """Record one supervisor-run call, folding its positional driver and prompt into keywords.
-
-        Args:
-            args: The positional arguments the supervisor run received.
-            kwargs: The keyword arguments the supervisor run received.
-        """
-        call = {**kwargs, **dict(zip(("driver", "prompt"), args, strict=False))}
-        self.supervise_calls.append(call)
-
 
 def command_config(
     *, stop: StopConfig | None = None, supervise: SuperviseConfig | None = None
@@ -124,9 +114,7 @@ def command_config(
     return resolved_config(runbook="runbook.md", stop=stop, supervise=supervise)
 
 
-def make_start_result(
-    root: str = "/repo", branch: str | None = None, *, resumed: bool = False
-) -> StartResult:
+def make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
     """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
     overrides = {} if branch is None else {"branch": branch}
     rec = session_record(
@@ -136,7 +124,7 @@ def make_start_result(
     return StartResult(
         session=rec,
         state=empty_session_state(),
-        resumed=resumed,
+        resumed=False,
     )
 
 
@@ -161,7 +149,7 @@ def _patch_supervise(
 
 
 def _install_fake_preflight(
-    monkeypatch: pytest.MonkeyPatch, seams: Seams, *, branch: str | None, resumed: bool
+    monkeypatch: pytest.MonkeyPatch, seams: Seams, *, branch: str | None
 ) -> None:
     def fake_preflight(*, root: str, config: object, flags: PreflightFlags) -> StartResult:
         seams.preflight_calls.append({
@@ -171,7 +159,7 @@ def _install_fake_preflight(
             "force": flags.force,
             "allow_dirty": flags.allow_dirty,
         })
-        return make_start_result(root, branch, resumed=resumed)
+        return make_start_result(root, branch)
 
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.run_preflight",
@@ -227,11 +215,9 @@ def install_seams(
     *,
     config: ResolvedConfig | None = None,
     result: SupervisionResult | None = None,
-    session_result: ReadSessionResult | None = None,
     final_text: str | None = None,
     raises: Exception | None = None,
     branch: str | None = None,
-    resumed: bool = False,
     real_reporter: bool = False,
 ) -> Seams:
     """Replace every seam ``commands.supervise`` composes over, returning the recorders.
@@ -240,11 +226,9 @@ def install_seams(
         monkeypatch: The fixture the replacements are installed through.
         config: The config the resolve seam returns; a default command config when omitted.
         result: The supervision result the supervisor seam hands back.
-        session_result: What the reporter's session reader returns at first.
         final_text: The agent's final message the reporter reports.
         raises: An error the supervisor seam raises instead of returning ``result``.
         branch: The session branch the fake pre-flight's start result carries.
-        resumed: Whether the fake pre-flight reports a resumed session.
         real_reporter: Keep the real dashboard reporter instead of the recording
             fake. ``reporter_calls``, ``observed_events`` and ``warnings`` stay
             empty.
@@ -253,7 +237,6 @@ def install_seams(
         The recorders and doubles the run is wired to.
     """
     seams = Seams()
-    seams.session_result = session_result
     seams.final_text = final_text
     resolved = config if config is not None else command_config()
     handed_back = result if result is not None else make_supervision_result()
@@ -267,8 +250,8 @@ def install_seams(
         seams.compose_calls.append(prompt)
         return SimpleNamespace(kickoff="begin optimization", system_prompt_append="system prompt")
 
-    async def fake_supervise(*args: object, **kwargs: object) -> SupervisionResult:
-        seams._record_supervise_call(args, kwargs)
+    async def fake_supervise(**kwargs: object) -> SupervisionResult:
+        seams.supervise_calls.append(kwargs)
         if seams.supervise_hook is not None:
             seams.supervise_hook(seams.supervise_calls[-1])
         if raises is not None:
@@ -277,7 +260,7 @@ def install_seams(
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
     stub_config(monkeypatch, "supervise", resolved)
-    _install_fake_preflight(monkeypatch, seams, branch=branch, resumed=resumed)
+    _install_fake_preflight(monkeypatch, seams, branch=branch)
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.compose_kickoff",
         create_autospec(compose_kickoff, side_effect=fake_compose),

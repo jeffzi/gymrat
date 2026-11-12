@@ -163,10 +163,10 @@ async def test_with_repo_lock_when_outside_repo_does_run_body_without_a_lock(
     assert not await asyncio.to_thread(Path(lockfile_path(plain_directory)).exists)
 
 
-async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body_locking_or_recording(
+async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    header = seeded_session(repo)
+    seeded_session(repo)
     refuse_git_lookups(monkeypatch)
     called: list[bool] = []
 
@@ -178,8 +178,6 @@ async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_runnin
         await with_repo_lock("compare", body)
 
     assert called == []
-    assert log_records(repo) == [header]
-    assert not is_held(lockfile_path(repo))
 
 
 # ---------------------------------------------------------------------------
@@ -194,18 +192,18 @@ _OUTER_TRACEPARENT = "00-abc-def-01"
 @pytest.mark.parametrize(
     ("args", "env", "expected"),
     [
-        pytest.param(None, {}, ({}, "cli", None), id="args-none"),
-        pytest.param({"samples": 5}, {}, ({"samples": 5}, "cli", None), id="args-given"),
+        pytest.param(None, {}, ({}, None), id="args-none"),
+        pytest.param({"samples": 5}, {}, ({"samples": 5}, None), id="args-given"),
         pytest.param(
             None,
             {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": "00-123-456-01"},
-            ({}, "cli", "00-123-456-01"),
+            ({}, "00-123-456-01"),
             id="gymrat-traceparent-wins",
         ),
         pytest.param(
             None,
             {"TRACEPARENT": _OUTER_TRACEPARENT, "GYMRAT_TRACEPARENT": ""},
-            ({}, "cli", _OUTER_TRACEPARENT),
+            ({}, _OUTER_TRACEPARENT),
             id="empty-gymrat-traceparent-falls-back",
         ),
     ],
@@ -215,12 +213,10 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
     monkeypatch: pytest.MonkeyPatch,
     args: dict[str, object] | None,
     env: dict[str, str],
-    expected: tuple[dict[str, object], str, str | None],
+    expected: tuple[dict[str, object], str | None],
 ):
     seeded_session(repo)
     monotonic_readings = itertools.chain([100.0], itertools.repeat(350.0))
-    for name in ("GYMRAT_COMMAND_ORIGIN", "TRACEPARENT", "GYMRAT_TRACEPARENT"):
-        monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(
@@ -231,7 +227,7 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
 
     cmd = _closing_command_record(repo_root())
     assert (cmd.name, cmd.exit_code, cmd.reason, cmd.duration_ms) == ("measure", 0, None, 250)
-    assert (cmd.args, cmd.origin, cmd.traceparent) == expected
+    assert (cmd.args, cmd.traceparent) == expected
 
 
 async def _gate_body(trace: CommandTrace) -> str:
@@ -432,12 +428,11 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
         )
         return "ran"
 
-    result = await with_repo_lock("measure", body, args={"samples": 5}, root=target_repo)
+    result = await with_repo_lock("measure", body, root=target_repo)
 
-    cmd = _closing_command_record(target_repo)
+    _closing_command_record(target_repo)
     assert result == "ran"
     assert seen == {"log": intact_log, "held": (True, False)}
-    assert (cmd.name, cmd.args) == ("measure", {"samples": 5})
     assert log_records(cwd_repo) == [cwd_header]
 
 

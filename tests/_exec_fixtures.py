@@ -174,15 +174,6 @@ async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) 
     await settle(task, timeout_s)
 
 
-def fail_stderr_read(
-    task: ExecTask, proc: asyncio.subprocess.Process | None, abort: asyncio.Event
-) -> None:
-    """Tear the run down by failing the pending stderr read."""
-    assert proc is not None
-    assert proc.stderr is not None
-    proc.stderr.set_exception(RuntimeError("stream exploded"))
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class Teardown:
     """How a test ends a run: an optional timeout plus an action on the running exec."""

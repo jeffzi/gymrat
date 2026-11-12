@@ -8,7 +8,7 @@ This is test-support code, not a test module: it carries no test functions.
 
 from collections.abc import Sequence
 from typing import Literal
-from unittest.mock import Mock, create_autospec
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -129,20 +129,17 @@ def stub_compare_command(
     stub_compare(monkeypatch, result)
 
 
-def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> Mock:
+def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
     """Replace the ``compare`` seam with a fake that returns a fixed comparison.
 
     Args:
         monkeypatch: The fixture that installs the fake.
         result: What the fake hands back; a comparison with no regressions when ``None``.
-
-    Returns:
-        The installed fake, whose ``call_args`` hold the options each call passed.
     """
     handed_back = create_comparison_result() if result is None else result
-    fake = create_autospec(compare, return_value=handed_back)
-    monkeypatch.setattr("gymrat.compare.compare", fake)
-    return fake
+    monkeypatch.setattr(
+        "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
+    )
 
 
 def never_tty(_stream: object) -> bool:

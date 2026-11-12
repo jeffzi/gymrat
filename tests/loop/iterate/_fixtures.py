@@ -149,25 +149,17 @@ class PairedRun:
     baseline: list[dict[str, float]]
 
 
-@dataclass(frozen=True, slots=True)
-class _RecordedCall:
-    """The positional arguments one ``collect_samples`` call was handed."""
-
-    targets: list[TargetContext]
-    options: SamplingOptions
-
-
 class CollectSamplesRecorder:
     """A stand-in for ``collect_samples`` that records every call it answers.
 
     The recorder is installed once by :func:`install_collect_samples`; a test
     then configures how it answers with :func:`stub_samples` or
-    :func:`stub_runs`. Every call is stored in ``calls``, so a test can read the
-    targets and options a call was handed.
+    :func:`stub_runs`. Every call's options are stored in ``calls``, so a test
+    can read the bench command a call was handed.
     """
 
     def __init__(self) -> None:
-        self.calls: list[_RecordedCall] = []
+        self.calls: list[SamplingOptions] = []
         self._answer: Any = None
 
     async def __call__(
@@ -181,8 +173,8 @@ class CollectSamplesRecorder:
 
         Args:
             adapter: The adapter the caller passed; ignored.
-            targets: The targets to sample; recorded as a list.
-            options: The sampling options; recorded with the targets.
+            targets: The targets to sample; handed to the stub.
+            options: The sampling options; recorded.
             abort: The caller's abort signal; ignored.
 
         Returns:
@@ -192,7 +184,7 @@ class CollectSamplesRecorder:
             AssertionError: No stub has been installed yet.
         """
         target_list = list(targets)
-        self.calls.append(_RecordedCall(target_list, options))
+        self.calls.append(options)
         if self._answer is None:
             message = "collect_samples was called before a stub was installed"
             raise AssertionError(message)

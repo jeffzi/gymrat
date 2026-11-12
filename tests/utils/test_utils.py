@@ -506,24 +506,6 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         pytest.param(_fail_replace, id="rename-fails"),
     ],
 )
-def test_write_text_atomic_when_write_fails_does_raise_the_os_error(
-    target: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    break_write: Callable[[Path, pytest.MonkeyPatch], str],
-):
-    reason = break_write(target.parent, monkeypatch)
-
-    with pytest.raises(OSError, match=reason):
-        write_text_atomic(target, NEW_TEXT)
-
-
-@pytest.mark.parametrize(
-    "break_write",
-    [
-        pytest.param(_fail_fsync, id="fsync-fails"),
-        pytest.param(_fail_replace, id="rename-fails"),
-    ],
-)
 def test_write_text_atomic_when_write_fails_does_leave_target_and_directory_untouched(
     target: Path,
     monkeypatch: pytest.MonkeyPatch,

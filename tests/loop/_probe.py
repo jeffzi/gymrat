@@ -1,9 +1,9 @@
 """Shared probe test doubles: the recorded baseline, the canned measurement, and the engine stand-in.
 
-The ``probe_session`` and ``measure_baseline`` engine tests and the CLI session
-command tests replace the same boundary — the measurement engine that shells out
-to the consumer's bench script — and the probe tests pair the same recorded
-baseline against the same canned measurement, so the pieces live here once.
+The ``measure_baseline`` engine tests and the CLI session command tests replace
+the same boundary — the measurement engine that shells out to the consumer's
+bench script — and the probe engine tests read the same recorded baseline, so
+the pieces live here once.
 """
 
 from __future__ import annotations
@@ -100,9 +100,3 @@ def install_measure(
         "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
     )
     return recorder
-
-
-def only_call(recorder: MeasureRecorder) -> MeasureOptions:
-    """The options of the single measure call ``recorder`` answered."""
-    assert len(recorder.calls) == 1, f"expected one measure call, got {len(recorder.calls)}"
-    return recorder.calls[0]

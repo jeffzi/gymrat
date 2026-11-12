@@ -33,10 +33,6 @@ from tests.session.records._fixtures import (
 )
 
 
-def leave_as_is(_repo: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """Arrange nothing: the no-op row of an ``(repo, monkeypatch)`` arrange table."""
-
-
 def make_discard_repo(repo: str) -> str:
     """Set up ``repo`` with an open session and one unsettled iteration to discard."""
     start_with(repo, (iteration_record(seq=1),), config=resolved_config())
@@ -115,13 +111,6 @@ def write_capped_session(repo: str) -> None:
     """Write a settled session that already reached its configured cap of one iteration."""
     write_iterate_session(repo, settled_history())
     write_bench_config(repo, stop={"max_iterations": 1})
-
-
-def open_unsettled_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Open a session whose last iteration was never settled, under a live budget."""
-    write_iterate_session(repo, (iteration_record(seq=1),))
-    write_bench_config(repo)
-    install_budget(repo, monkeypatch)
 
 
 def open_capped_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:

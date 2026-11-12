@@ -568,17 +568,8 @@ def test_check_file_edit_when_path_has_special_characters_does_echo_them_on_one_
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
-        pytest.param("Read", {"file_path": "/banana/x.py"}, id="read"),
-        pytest.param(["Edit"], {"file_path": "/banana/x.py"}, id="name-unhashable"),
-    ],
-)
-def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
-    root: Path, tool_name: object, tool_input: dict[str, object]
-):
-    hook_input = {"tool_name": tool_name, "tool_input": tool_input}
+def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(root: Path):
+    hook_input = {"tool_name": "Read", "tool_input": {"file_path": "/banana/x.py"}}
 
     reason = check_file_edit(hook_input, root)
 

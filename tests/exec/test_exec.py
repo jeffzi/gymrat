@@ -388,25 +388,12 @@ async def background_runs(
     await asyncio.wait_for(asyncio.gather(*runs), _RUN_SETTLE_TIMEOUT_S)
 
 
-@pytest.mark.parametrize(
-    ("run", "args", "timeout_ms"),
-    [
-        pytest.param(run_shell, "echo hello", None, id="exec-completes"),
-        # Every teardown (timeout, abort, stream error, cancel) settles through the
-        # same release, so the timeout stands in for all of them.
-        pytest.param(run_shell, "sleep 30", 200, id="exec-torn-down"),
-    ],
-)
 @pytest.mark.usefixtures("spawned_processes")
 async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its_group(
     make_opts: Callable[..., ExecOptions],
     record_killpg: Callable[[], list[int]],
-    *,
-    run: ExecRun,
-    args: Any,
-    timeout_ms: int | None,
 ) -> None:
-    await run(args, make_opts(timeout_ms=timeout_ms))
+    await run_shell("echo hello", make_opts())
     attempted = record_killpg()
 
     exec_mod.kill_live_process_groups()

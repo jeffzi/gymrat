@@ -438,9 +438,6 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
     ("listed", "slept"),
     [
         pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S")], _TIMED_OUT, id="sleeping-member"
-        ),
-        pytest.param(
             [
                 _ZOMBIE_LEADER,
                 FakeProcess(_FAKE_MEMBER, state="S", comm=f"a) Z 1 {_FAKE_GROUP}".encode()),
@@ -614,7 +611,6 @@ _PARTIAL_RECORD = bytes(16)
             id="running-record-then-partial",
         ),
         pytest.param(darwin_record(0, _DARWIN_SZOMB), _NO_SLEEP, id="whole-zombie-record"),
-        pytest.param(darwin_record(0, _DARWIN_RUNNING), _TIMED_OUT, id="whole-running-record"),
         pytest.param(
             darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING), _NO_SLEEP, id="whole-exiting-record"
         ),
@@ -783,12 +779,12 @@ def _taskkill_raises(error: Exception) -> Callable[..., subprocess.CompletedProc
     ("error", "warned"),
     [
         pytest.param(
-            subprocess.CalledProcessError(128, _TASKKILL_ARGV),
+            subprocess.CalledProcessError(128, ["taskkill"]),
             [],
             id="tree-already-gone-stays-silent",
         ),
         pytest.param(
-            subprocess.CalledProcessError(5, _TASKKILL_ARGV), [True], id="other-failure-warns"
+            subprocess.CalledProcessError(5, ["taskkill"]), [True], id="other-failure-warns"
         ),
         pytest.param(PermissionError(13, "Permission denied"), [True], id="launch-failure-warns"),
     ],

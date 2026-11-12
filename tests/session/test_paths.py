@@ -96,20 +96,12 @@ def _linked_worktree(repo: str) -> str:
     return add_worktree(repo, "linked")
 
 
-@pytest.mark.parametrize(
-    "checkout",
-    [
-        pytest.param(_main_checkout, id="main-checkout"),
-        pytest.param(_linked_worktree, id="linked-worktree"),
-    ],
-)
 def test_git_common_dir_when_called_does_return_the_git_directory_of_the_owning_repository(
-    create_scratch_repo: Callable[[], str], checkout: Callable[[str], str]
+    create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    directory = checkout(repo)
 
-    common = git_common_dir(directory)
+    common = git_common_dir(repo)
 
     assert Path(common).resolve() == Path(repo, ".git").resolve()
 

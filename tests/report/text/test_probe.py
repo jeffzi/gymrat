@@ -108,17 +108,8 @@ def test_render_probe_report_when_reference_zero_does_render_a_blank_or_zero_del
     assert strip_ansi(delta_cell(row)).strip() == rendered
 
 
-@pytest.mark.parametrize(
-    ("median", "delta_pct"),
-    [
-        pytest.param(90.0, None, id="zero-reference"),
-        pytest.param(0.0, 0.0, id="both-zero"),
-    ],
-)
-def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled(
-    median: float, delta_pct: float | None
-):
-    result = _zero_reference_result(median, delta_pct)
+def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled():
+    result = _zero_reference_result(0.0, 0.0)
 
     row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 

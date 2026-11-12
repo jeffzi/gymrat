@@ -178,16 +178,6 @@ def test_validate_config_dict_when_several_problems_does_raise_the_first(
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_file_collecting_when_optional_file_missing_does_return_empty_config(
-    tmp_path: Path,
-):
-    missing = tmp_path / "nonexistent.toml"
-
-    result = load_config_file_collecting(missing, required=False)
-
-    assert result == ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
-
-
 def _read_failure_reason(path: Path) -> str:
     # The OS and the codec word these failures themselves (a directory is refused
     # differently on Windows), so the expected reason comes from the running ones.

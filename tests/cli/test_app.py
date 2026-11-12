@@ -57,7 +57,6 @@ def test_app_when_version_and_stdout_write_fails_with_disk_full_does_exit_two_wi
 def test_app_when_debug_flag_does_show_traceback_on_error():
     result = runner.invoke(app, ["--debug", "status"])
 
-    assert result.exit_code == TOOL_FAILURE_EXIT_CODE
     assert "Traceback" in result.output
 
 

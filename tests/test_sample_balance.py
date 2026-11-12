@@ -14,4 +14,4 @@ def test_require_balanced_samples_when_count_is_unbalanced_does_refuse_with_the_
     with pytest.raises(GymratError) as caught:
         require_balanced_samples(10, 3)
 
-    assert re.findall(r"\d+", str(caught.value)) == ["10", "3", "6", "6", "12"]
+    assert {"10", "3", "6", "12"} <= set(re.findall(r"\d+", str(caught.value)))

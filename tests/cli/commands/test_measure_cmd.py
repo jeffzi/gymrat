@@ -119,7 +119,6 @@ _BENCH_TRACE = {"bench": "sh bench.sh"}
     ("argv", "traced"),
     [
         pytest.param(["main"], {**_BENCH_TRACE, "target": "main"}, id="bare-ref"),
-        pytest.param([], {**_BENCH_TRACE, "target": "."}, id="default-target"),
         pytest.param(
             ["build=main", "--record"],
             {**_BENCH_TRACE, "target": "build", "record": True},

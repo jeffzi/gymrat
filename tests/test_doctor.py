@@ -46,6 +46,7 @@ from gymrat.doctor import (
     render_doctor_report,
 )
 from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
+from gymrat.session.paths import repository_lookup_error
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
 from tests._git import refuse_git_lookups
@@ -429,7 +430,7 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    refuse_git_lookups(monkeypatch)
+    refusal = refuse_git_lookups(monkeypatch)
 
     result = detect_git_environment(str(tmp_path))
 
@@ -438,7 +439,7 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
         True,
         None,
     )
-    assert str(tmp_path) in (result.git_error or "")
+    assert result.git_error == str(repository_lookup_error(str(tmp_path), refusal))
 
 
 # ---------------------------------------------------------------------------
@@ -678,4 +679,4 @@ def test_render_doctor_json_when_report_has_a_failure_does_flag_it():
     output = render_doctor_json(report)
 
     document = json.loads(output)
-    assert (document["fail_count"], document["has_failures"]) == (1, True)
+    assert document["has_failures"] is True

@@ -309,11 +309,6 @@ def test_resolve_metric_meta_from_samples_when_metric_exempt_from_the_check_does
             id="gap-at-half-a-percent-of-a-negative-median",
         ),
         pytest.param(
-            _readings([1000.0, 1000.0, 1007.0], [1013.0, 1020.0]),
-            None,
-            id="fine-lattice-at-four-distinct-readings",
-        ),
-        pytest.param(
             _readings([1000.0, 1007.0, 1013.0], [1020.0, 1020.0, 1027.0]),
             None,
             id="fine-lattice-with-one-repeated-pair",

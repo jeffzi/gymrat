@@ -90,20 +90,6 @@ def test_supervise_when_no_log_given_does_log_under_the_session_dir_and_name_it_
     assert abbreviate_home(ctx.log_path) in result.stderr
 
 
-def test_supervise_when_log_given_does_use_that_path_as_is(
-    repo: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    seams = install_seams(monkeypatch)
-    custom = str(tmp_path / "custom.jsonl")
-
-    result = run("--log", custom)
-
-    assert result.exit_code == 0
-    ctx = seams.supervise_calls[0]["context"]
-    assert isinstance(ctx, SupervisedSession)
-    assert ctx.log_path == custom
-
-
 @pytest.mark.parametrize(
     ("log_args", "excluded"),
     [

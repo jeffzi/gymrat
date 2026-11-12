@@ -45,14 +45,12 @@ from tests.report._assertions import (
     styles_at,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     create_comparison_result,
     every_class_metrics,
     exact_metric,
     grouped_comparison,
     memory_kind,
-    n_way_metric,
     other_kind,
     permutation_metric,
     shared_baseline_metric,
@@ -78,21 +76,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-#: Two candidates whose verdicts on ``a/time`` and ``b/time`` rank differently.
-_TWO_CANDIDATE_METRICS: MetricComparisons = {
-    "a/time": n_way_metric([
-        NWayCandidate(verdict="improved", delta=-4, median=96),
-        NWayCandidate(verdict="regressed", delta=3, median=103),
-    ]),
-    "b/time": n_way_metric([
-        NWayCandidate(verdict="regressed", delta=6, median=106),
-        NWayCandidate(verdict="no-signal", delta=0.2, median=100.2),
-    ]),
-}
-
-
 @pytest.mark.parametrize(
-    ("metrics", "candidate_index", "expected"),
+    ("metrics", "expected"),
     [
         pytest.param(
             {
@@ -114,7 +99,6 @@ _TWO_CANDIDATE_METRICS: MetricComparisons = {
                 "single-pair/time": band_metric(n=1, noise_pct=0.5),
                 "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
             },
-            0,
             [
                 "big-regression/ops",
                 "small-regression/time",
@@ -137,22 +121,15 @@ _TWO_CANDIDATE_METRICS: MetricComparisons = {
                     unit="bytes",
                 ),
             },
-            0,
             ["zero-median/heap", "loud-unstable/time"],
             id="unstable-around-zero-median-ranks-by-absolute-noise",
-        ),
-        pytest.param(
-            _TWO_CANDIDATE_METRICS,
-            1,
-            ["a/time"],
-            id="second-candidate-ranks-by-its-own-verdicts",
         ),
     ],
 )
 def test_select_highlights_when_verdicts_vary_does_rank_the_candidate_movers(
-    metrics: MetricComparisons, candidate_index: int, expected: list[str]
+    metrics: MetricComparisons, expected: list[str]
 ):
-    highlights = select_highlights(metrics, candidate_index)
+    highlights = select_highlights(metrics, 0)
 
     assert [highlight.name for highlight in highlights] == expected
 

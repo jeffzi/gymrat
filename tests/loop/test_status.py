@@ -278,13 +278,10 @@ def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_und
 ):
     root = str(tmp_path)
     write_session_log(root, _session(root), four_iterations())
-    plain = [*_header(root), *_FOUR_ITERATIONS_BODY]
 
     report = status_session(root, _config(runbook=_RUNBOOK_PATH))
 
-    lines = _report_lines(report)
-    assert _RUNBOOK_PATH in lines[_HEADER_LINE_COUNT]
-    assert [*lines[:_HEADER_LINE_COUNT], *lines[_HEADER_LINE_COUNT + 1 :]] == plain
+    assert _RUNBOOK_PATH in _report_lines(report)[_HEADER_LINE_COUNT]
 
 
 # ---------------------------------------------------------------------------

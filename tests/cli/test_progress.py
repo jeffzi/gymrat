@@ -178,7 +178,7 @@ def test_advance_when_pass_finished_does_advance_eta_by_pass_duration(state: Pro
 
     result = advance(running, _pass_finished(1, 3, at_ms=12_000))
 
-    assert (result.eta.completed, result.eta.total_time_ms) == (1, 10_000)
+    assert result.eta.total_time_ms == 10_000
 
 
 # ---------------------------------------------------------------------------

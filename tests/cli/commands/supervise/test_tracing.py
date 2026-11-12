@@ -22,6 +22,7 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
 from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import create_event_log_writer
+from gymrat.telemetry.run_spans import RUN_SPAN, SESSION_SPAN
 from tests._cli import combined_output
 from tests.cli.commands.supervise._seams import (
     install_seams,
@@ -67,7 +68,7 @@ def test_supervise_when_tracing_enabled_does_export_the_session_and_run_spans_on
     with memory_tracing(SESSION_ID) as exporter:
         run()
 
-    assert [s.name for s in exporter.get_finished_spans()] == ["gymrat.run", "gymrat.session"]
+    assert [s.name for s in exporter.get_finished_spans()] == [RUN_SPAN, SESSION_SPAN]
     assert [r for r in caplog.records if r.name == "opentelemetry.sdk.trace"] == []
 
 

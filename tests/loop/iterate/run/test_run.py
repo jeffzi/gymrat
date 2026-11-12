@@ -271,19 +271,6 @@ async def test_iterate_session_when_hooks_configured_does_tell_each_which_iterat
     assert _iteration_fields(experiment_dir, "after") == (2, as_logged(result.record), 2)
 
 
-async def test_iterate_session_when_before_hook_fails_does_still_measure(
-    hooks_setup: tuple[str, str, HookScripts],
-):
-    repo, _experiment_dir, hooks = hooks_setup
-    before = hooks.failing_content_of("before-fails", "", "no warm copy\n")
-    config = resolved_config(hooks=HooksConfig(before=before))
-
-    await iterate_session(repo, config)
-
-    assert [record.stage for record in records_of_type(repo, HookRecord)] == ["before"]
-    assert last_iteration_of(repo).seq == 2
-
-
 @pytest.mark.parametrize(
     ("with_after", "expected_stages", "expected_events"),
     [

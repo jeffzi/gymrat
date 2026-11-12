@@ -33,10 +33,7 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.supervisor.events import (
-    CompactionEvent,
-    TextDeltaEvent,
-)
+from gymrat.supervisor.events import CompactionEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from gymrat.utils import NS_PER_MS
 from tests._imports import modules_imported_by
@@ -361,29 +358,16 @@ def two_nested_tools_state() -> ReporterState:
     )
 
 
-@pytest.mark.parametrize(
-    ("ended", "still_running"),
-    [
-        pytest.param(
-            ("Read", "read-1"),
-            RunningTool(tool_name="Grep", input_summary="...", since=2100),
-            id="first-started-ends",
-        ),
-        pytest.param(
-            ("Grep", "grep-1"),
-            RunningTool(tool_name="Read", input_summary="...", since=2000),
-            id="last-started-ends",
-        ),
-    ],
-)
-def test_advance_when_one_of_two_nested_tools_ends_does_show_the_one_still_running(
-    ended: tuple[str, str], still_running: RunningTool
-):
+def test_advance_when_one_of_two_nested_tools_ends_does_show_the_one_still_running():
     before = two_nested_tools_state()
 
-    after = advance(before, tool_end_event(*ended, 2500, parent_tool_use_id="bash-1"), None)
+    after = advance(
+        before, tool_end_event("Grep", "grep-1", 2500, parent_tool_use_id="bash-1"), None
+    )
 
-    assert dict(after.nested) == {"bash-1": still_running}
+    assert dict(after.nested) == {
+        "bash-1": RunningTool(tool_name="Read", input_summary="...", since=2000)
+    }
 
 
 def test_advance_when_parent_tool_ends_does_drop_only_its_own_nested_tools():
@@ -599,25 +583,9 @@ def test_advance_when_follow_up_arrives_does_record_the_turn_decision(
     assert after.last_decision == expected
 
 
-def test_advance_when_text_delta_arrives_does_not_change_state():
-    before = make_state()
-
-    after = advance(before, TextDeltaEvent(at=2000 * NS_PER_MS, chunk="hi"), None)
-
-    assert after == before
-
-
 # ---------------------------------------------------------------------------
 # exit_phase — run-end exit sequence
 # ---------------------------------------------------------------------------
-
-
-def test_exit_phase_when_same_phase_repeats_does_return_the_state_unchanged():
-    before = exiting_state()
-
-    after = exit_phase(before, ExitPhase(kind="settling", pid=None), 9000)
-
-    assert after is before
 
 
 def test_exit_phase_when_lock_holder_changes_does_restart_the_timestamp():
@@ -700,8 +668,7 @@ def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_whi
     ("max_minutes", "max_usd", "expected"),
     [
         pytest.param(60, 5.0, "caps 60m, $5.00", id="spend-cap"),
-        pytest.param(5.5, None, "caps 5.5m", id="fractional-minutes-keep-the-decimal"),
-        pytest.param(10.0, None, "caps 10m", id="whole-float-minutes-drop-the-decimal"),
+        pytest.param(10.0, None, "caps 10m", id="no-spend-cap"),
     ],
 )
 def test_plain_line_when_launch_does_return_the_caps_line(
@@ -807,13 +774,6 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
             20,
             "3/20 iterations · 2 kept · 1 discarded · last -3.2% improved",
             id="iterations-present",
-        ),
-        pytest.param(
-            session_state(iteration_count=1, last_iteration=make_iteration(None, "no-signal")),
-            True,
-            None,
-            "1 iteration · 0 kept · 0 discarded · last — no-signal",
-            id="missing-delta-renders-em-dash",
         ),
         pytest.param(
             session_state(

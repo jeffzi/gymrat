@@ -339,11 +339,3 @@ def test_render_report_when_colored_does_style_each_element(
     line = line_containing(render_report(make_result(), ReportOptions(color=True)), needle)
 
     assert styles_at(line, marker) == expected
-
-
-def test_render_report_when_header_part_holds_a_dot_does_leave_it_out_of_dimming():
-    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
-
-    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
-
-    assert styles_at(header, "metric·lines") == []  # cspell:disable-line

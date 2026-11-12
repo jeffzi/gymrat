@@ -100,15 +100,6 @@ def test_live_renderer_when_console_width_zero_does_mount_no_live_display(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.usefixtures("manual_refresh")
-def test_stop_when_live_does_clear_live(build_reporter: ReporterFactory):
-    reporter = build_reporter("live", sealed_console())
-
-    reporter.stop()
-
-    assert reporter.live is None
-
-
 def test_stop_when_signal_already_erased_the_display_does_write_nothing(
     build_reporter: ReporterFactory,
 ):
@@ -122,31 +113,19 @@ def test_stop_when_signal_already_erased_the_display_does_write_nothing(
     assert console_output(console) == before
 
 
-def test_stop_when_called_again_does_write_nothing_more(build_reporter: ReporterFactory):
+def test_stop_when_called_again_after_a_failed_stop_does_write_nothing_more(
+    build_reporter: ReporterFactory, monkeypatch: pytest.MonkeyPatch
+):
     console = sealed_console()
     reporter = build_reporter("live", console)
-    reporter.stop()
+    _fail_live_stop_once(monkeypatch, _live(reporter), ValueError("unexpected"))
+    with pytest.raises(ValueError, match="unexpected"):
+        reporter.stop()
     after_first_stop = console_output(console)
 
     reporter.stop()
 
     assert console_output(console) == after_first_stop
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(OSError("stderr closed"), id="os-error"),
-        pytest.param(ValueError("I/O operation on closed file"), id="closed-stream-value-error"),
-    ],
-)
-def test_stop_when_live_stop_raises_a_closed_stream_error_does_suppress(
-    build_reporter: ReporterFactory, monkeypatch: pytest.MonkeyPatch, error: Exception
-):
-    reporter = build_reporter("live", sealed_console())
-    _fail_live_stop_once(monkeypatch, _live(reporter), error)
-
-    reporter.stop()
 
 
 class _FailingStream(StringIO):

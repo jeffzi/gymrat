@@ -14,7 +14,9 @@ import itertools
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.style import Style
 
+from gymrat.cli.style import STYLE_META
 from gymrat.progress_events import (
     ConfirmSkipped,
     ConfirmStarted,
@@ -174,7 +176,7 @@ def test_frame_when_judge_finished_does_style_regressed_names_apart_from_dim_wor
     renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=regressed, at_ms=_ms(clock)))
 
     assert _judge_detail_style_runs(renderer.frame()) == [
-        ("-3.2% on geomean · 1 regressed: ", "dim"),
+        ("-3.2% on geomean · 1 regressed: ", str(Style.parse(STYLE_META))),
         ("latency", ""),
     ]
 

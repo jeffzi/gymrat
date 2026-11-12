@@ -100,16 +100,6 @@ def install_budget(
         freeze_now_ms(monkeypatch, frozen_now_ms)
 
 
-def install_tight_budget(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Write a budget with 5 minutes left and freeze the clock.
-
-    Args:
-        repo: The repository whose budget file is written.
-        monkeypatch: The fixture that releases the supervise lock at teardown and patches the clock.
-    """
-    install_budget(repo, monkeypatch, deadline_ms=300_000.0, frozen_now_ms=0)
-
-
 def install_budget_with_ten_minutes_left(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Write a live budget and freeze the clock ten minutes before its deadline.
 

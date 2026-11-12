@@ -725,8 +725,8 @@ class ProcessExit(BaseException):
 class InterruptedTerminal(StringIO):
     """A terminal file that runs a signal handler at one chosen write, then exits.
 
-    ``interrupt_write`` arms it for the next write whose text contains *marker*.
-    The handler runs in place of that write, or right after the text lands when
+    ``interrupt_write`` arms it for the next write. The handler runs in place of
+    that write, or right after the text lands when
     *lands* is true. ``at_exit`` then keeps what reached the terminal, and the
     write raises ``ProcessExit`` where the real process would end, so nothing
     written while the exception unwinds counts.
@@ -736,28 +736,23 @@ class InterruptedTerminal(StringIO):
         super().__init__()
         self.at_exit = ""
         self._handler: Callable[[], object] | None = None
-        self._marker = ""
         self._lands = False
 
-    def interrupt_write(
-        self, handler: Callable[[], object], *, marker: str = "", lands: bool = False
-    ) -> None:
-        """Arm the terminal to run *handler* at the next matching write.
+    def interrupt_write(self, handler: Callable[[], object], *, lands: bool = False) -> None:
+        """Arm the terminal to run *handler* at the next write.
 
         Args:
-            handler: Runs in place of the matching write, or right after its text
+            handler: Runs in place of the next write, or right after its text
                 lands when *lands* is true.
-            marker: Text the write must contain to trigger the handler; the empty
-                string matches every write.
             lands: Whether the write's text reaches the terminal before the
                 handler runs.
         """
-        self._handler, self._marker, self._lands = handler, marker, lands
+        self._handler, self._lands = handler, lands
 
     @override
     def write(self, text: str) -> int:
         handler = self._handler
-        if handler is None or self._marker not in text:
+        if handler is None:
             return super().write(text)
         self._handler = None
         if self._lands:

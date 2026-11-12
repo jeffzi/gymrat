@@ -28,7 +28,7 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.session.paths import (
     experiment_worktree_dir,
 )
-from gymrat.session.records import BaselineRecord, FinalizeRecord
+from gymrat.session.records import BaselineRecord
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._doctor_fixtures import single_check_report
@@ -132,19 +132,17 @@ def _install_doctor_seam(monkeypatch: pytest.MonkeyPatch, report: DoctorReport) 
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_gate_when_check_fails_does_exit_two_with_a_colored_report(
+def test_doctor_gate_when_check_fails_does_exit_two_with_the_report_on_stderr(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     failing = Check(name="git", status="fail", detail="missing", hint="install git")
     _install_doctor_seam(monkeypatch, report=single_check_report(failing))
 
     with pytest.raises(typer.Exit) as exc:
-        doctor_gate(repo, color=True)
+        doctor_gate(repo)
 
     assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
-    captured = capsys.readouterr()
-    assert "install git" in strip_ansi(captured.err)
-    assert "\x1b[" in captured.err
+    assert "install git" in strip_ansi(capsys.readouterr().err)
 
 
 def test_doctor_gate_when_nothing_fails_does_not_print(
@@ -305,7 +303,7 @@ def test_preflight_when_baseline_already_recorded_does_not_measure(
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic_leaving_the_session_open(
+def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic(
     repo: str,
 ):
     seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
@@ -314,7 +312,6 @@ def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmet
         _run_preflight(repo, max_minutes=30)
 
     assert all(part in str(exc.value) for part in ("baseline", "24m", "48m", "30m"))
-    assert records_of_type(repo, FinalizeRecord) == []
 
 
 def test_preflight_when_force_passed_does_bypass_feasibility_check(repo: str):

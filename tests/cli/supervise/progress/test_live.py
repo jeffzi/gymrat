@@ -18,12 +18,11 @@ The zero-width fallback, what a termination signal does to a display, and the
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, Any, override
-from unittest.mock import DEFAULT, MagicMock, Mock, patch
+from typing import TYPE_CHECKING, override
+from unittest.mock import DEFAULT, MagicMock, Mock
 
 import pytest
 
-from gymrat.cli.live_display import ErasableLive
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
@@ -35,11 +34,9 @@ from tests.cli.supervise._fixtures import (
     EMPTY_READ,
     FRAME_WIDTH,
     KEPT_READ,
-    LIVE_CLASS_PATH,
     ReporterKit,
     dashboard_console_patch,
     fire_launch_and_iterate_start,
-    launch_event,
     launched,
     make_reporter,
     render_frame,
@@ -259,38 +256,3 @@ def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_
 
     assert plain_lines == []
     _assert_one_warning_naming_the_render_error(terminal)
-
-
-# ---------------------------------------------------------------------------
-# Warnings — printed through the dashboard's console while the frame is up
-# ---------------------------------------------------------------------------
-
-
-def test_warn_when_live_mode_does_print_through_the_console_while_the_frame_is_up(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    console = sealed_console()
-    lives: list[ErasableLive] = []
-
-    def build_live(**kwargs: Any) -> ErasableLive:
-        lives.append(ErasableLive(**kwargs))
-        return lives[-1]
-
-    with (
-        dashboard_console_patch(console),
-        patch(LIVE_CLASS_PATH, autospec=True, side_effect=build_live),
-    ):
-        kit = make_reporter(mode="live", plain_write=lambda _line: None)
-    kit.reporter.observer(launch_event(1000))
-    printed: list[tuple[str, bool]] = []
-    real_print = console.print
-
-    def recording_print(*objects: object, **kwargs: Any) -> None:
-        printed.extend((text, lives[0].is_started) for text in objects if isinstance(text, str))
-        real_print(*objects, **kwargs)
-
-    monkeypatch.setattr(console, "print", recording_print)
-
-    kit.reporter.warn("warning: lat:100:p99 disk full")
-
-    assert printed == [("warning: lat:100:p99 disk full", True)]

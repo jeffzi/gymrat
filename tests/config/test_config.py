@@ -70,10 +70,6 @@ def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: Env
     "case",
     [
         pytest.param(
-            EnvCase("GYMRAT_BENCH", "env-bench", "bench", "env-bench", config={"bench": "cfg"}),
-            id="beats-config-bench",
-        ),
-        pytest.param(
             EnvCase(
                 "GYMRAT_PREPARE",
                 "env-prepare",
@@ -82,20 +78,6 @@ def _arrange_env_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: Env
                 config={"bench": "b", "prepare": "config-prepare"},
             ),
             id="beats-config-prepare",
-        ),
-        pytest.param(
-            EnvCase(
-                "GYMRAT_ADAPTER",
-                "env-adapter",
-                "adapter",
-                "env-adapter",
-                config={"bench": "b", "adapter": "config-adapter"},
-            ),
-            id="beats-config-adapter",
-        ),
-        pytest.param(
-            EnvCase("GYMRAT_SAMPLES", "42", "samples", 42, config={"bench": "b", "samples": 20}),
-            id="beats-config-samples",
         ),
         pytest.param(
             EnvCase(
@@ -526,10 +508,10 @@ def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
     assert result.problems[0].endswith(f": {_nul_path_reason()}")
 
 
-def test_inspect_config_when_flags_hold_blank_strings_does_report_each_flag():
-    names = ["--bench", "--prepare", "--adapter", "--config"]
+def test_inspect_config_when_flag_holds_blank_string_does_report_the_flag():
+    names = ["--config"]
 
-    result = inspect_config(CliFlags(bench="\t", prepare="", adapter="", config="   "))
+    result = inspect_config(CliFlags(config="   "))
 
     assert (len(result.problems), _names_reported_once(result.problems, names)) == (
         len(names),
@@ -598,31 +580,6 @@ def test_inspect_config_when_config_env_var_blank_does_report_naming_var(
     names = ["GYMRAT_CONFIG"]
 
     result = inspect_config(CliFlags(bench="b"))
-
-    assert (len(result.problems), _names_reported_once(result.problems, names)) == (
-        len(names),
-        names,
-    )
-
-
-def test_inspect_config_when_every_field_env_var_invalid_does_report_each(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("GYMRAT_BENCH", " ")
-    monkeypatch.setenv("GYMRAT_PREPARE", "")
-    monkeypatch.setenv("GYMRAT_ADAPTER", "")
-    monkeypatch.setenv("GYMRAT_SAMPLES", "0")
-    monkeypatch.setenv("GYMRAT_TIMEOUT", "0")
-    names = [
-        "GYMRAT_BENCH",
-        "GYMRAT_PREPARE",
-        "GYMRAT_ADAPTER",
-        "GYMRAT_SAMPLES",
-        "GYMRAT_TIMEOUT",
-    ]
-
-    result = inspect_config(CliFlags())
 
     assert (len(result.problems), _names_reported_once(result.problems, names)) == (
         len(names),

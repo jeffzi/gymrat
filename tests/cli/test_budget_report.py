@@ -30,7 +30,7 @@ from gymrat.report.types import ReportOptions
 from gymrat.session.budget import Budget
 from gymrat.session.paths import repo_root, session_jsonl_path, supervise_lockfile_path
 from gymrat.session.records import IterationRecord
-from gymrat.utils import format_time_left
+from gymrat.utils import format_duration, format_time_left
 from tests._clock import freeze_now_ms
 from tests._lock import held_supervise_lock, lock_probe_error
 from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
@@ -294,14 +294,18 @@ def test_warn_duration_over_budget_when_estimate_fits_the_budget_does_stay_silen
         pytest.param(
             True,
             MEASURE_REMAINING_MS,
-            ("12m 0s", "24m 0s per side"),
-            ("(",),
+            (format_duration(MEASURE_REMAINING_MS), format_duration(ITERATE_MS / 2)),
+            (format_duration(ITERATE_MS),),
             id="halving-names-the-per-side-cost",
         ),
         pytest.param(
             False,
             COMPARE_REMAINING_MS,
-            ("30m 0s", "48m 0s (24m 0s per side)"),
+            (
+                format_duration(COMPARE_REMAINING_MS),
+                format_duration(ITERATE_MS),
+                format_duration(ITERATE_MS / 2),
+            ),
             (),
             id="whole-names-the-full-cost-with-the-per-side-one",
         ),

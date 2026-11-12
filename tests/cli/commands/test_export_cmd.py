@@ -25,7 +25,11 @@ from tests.cli._runner import (
 )
 from tests.session.records._fixtures import SESSION_ID
 from tests.telemetry._collector import otlp_collector
-from tests.telemetry._fixtures import arm_placeholder_endpoint, hide_otlp_exporter
+from tests.telemetry._fixtures import (
+    arm_placeholder_endpoint,
+    disable_otel_sdk,
+    hide_otlp_exporter,
+)
 from tests.telemetry._replay_logs import write_measure_command_run
 
 if TYPE_CHECKING:
@@ -82,12 +86,9 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
     tmp_path: Path,
 ):
     session_log = _populate_session_dir(str(tmp_path))
-    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    disable_otel_sdk(monkeypatch)
 
-    with otlp_collector() as collector:
-        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
-
-        result = runner.invoke(app, ["export", session_log])
+    result = runner.invoke(app, ["export", session_log])
 
     output = stderr_text(result)
     assert result.exit_code == 2, output

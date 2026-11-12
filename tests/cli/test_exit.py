@@ -197,7 +197,7 @@ def test_format_cli_error_when_plain_error_does_render_the_bare_message(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert output.splitlines()[0].endswith("boom")
+    assert output.splitlines()[0] == "Error: boom"
 
 
 # ---------------------------------------------------------------------------

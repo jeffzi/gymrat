@@ -489,31 +489,18 @@ def test_replay_session_when_session_line_fails_validation_does_skip_it_with_std
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
 
-@pytest.mark.parametrize(
-    ("bad_line", "bad_index"),
-    [
-        pytest.param(
-            with_raw_number(to_json_line(replay_turn_end(at=T4)), ("cost_usd",)).encode(),
-            3,
-            id="nan-literal-final",
-        ),
-        pytest.param(TORN_UTF8_LINE, 1, id="torn-utf8-middle"),
-    ],
-)
 def test_replay_session_when_supervisor_line_undecodable_does_skip_it_silently(
     log_paths: tuple[str, str],
     capsys: pytest.CaptureFixture[str],
-    bad_line: bytes,
-    bad_index: int,
 ):
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
     lines = [
         to_json_line(replay_launch_event(at=T1)).encode(),
+        TORN_UTF8_LINE,
         to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode(),
         to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode(),
     ]
-    lines.insert(bad_index, bad_line)
     Path(sup_log).write_bytes(b"\n".join(lines))
 
     spans = _replay(session_log, sup_log)

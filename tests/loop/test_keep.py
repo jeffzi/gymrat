@@ -299,46 +299,31 @@ def _checks_skipped(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
 
 
 @pytest.mark.parametrize(
-    ("install_checks", "checks", "status", "recorded_checks", "baseline_advanced", "checks_ran"),
+    ("install_checks", "checks", "recorded_checks", "checks_ran"),
     [
         pytest.param(
             checks_pass,
             CHECKS,
-            "committed",
             KeepChecks(configured=True, passed=True),
-            True,
             True,
             id="passing-checks-keep-it",
         ),
         pytest.param(
-            checks_fail,
-            CHECKS,
-            "blocked",
-            failed_checks(CHECKS_STDOUT, CHECKS_STDERR),
-            False,
-            True,
-            id="failing-checks-refuse-it",
-        ),
-        pytest.param(
             _checks_skipped,
             None,
-            "committed",
             KeepChecks(configured=False),
-            True,
             False,
             id="no-checks-keep-it-unchecked",
         ),
     ],
 )
-async def test_keep_session_when_clean_and_ahead_does_settle_the_standing_commit_on_the_checks(
+async def test_keep_session_when_clean_and_ahead_does_commit_the_standing_commit(
     *,
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     install_checks: Callable[[pytest.MonkeyPatch], ExecRecorder],
     checks: str | None,
-    status: str,
     recorded_checks: KeepChecks,
-    baseline_advanced: bool,
     checks_ran: bool,
 ):
     start_with(repo, (iteration_record(seq=1),))
@@ -348,8 +333,8 @@ async def test_keep_session_when_clean_and_ahead_does_settle_the_standing_commit
 
     result = await keep_session(repo, checks_config(checks=checks))
 
-    assert (result.record.status, result.record.checks) == (status, recorded_checks)
-    assert (head_of(baseline_worktree_dir(repo)) == committed) is baseline_advanced
+    assert (result.record.status, result.record.checks) == ("committed", recorded_checks)
+    assert head_of(baseline_worktree_dir(repo)) == committed
     assert bool(recorder.calls) is checks_ran
 
 

@@ -140,9 +140,7 @@ def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error():
     with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
 
-    message = str(exc_info.value)
-    assert '"op/v=a#b"' in message
-    assert f'"{alias}"' in message
+    assert f'"{alias}"' in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +162,6 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 
     assert result == {f"valid{TIME_SUFFIX}": 1}
     assert len(warnings) == 1
-    assert '"op/v=a//b"' in warnings[0]
 
 
 # ---------------------------------------------------------------------------

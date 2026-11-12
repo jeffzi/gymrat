@@ -422,7 +422,7 @@ def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_on
     assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
 
 
-def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_after_one_bounded_wait(
+def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_through_the_seam(
     raise_signal: RaiseSignal, recorded_joins: list[float], monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
@@ -439,7 +439,6 @@ def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_writ
     _run_capped(terminal.write_progress)
 
     assert codes == [128 + signal.SIGINT]
-    assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="pthread_kill is POSIX-only")

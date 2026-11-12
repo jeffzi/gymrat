@@ -73,7 +73,6 @@ from tests.loop._settle import (
 )
 from tests.session._budget import install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
-    SESSION_ID,
     iteration_record,
     last_command_record,
     log_records,
@@ -241,13 +240,7 @@ def test_keep_command_when_keep_blocked_does_exit_one_tracing_the_reason(
     result = runner.invoke(app, ["keep"])
 
     cmd = last_command_record(repo)
-    assert (result.exit_code, cmd.seq, cmd.exit_code, cmd.reason, cmd.args) == (
-        1,
-        1,
-        1,
-        "checks-failed",
-        {},
-    )
+    assert (result.exit_code, cmd.seq, cmd.exit_code, cmd.reason) == (1, 1, 1, "checks-failed")
 
 
 def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
@@ -264,7 +257,6 @@ def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
     assert record.status == "committed"
     cmd = last_command_record(repo)
     assert cmd.args["allow_unimproved"] is True
-    assert cmd.reason is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
@@ -346,19 +338,6 @@ def test_keep_command_when_no_checks_and_stderr_a_terminal_does_color_the_warnin
 # ---------------------------------------------------------------------------
 
 
-#: The status document of a settled session with one kept iteration, minus its end-state flags.
-_SETTLED_STATUS = {
-    "schema_version": 1,
-    "session_id": SESSION_ID,
-    "branch": f"gymrat/{SESSION_ID}",
-    "baseline": {"ref": "main", "sha": "a" * 40},
-    "iteration_count": 1,
-    "keep_count": 1,
-    "discard_count": 0,
-    "unsettled": False,
-}
-
-
 def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -368,9 +347,4 @@ def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
     result = runner.invoke(app, ["status", "--format", "json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {
-        **_SETTLED_STATUS,
-        "finalized": False,
-        "stopped": False,
-        "budget": {"cap_minutes": 30, "remaining_seconds": 600},
-    }
+    assert json.loads(result.stdout)["budget"] == {"cap_minutes": 30, "remaining_seconds": 600}

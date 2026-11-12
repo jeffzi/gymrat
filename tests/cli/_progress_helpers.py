@@ -107,7 +107,6 @@ def iteration_facts(
     session_id: str = "test-session",
     sample_count: int = 5,
     metric_count: int = 3,
-    primary_metric: str = "geomean",
     checks_cmd: str | None = None,
     has_before_hook: bool = False,
     has_after_hook: bool = False,
@@ -119,20 +118,20 @@ def iteration_facts(
         session_id: The session identifier shown.
         sample_count: Samples per pass.
         metric_count: Metrics the bench reports.
-        primary_metric: The metric the verdict ranks by.
         checks_cmd: The checks command, or ``None`` when checks are off.
         has_before_hook: Whether a before hook runs.
         has_after_hook: Whether an after hook runs.
 
     Returns:
-        The facts, with every field not given left at its default.
+        The facts, with every field not given left at its default and ``geomean``
+        as the primary metric.
     """
     return IterationFacts(
         seq=seq,
         session_id=session_id,
         sample_count=sample_count,
         metric_count=metric_count,
-        primary_metric=primary_metric,
+        primary_metric="geomean",
         checks_cmd=checks_cmd,
         has_before_hook=has_before_hook,
         has_after_hook=has_after_hook,
@@ -142,45 +141,31 @@ def iteration_facts(
 def iterate_renderer(
     mode: Literal["live", "plain"],
     *,
-    console: Console | None = None,
-    width: int = 80,
     height: int = 24,
     seq: int = 1,
     session_id: str = "test-session",
     sample_count: int = 5,
     metric_count: int = 3,
-    primary_metric: str = "geomean",
     verbose: bool = False,
-    checks_cmd: str | None = None,
-    has_before_hook: bool = False,
-    has_after_hook: bool = False,
 ) -> tuple[Console, Clock[float], IterateRenderer]:
-    """Build an iterate renderer on a sealed console driven by a hand-advanced clock.
+    """Build an iterate renderer on a sealed 80-column console driven by a hand-advanced clock.
 
     The renderer is tracked, so the CLI tests' autouse teardown stops it.
 
     Args:
         mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
-        console: The console to render to; a sealed ``width`` x ``height``
-            console pinned to the clock when ``None``.
-        width: Columns of the console built when ``console`` is ``None``.
-        height: Rows of the console built when ``console`` is ``None``.
+        height: Rows of the console.
         seq: The iteration number shown.
         session_id: The session identifier shown.
         sample_count: Samples per pass.
         metric_count: Metrics the bench reports.
-        primary_metric: The metric the verdict ranks by.
         verbose: Whether the renderer shows its verbose detail.
-        checks_cmd: The checks command, or ``None`` when checks are off.
-        has_before_hook: Whether a before hook runs.
-        has_after_hook: Whether an after hook runs.
 
     Returns:
         The console, the clock, and the renderer.
     """
     clock = Clock(0.0)
-    if console is None:
-        console = sealed_console(width=width, height=height, get_time=clock)
+    console = sealed_console(width=80, height=height, get_time=clock)
     renderer = IterateRenderer(
         mode=mode,
         console=console,
@@ -189,10 +174,6 @@ def iterate_renderer(
             session_id=session_id,
             sample_count=sample_count,
             metric_count=metric_count,
-            primary_metric=primary_metric,
-            checks_cmd=checks_cmd,
-            has_before_hook=has_before_hook,
-            has_after_hook=has_after_hook,
         ),
         verbose=verbose,
         clock=clock,

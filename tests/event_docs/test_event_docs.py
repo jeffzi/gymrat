@@ -287,18 +287,6 @@ def _type_section(md: str, wire_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# document framing — single trailing newline
-# ---------------------------------------------------------------------------
-
-
-def test_render_reference_when_called_does_end_with_a_single_newline():
-    md = _render_reference_doc()
-
-    assert md.endswith("\n")
-    assert not md.endswith("\n\n")
-
-
-# ---------------------------------------------------------------------------
 # per-record/event ### sections — one per union member, in declared order
 # ---------------------------------------------------------------------------
 

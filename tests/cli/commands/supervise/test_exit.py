@@ -16,6 +16,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.cli.supervise.reducer import loop_plain_text
 from gymrat.errors import GymratError
 from gymrat.session.store import ReadSessionResult
 from gymrat.supervisor.events import event_from_wire
@@ -173,7 +174,7 @@ def test_supervise_when_exit_sequence_changes_the_session_does_summarize_the_ses
     result = run()
 
     assert result.exit_code == 0
-    assert "3 iterations" in result.stdout
+    assert loop_plain_text(settled, None) in result.stdout
 
 
 # ---------------------------------------------------------------------------

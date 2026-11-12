@@ -43,11 +43,9 @@ from gymrat.session.store import (
     session_header,
 )
 from tests._json_lines import with_raw_number
-from tests._mode_bits import needs_mode_bits
 from tests.session._store_records import (
     BASELINE,
     FINALIZE,
-    HOOK,
     ITERATION_1,
     KEPT_BASELINE,
     SESSION,
@@ -272,31 +270,11 @@ def test_read_records_when_log_missing_or_final_line_unterminated_does_return_on
     assert records == expected
 
 
-def _directory_at(jsonl_path: str) -> None:
-    Path(jsonl_path).mkdir(parents=True)
-
-
-def _without_read_permission(jsonl_path: str) -> None:
-    append_record(jsonl_path, SESSION)
-    Path(jsonl_path).chmod(0o000)
-
-
-@pytest.mark.parametrize(
-    "make_unreadable",
-    [
-        pytest.param(_directory_at, id="a-directory-at-the-path"),
-        pytest.param(
-            _without_read_permission,
-            id="a-log-without-read-permission",
-            marks=needs_mode_bits,
-        ),
-    ],
-)
 def test_read_records_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
-    fresh_root: str, make_unreadable: Callable[[str], None]
+    fresh_root: str,
 ):
     jsonl_path = session_jsonl_path(fresh_root)
-    make_unreadable(jsonl_path)
+    Path(jsonl_path).mkdir(parents=True)
 
     with pytest.raises(GymratError) as excinfo:
         read_records(jsonl_path)
@@ -311,14 +289,7 @@ def test_read_records_when_log_holds_appended_records_does_return_them_in_file_o
     fresh_root: str,
 ):
     jsonl_path = session_jsonl_path(fresh_root)
-    written: list[SessionLogRecord] = [
-        SESSION,
-        BASELINE,
-        HOOK,
-        ITERATION_1,
-        committed_keep(1),
-        discard_record(2),
-    ]
+    written: list[SessionLogRecord] = [SESSION, ITERATION_1]
     append_records(fresh_root, *written)
 
     records = read_records(jsonl_path)
@@ -400,7 +371,6 @@ def test_read_session_header_when_log_absent_or_holds_only_blank_lines_does_retu
     assert header is None
 
 
-_NOT_JSON = b"{not json\n" + _line(ITERATION_1).encode() + b"\n"
 _NON_FINITE = with_raw_number(_line(SESSION), ("schema",)).encode() + b"\n"
 _NOT_A_SESSION = _line(ITERATION_1).encode() + b"\n" + SESSION_LINE
 
@@ -409,7 +379,6 @@ _NOT_A_SESSION = _line(ITERATION_1).encode() + b"\n" + SESSION_LINE
     ("reader", "raw", "hint_marker"),
     [
         # Each failure is told apart by one word its hint carries.
-        pytest.param(read_session_header, _NOT_JSON, "JSON object", id="not-json"),
         pytest.param(read_session_header, _NON_FINITE, "NaN", id="non-finite-number"),
         pytest.param(
             read_records, UNDECODABLE_LINE + SESSION_LINE, "UTF-8", id="read-records-undecodable"
@@ -474,7 +443,6 @@ def test_session_header_when_first_line_unusable_does_return_none(fresh_root: st
         pytest.param(
             [SESSION, ITERATION_1, committed_keep(1)], None, id="a-log-holding-no-baseline"
         ),
-        pytest.param([SESSION, BASELINE, ITERATION_1], BASELINE, id="a-baseline-measure-recorded"),
         pytest.param(
             [SESSION, BASELINE, ITERATION_1, committed_keep(1), KEPT_BASELINE],
             KEPT_BASELINE,

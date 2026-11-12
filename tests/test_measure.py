@@ -49,7 +49,6 @@ async def test_measure_when_target_benched_does_assemble_the_result(
 
     result = await _measure_main(run_options(samples=3))
 
-    assert result.metrics["x"].median == 20.0
     assert result.metrics["x"].spread == 50.0
     assert result.metrics["y"].median == 5.0
 

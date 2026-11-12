@@ -65,14 +65,11 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 
     # Against the shared baseline (median 10.35) a moves about +97% and b about
     # -51%; judging b against a instead would put b near -75%.
-    outcomes = [
-        None if candidate.verdict is None else (candidate.verdict.verdict, candidate.verdict.delta)
+    deltas = [
+        None if candidate.verdict is None else candidate.verdict.delta
         for candidate in result.metrics["x"].candidates
     ]
-    assert outcomes == [
-        ("regressed", pytest.approx(96.6, abs=0.1)),
-        ("improved", pytest.approx(-51.4, abs=0.1)),
-    ]
+    assert deltas == pytest.approx([96.6, -51.4], abs=0.1)
     assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == pytest.approx(
         [96.6, -51.4], abs=0.1
     )

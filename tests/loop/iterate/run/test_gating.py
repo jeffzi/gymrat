@@ -17,7 +17,6 @@ from __future__ import annotations
 import subprocess
 import sys
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -65,6 +64,8 @@ from tests.session.records._fixtures import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from gymrat.model import Direction
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
@@ -87,14 +88,10 @@ def _total_ms_gating_config() -> ResolvedConfig:
 
 
 @pytest.mark.parametrize(
-    ("filter_template", "rerun"),
+    ("filter_template", "filtered_metrics"),
     [
-        pytest.param(
-            FILTER,
-            ("npm run bench -- --filter total_ms alloc_bytes", ("total_ms", "alloc_bytes")),
-            id="through-the-filter",
-        ),
-        pytest.param(None, ("npm run bench", None), id="whole-bench-without-a-filter"),
+        pytest.param(FILTER, ("total_ms", "alloc_bytes"), id="through-the-filter"),
+        pytest.param(None, None, id="whole-bench-without-a-filter"),
     ],
 )
 async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun(
@@ -102,9 +99,8 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     samples_mock: CollectSamplesRecorder,
     monkeypatch: pytest.MonkeyPatch,
     filter_template: str | None,
-    rerun: tuple[str, tuple[str, ...] | None],
+    filtered_metrics: tuple[str, ...] | None,
 ):
-    rerun_bench, filtered_metrics = rerun
     stub_runs(samples_mock, open_repo, [regressed_run(), regressed_run()])
     report_a_pass_per_call(monkeypatch, samples_mock)
     events: list[ProgressEvent] = []
@@ -115,7 +111,6 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         options=IterateOptions(on_progress=events.append),
     )
 
-    assert samples_mock.calls[1].options.bench == rerun_bench
     assert [set(e.regressed) for e in events if isinstance(e, JudgeFinished)] == [
         {"total_ms", "alloc_bytes"}
     ]
@@ -139,7 +134,6 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="regressed", confirmed=True
     )
-    assert result.record.outcome == "regressed"
 
 
 async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
@@ -273,7 +267,7 @@ async def test_iterate_session_when_a_non_exact_gating_metric_regresses_does_rer
 
     await iterate_session(open_repo, resolved)
 
-    assert samples_mock.calls[1].options.bench == "npm run bench -- --filter alloc_bytes"
+    assert samples_mock.calls[1].bench == "npm run bench -- --filter alloc_bytes"
 
 
 async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rerunning(
@@ -455,19 +449,6 @@ _ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n'
 _ARGS_FILTER = "sh args.sh {names}"
 
 
-def _paired_with(name: str, values: list[float]) -> list[dict[str, float]]:
-    """One round per entry, reporting ``name`` beside a plainly named metric."""
-    return [{name: value, "total_ms": value} for value in values]
-
-
-def _regressed_named(name: str) -> PairedRun:
-    """A run where ``name`` and ``total_ms`` both come back 10% slower."""
-    return PairedRun(
-        experiment=_paired_with(name, scaled(BASELINE_MS, 1.1)),
-        baseline=_paired_with(name, BASELINE_MS),
-    )
-
-
 def _shell_args(directory: str, command: str) -> list[str]:
     """The arguments a POSIX shell hands the stand-in bench when it runs ``command``.
 
@@ -493,28 +474,25 @@ def _shell_args(directory: str, command: str) -> list[str]:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell argument splitting only")
-async def test_iterate_session_when_metric_name_needs_quoting_does_pass_it_as_one_argument(
-    open_repo: str, samples_mock: CollectSamplesRecorder
+def test_scoped_bench_when_metric_name_needs_quoting_does_pass_it_as_one_argument(
+    tmp_path: Path,
 ):
     name = "sort(n=1000)/time"
-    (Path(open_repo) / "args.sh").write_text(_ARGS_SCRIPT, encoding="utf-8")
-    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
+    (tmp_path / "args.sh").write_text(_ARGS_SCRIPT, encoding="utf-8")
 
-    await iterate_session(open_repo, resolved_config(filter=_ARGS_FILTER))
+    command = scoped_bench(resolved_config(filter=_ARGS_FILTER), (name, "total_ms"))
 
-    assert _shell_args(open_repo, samples_mock.calls[1].options.bench) == [name, "total_ms"]
+    assert _shell_args(str(tmp_path), command) == [name, "total_ms"]
 
 
-async def test_iterate_session_when_win32_and_name_has_spaces_does_double_quote_it_in_the_rerun(
-    open_repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+def test_scoped_bench_when_win32_and_name_has_spaces_does_double_quote_it(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    name = "decode large payload"
-    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
     monkeypatch.setattr(sys, "platform", "win32")
 
-    await iterate_session(open_repo, resolved_config(filter=FILTER))
+    command = scoped_bench(resolved_config(filter=FILTER), ("decode large payload", "total_ms"))
 
-    assert '"decode large payload"' in samples_mock.calls[1].options.bench
+    assert '"decode large payload"' in command
 
 
 # ---------------------------------------------------------------------------

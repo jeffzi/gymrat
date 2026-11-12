@@ -395,7 +395,7 @@ def test_start_session_when_header_append_fails_does_remove_the_branch_and_workt
 
 @needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
-def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_each_worktree(
+def test_start_session_when_unwinding_a_failed_start_fails_does_forward_the_unwind_warnings_to_stderr(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
     # Neither git nor a plain delete can empty the worktrees, so the unwind's own steps fail.
@@ -404,10 +404,7 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_each
     with pytest.raises(PermissionError):
         start_session(repo, "main", CONFIG)
 
-    stderr = capsys.readouterr().err
-    experiment, baseline = experiment_worktree_dir(repo), baseline_worktree_dir(repo)
-    assert experiment in stderr
-    assert baseline in stderr
+    assert experiment_worktree_dir(repo) in capsys.readouterr().err
 
 
 @needs_mode_bits

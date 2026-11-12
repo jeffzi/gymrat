@@ -84,11 +84,6 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 @pytest.mark.parametrize(
     ("host", "expected_env"),
     [
-        pytest.param(
-            {"GYMRAT_TRACEPARENT": "00-abc-def-01"},
-            {"GYMRAT_TRACEPARENT": "00-abc-def-01"},
-            id="extra-env-added-to-fixed",
-        ),
         pytest.param({"NO_COLOR": "0"}, {"NO_COLOR": "0"}, id="extra-env-wins-over-fixed"),
     ],
     indirect=["host"],

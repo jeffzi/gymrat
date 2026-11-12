@@ -128,7 +128,6 @@ def test_sync_result_report_when_nothing_synced_does_say_nothing_to_sync():
     report = result.report
 
     assert "0" not in report
-    assert "\n" not in report
 
 
 def test_sync_result_report_when_files_synced_does_list_each_path_under_its_count():

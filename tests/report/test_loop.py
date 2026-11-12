@@ -349,7 +349,7 @@ def test_format_status_finalized_when_given_record_does_render_the_finalized_lin
 # ---------------------------------------------------------------------------
 
 
-def test_format_status_stop_when_given_message_does_render_the_stopped_line():
-    line = format_status_stop("user requested stop")
+def test_format_status_stop_when_message_multiline_does_state_only_its_first_line():
+    line = format_status_stop("user requested stop\nsecond line")
 
     assert render_plain(line) == "stopped · user requested stop"

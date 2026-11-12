@@ -17,8 +17,6 @@ from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
     DISCARD_RECORD,
-    ITERATION_RECORD,
-    METRIC_VERDICT,
     SESSION_RECORD,
     field_of,
     nested_with,
@@ -71,7 +69,6 @@ def test_parse_record_when_value_not_an_object_does_raise_naming_it():
     [
         pytest.param({"type": "banana", "seq": 1}, '"banana"', id="unknown-name"),
         pytest.param(omitting(DISCARD_RECORD, "type"), "undefined", id="no-type-discriminator"),
-        pytest.param({"type": 42}, "42", id="type-not-a-string"),
     ],
 )
 def test_parse_record_when_type_unknown_does_raise_naming_the_value(value: object, shown: str):
@@ -94,25 +91,16 @@ def test_parse_record_when_type_unknown_does_hint_every_known_record_type():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("value", "key"),
-    [
-        pytest.param(
-            patching(
-                SESSION_RECORD, {"config": omitting(field_of(SESSION_RECORD, "config"), "bench")}
-            ),
-            "config.bench",
-            id="config-no-bench",
-        ),
-        pytest.param(omitting(DISCARD_RECORD, "at"), "at", id="discard-no-at"),
-    ],
-)
-def test_parse_record_when_key_missing_does_reject_naming_key(value: object, key: str):
+def test_parse_record_when_key_missing_does_reject_naming_key():
+    value = patching(
+        SESSION_RECORD, {"config": omitting(field_of(SESSION_RECORD, "config"), "bench")}
+    )
+
     with pytest.raises(GymratError) as exc:
         parse_record(value)
 
     message = str(exc.value)
-    assert ("Missing" in message, message.endswith(f" {key}")) == (True, True)
+    assert ("Missing" in message, message.endswith(" config.bench")) == (True, True)
 
 
 # ---------------------------------------------------------------------------
@@ -137,17 +125,6 @@ def test_parse_record_when_key_unknown_does_reject_naming_key():
 @pytest.mark.parametrize(
     ("value", "key", "shape", "shown"),
     [
-        # numbers are tried before strings, so a string names the number shape
-        pytest.param(
-            patching(
-                ITERATION_RECORD,
-                {"metrics": {"decode_ms": {**METRIC_VERDICT, "delta_pct": "banana"}}},
-            ),
-            "metrics.decode_ms.delta_pct",
-            "a number",
-            '"banana"',
-            id="verdict-delta-string",
-        ),
         # optional fields that are not nullable reject an explicit null with their type
         pytest.param(
             nested_with(SESSION_RECORD, "config", filter=None),

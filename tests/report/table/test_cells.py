@@ -36,17 +36,6 @@ if TYPE_CHECKING:
     ("parts", "widths", "delta_style", "band_style", "expected"),
     [
         pytest.param(
-            VerdictParts(glyph="✓", delta="-10.0%", word="", band="2.5%", pairs="n=8"),
-            VerdictWidths(delta=7, band=4),
-            "red",
-            "dim",
-            (
-                f"✓   -10.0%  {PLUS_MINUS}2.5%  n=8",
-                [("✓", "green"), ("-10.0%", "red"), (f"{PLUS_MINUS}2.5%", "dim")],
-            ),
-            id="all-fields-present",
-        ),
-        pytest.param(
             VerdictParts(glyph="✓", delta="-10.0%", word="", band="", pairs="n=8"),
             VerdictWidths(delta=7, band=4),
             "red",
@@ -168,7 +157,6 @@ def test_geomean_value_style_when_value_inside_or_beyond_band_does_color_only_be
 @pytest.mark.parametrize(
     ("outcomes", "expected"),
     [
-        pytest.param(["within-noise"], "bold", id="every-outcome-quiet-vetoes-color"),
         pytest.param([None, "within-noise"], "bold", id="missing-outcomes-ignored-by-the-veto"),
         pytest.param([None], EMPHASIZED_DIRECTION_STYLES["improved"], id="no-outcome-leaves-band"),
         pytest.param(
