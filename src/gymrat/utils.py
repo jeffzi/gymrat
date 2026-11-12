@@ -711,7 +711,50 @@ def write_text_atomic(path: Path, text: str) -> None:
         target_mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
         target_mode = None
-    create_mode = 0o666 if target_mode is None else target_mode
+    tmp_path = _synced_temp_sibling(path, text, 0o666 if target_mode is None else target_mode)
+    try:
+        if target_mode is not None:
+            # Restores the bits the umask removed from the requested mode.
+            tmp_path.chmod(target_mode)
+        tmp_path.replace(path)
+    except BaseException:
+        # The original error is what the caller needs; a failed cleanup must not mask it.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def create_text_atomic(path: Path, text: str) -> None:
+    """Create *path* holding *text*, encoded as UTF-8, unless something is already there.
+
+    The text goes to a temporary sibling that is flushed and fsynced, then
+    hard-linked to *path*. Unlike a rename, the link never replaces an entry
+    that appeared after the caller looked, so a reader sees either no file or
+    the full content, and a file someone else created keeps its content. The
+    new file gets ``0o666`` filtered by the umask. The temporary file is
+    removed whether or not the link succeeds.
+
+    Args:
+        path: The file to create. Its directory must already exist.
+        text: The content to write.
+
+    Raises:
+        FileExistsError: When an entry already exists at *path*; it is left
+            untouched.
+        OSError: When the temporary file cannot be created, written, synced,
+            or linked to *path*.
+    """
+    tmp_path = _synced_temp_sibling(path, text, 0o666)
+    try:
+        os.link(tmp_path, path)
+    finally:
+        # Once linked, *path* already holds the full content: a stray temporary
+        # file is a lesser harm than reporting a write that happened as failed.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+
+
+def _synced_temp_sibling(path: Path, text: str, mode: int) -> Path:
     tmp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
 
     # Opened directly rather than through tempfile, which forces 0o600: here the
@@ -720,7 +763,7 @@ def write_text_atomic(path: Path, text: str) -> None:
     # own mode at creation is what keeps the content out of a wider file; a
     # chmod after the write would leave it exposed until then.
     def create_with_mode(name: str, flags: int) -> int:
-        return os.open(name, flags, create_mode)
+        return os.open(name, flags, mode)
 
     # Exclusive creation stays outside the cleanup below: a file that already
     # holds the temporary name is not this call's to remove.
@@ -731,15 +774,12 @@ def write_text_atomic(path: Path, text: str) -> None:
             tmp_file.write(text.encode("utf-8"))
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
-        if target_mode is not None:
-            # Restores the bits the umask removed from the requested mode.
-            tmp_path.chmod(target_mode)
-        tmp_path.replace(path)
     except BaseException:
         # The original error is what the caller needs; a failed cleanup must not mask it.
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         raise
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------

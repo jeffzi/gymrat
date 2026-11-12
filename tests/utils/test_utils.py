@@ -5,6 +5,10 @@ syncs it to disk, then renames it over the target, so a reader sees either the
 previous content or the full new content — never a partial file. On failure
 the target is untouched, the temporary file is removed, and the ``OSError``
 propagates.
+
+``create_text_atomic`` publishes the same way but never replaces: when a file
+already exists at the target it raises ``FileExistsError`` and leaves that file
+as it was. On any failure no temporary file is left behind.
 """
 
 import datetime as dt
@@ -38,6 +42,7 @@ from gymrat.utils import (
     balancing_cycle,
     collapse_whitespace,
     color_from_env,
+    create_text_atomic,
     expected_got,
     fan_out,
     finite_or_none,
@@ -520,6 +525,54 @@ def test_write_text_atomic_when_write_fails_does_leave_target_and_directory_unto
 
     assert target.read_text(encoding="utf-8") == OLD_TEXT
     assert _entries(target.parent) == ["state.json"]
+
+
+# ---------------------------------------------------------------------------
+# create_text_atomic
+# ---------------------------------------------------------------------------
+
+
+def test_create_text_atomic_when_target_absent_does_write_utf8_text_without_leftover_temp(
+    tmp_path: Path,
+):
+    path = tmp_path / "state.json"
+
+    create_text_atomic(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(tmp_path) == ["state.json"]
+
+
+def test_create_text_atomic_when_target_exists_does_raise_leaving_it_and_directory_untouched(
+    target: Path,
+):
+    with pytest.raises(FileExistsError):
+        create_text_atomic(target, NEW_TEXT)
+
+    assert target.read_text(encoding="utf-8") == OLD_TEXT
+    assert _entries(target.parent) == ["state.json"]
+
+
+@needs_posix_file_modes
+def test_create_text_atomic_when_target_absent_does_create_it_with_the_umask_mode(
+    tmp_path: Path, umask: int
+):
+    path = tmp_path / "state.json"
+
+    create_text_atomic(path, NEW_TEXT)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o666 & ~umask
+
+
+def test_create_text_atomic_when_write_fails_does_leave_directory_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reason = _fail_fsync(tmp_path, monkeypatch)
+
+    with pytest.raises(OSError, match=reason):
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert _entries(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------

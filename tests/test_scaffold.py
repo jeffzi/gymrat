@@ -112,6 +112,52 @@ def test_scaffold_when_artifacts_already_exist_does_keep_them(
     } == {relative: _PLANTED[relative] for relative in planted}
 
 
+def test_scaffold_when_config_appears_after_its_existence_check_does_keep_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Another process creates ``gymrat.toml`` after this run looked for it: every
+    # check reports it absent, yet the file is there when the write happens.
+    config = tmp_path / "gymrat.toml"
+    real_exists = Path.exists
+
+    def exists_that_misses_the_config(path: Path, **kwargs: bool) -> bool:
+        if path == config:
+            if not real_exists(path):
+                config.write_text(EXISTING_CONFIG, encoding="utf-8")
+            return False
+        return real_exists(path, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", exists_that_misses_the_config)
+
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert result.config.status == "exists"
+    assert config.read_text(encoding="utf-8") == EXISTING_CONFIG
+
+
+def test_scaffold_when_runbook_appears_after_its_existence_check_does_keep_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Another process creates the runbook after this run looked for it: the check
+    # reports it absent, yet the file is there when the write happens.
+    runbook = tmp_path / DEFAULT_RUNBOOK_PATH
+    real_is_file = Path.is_file
+
+    def is_file_that_misses_the_runbook(path: Path, **kwargs: bool) -> bool:
+        if path == runbook:
+            if not real_is_file(path):
+                runbook.write_text(_PLANTED[DEFAULT_RUNBOOK_PATH], encoding="utf-8")
+            return False
+        return real_is_file(path, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", is_file_that_misses_the_runbook)
+
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
+
+    assert result.runbook.status == "exists"
+    assert runbook.read_text(encoding="utf-8") == _PLANTED[DEFAULT_RUNBOOK_PATH]
+
+
 # ---------------------------------------------------------------------------
 # skill file behavior
 # ---------------------------------------------------------------------------
@@ -223,11 +269,11 @@ def test_scaffold_when_config_path_cannot_be_checked_does_raise_naming_it(
 def test_scaffold_when_config_write_fails_does_raise_gymrat_error_naming_file_and_os_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    def exploding_replace(src: object, dst: object) -> None:
+    def exploding_link(src: object, dst: object, **_kwargs: object) -> None:
         msg = "Read-only file system"
         raise OSError(msg)
 
-    monkeypatch.setattr("os.replace", exploding_replace)
+    monkeypatch.setattr("os.link", exploding_link)
 
     with pytest.raises(GymratError) as exc_info:
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench"))
@@ -243,27 +289,27 @@ STRAY_CONTENT = "left by someone else\n"
 
 
 def _fail_write_of(monkeypatch: pytest.MonkeyPatch, name: str, *, drop_stray: bool = False) -> None:
-    """Make the rename that puts one scaffolded file in place fail like a full disk.
+    """Make the hard link that puts one scaffolded file in place fail like a full disk.
 
     Args:
-        monkeypatch: Patches ``os.replace`` for the test.
-        name: File name whose rename into place fails.
+        monkeypatch: Patches ``os.link`` for the test.
+        name: File name whose link into place fails.
         drop_stray: Whether a foreign file appears beside the destination just before the
             failure.
     """
-    real_replace = os.replace
+    real_link = os.link
 
-    def replace_that_fails_on_name(
-        src: str | os.PathLike[str], dst: str | os.PathLike[str]
+    def link_that_fails_on_name(
+        src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: bool
     ) -> None:
         if Path(dst).name == name:
             if drop_stray:
                 (Path(dst).parent / STRAY_NAME).write_text(STRAY_CONTENT, encoding="utf-8")
             msg = "No space left on device"
             raise OSError(msg)
-        real_replace(src, dst)
+        real_link(src, dst, **kwargs)
 
-    monkeypatch.setattr("os.replace", replace_that_fails_on_name)
+    monkeypatch.setattr("os.link", link_that_fails_on_name)
 
 
 def _tree(base: Path) -> dict[str, str | None]:

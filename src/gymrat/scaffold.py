@@ -8,7 +8,8 @@ broken install leaves nothing behind.
 The scaffold is re-runnable: an existing ``gymrat.toml`` is left byte-identical
 and reported as ``exists``, while the runbook and skill are still filled in.
 ``bench`` is therefore only required when the config has to be written. Every
-artifact is written atomically, and if a write fails, each artifact this run
+artifact is written atomically and never over a file that appears mid-run,
+which is reported as ``exists`` and kept. If a write fails, each artifact this run
 created is removed so no partial scaffold is left — one that was already there
 is never touched. The directories this run created go with them, unless
 something else has put a file in one since: a directory that is no longer
@@ -24,7 +25,7 @@ from typing import Literal
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import CONFIG_FILENAME, validate_config_dict
 from gymrat.errors import GymratError
-from gymrat.utils import write_text_atomic
+from gymrat.utils import create_text_atomic
 
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
 """Path, relative to the project root, where init writes and doctor checks for the skill."""
@@ -138,7 +139,8 @@ def _write_artifact(
     """Write ``content`` to ``relative`` unless a file is already there.
 
     The write is atomic, so a failure never leaves a truncated file that a
-    later run would take for an existing artifact.
+    later run would take for an existing artifact, and it never replaces a
+    file that appears after the existence check.
 
     Args:
         base_dir: The project root the artifact is written into.
@@ -161,7 +163,9 @@ def _write_artifact(
 
     try:
         _make_directories(full_path.parent, created_directories)
-        write_text_atomic(full_path, content)
+        create_text_atomic(full_path, content)
+    except FileExistsError:
+        return ScaffoldArtifact(path=relative, status="exists")
     except OSError as exc:
         msg = f"Cannot write {relative} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
@@ -195,18 +199,23 @@ def _prepare_config(request: ScaffoldRequest) -> str:
 def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     """Write the config atomically, so a failed write never leaves a truncated ``gymrat.toml``.
 
+    A config that appears after the existence check is kept, never replaced.
+
     Args:
         base_dir: The project root the config is written into.
         content: The serialized TOML text.
 
     Returns:
-        The scaffold artifact describing the written config file.
+        The config artifact, reported as ``exists`` when a file appeared at the
+        path before the write and as ``created`` otherwise.
 
     Raises:
         GymratError: When the file cannot be written.
     """
     try:
-        write_text_atomic(base_dir / CONFIG_FILENAME, content)
+        create_text_atomic(base_dir / CONFIG_FILENAME, content)
+    except FileExistsError:
+        return ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
     except OSError as exc:
         msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
