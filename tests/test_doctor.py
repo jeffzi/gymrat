@@ -175,9 +175,7 @@ def test_build_config_section_when_problems_present_does_produce_one_fail_per_pr
 
 
 def test_build_workflow_section_when_problems_present_does_return_single_ok_skip_check():
-    section = build_workflow_section(
-        _config(), config_has_problems=True, skill_file_exists=True, config_file_exists=False
-    )
+    section = build_workflow_section(None, skill_file_exists=True, config_file_exists=False)
 
     assert [(check.name, check.status) for check in section.checks] == [("workflow", "ok")]
 
@@ -185,7 +183,6 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
 def test_build_workflow_section_when_config_unset_does_warn_for_each_missing_piece():
     section = build_workflow_section(
         _config(),
-        config_has_problems=False,
         skill_file_exists=False,
         config_file_exists=False,
     )
@@ -229,7 +226,6 @@ def test_build_workflow_section_when_field_configured_does_report_its_check(
 ):
     section = build_workflow_section(
         config,
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -251,7 +247,6 @@ def test_build_workflow_section_when_samples_even_does_list_the_target_counts_it
 ):
     section = build_workflow_section(
         _config(samples=samples),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -263,7 +258,6 @@ def test_build_workflow_section_when_samples_even_does_list_the_target_counts_it
 def test_build_workflow_section_when_stop_has_no_keys_does_warn():
     section = build_workflow_section(
         _config(stop=StopConfig()),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -274,7 +268,6 @@ def test_build_workflow_section_when_stop_has_no_keys_does_warn():
 def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_balanced_counts():
     section = build_workflow_section(
         _config(samples=11),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -295,18 +288,16 @@ _UNKNOWN_ADAPTER_ERROR = unknown_adapter_error("banana")
 
 
 @pytest.mark.parametrize(
-    ("config_problems", "checks"),
+    ("adapter", "checks"),
     [
-        pytest.param(True, [("bench", "ok")], id="config-problems"),
-        pytest.param(False, [("adapter", "ok"), ("bench", "fail")], id="bench-unresolved"),
+        pytest.param(None, [("bench", "ok")], id="config-problems"),
+        pytest.param("metric-lines", [("adapter", "ok"), ("bench", "fail")], id="bench-unresolved"),
     ],
 )
 def test_build_bench_section_when_bench_unresolved_does_skip_or_fail_the_bench_check(
-    config_problems: bool, checks: list[tuple[str, str]]
+    adapter: str | None, checks: list[tuple[str, str]]
 ):
-    section = build_bench_section(
-        bench=None, adapter="metric-lines", config_problems=config_problems, base_dir="."
-    )
+    section = build_bench_section(bench=None, adapter=adapter, base_dir=".")
 
     assert [(check.name, check.status) for check in section.checks] == checks
 

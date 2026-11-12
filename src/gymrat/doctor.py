@@ -43,7 +43,6 @@ from rich.markup import escape
 
 from gymrat.adapters.registry import get_adapter
 from gymrat.config import (
-    CONFIG_DEFAULTS,
     BenchlessConfig,
     CliFlags,
     ConfigInspection,
@@ -214,9 +213,8 @@ def _skipped_section(title: str, check_name: str) -> CheckSection:
 
 
 def build_workflow_section(
-    config: BenchlessConfig,
+    config: BenchlessConfig | None,
     *,
-    config_has_problems: bool,
     skill_file_exists: bool,
     config_file_exists: bool,
 ) -> CheckSection:
@@ -225,12 +223,12 @@ def build_workflow_section(
     The section also checks the sample count: it FAILS on an odd count, which
     no run of two or more targets can balance.
 
-    When ``config_has_problems`` is true the individual checks are meaningless — the
-    config never settled — so the section collapses to a single skip placeholder.
+    Without a settled config the individual checks are meaningless, so the
+    section collapses to a single skip placeholder.
 
     Args:
-        config: The resolved benchless configuration to check against.
-        config_has_problems: Whether config inspection already found problems.
+        config: The settled benchless configuration to check against, or
+            ``None`` when config inspection found problems.
         skill_file_exists: Whether the project's skill file is installed.
         config_file_exists: Whether a config file was found. It picks the runbook
             fix: ``gymrat init`` leaves an existing config file as it is, so the
@@ -239,7 +237,7 @@ def build_workflow_section(
     Returns:
         The assembled workflow check section.
     """
-    if config_has_problems:
+    if config is None:
         return _skipped_section(_WORKFLOW_SECTION_TITLE, _WORKFLOW_SKIP_CHECK_NAME)
 
     runbook_fix = (
@@ -540,26 +538,23 @@ def _executable_check(executable: str, base_dir: str) -> Check:
     return Check(name="executable", status="ok", detail=f"{executable} is executable")
 
 
-def build_bench_section(
-    *, bench: str | None, adapter: str, config_problems: bool = False, base_dir: str
-) -> CheckSection:
+def build_bench_section(*, bench: str | None, adapter: str | None, base_dir: str) -> CheckSection:
     """Build the "Bench" section by validating config, without running anything.
 
-    When ``config_problems`` is True and ``bench`` is None the section collapses
-    to a single skip placeholder — the bench value was never resolved, so a FAIL
-    would be misleading.
+    Without a settled adapter the section collapses to a single skip
+    placeholder: the config never settled, so a FAIL would be misleading.
 
     Args:
-        bench: The configured bench command, or ``None`` if unresolved.
-        adapter: The name of the adapter to validate.
-        config_problems: Whether config inspection already found problems.
+        bench: The configured bench command, or ``None`` if none is set.
+        adapter: The settled adapter's name, or ``None`` when config inspection
+            found problems.
         base_dir: The directory a bench executable given as a path is resolved
             against.
 
     Returns:
         The assembled bench check section.
     """
-    if config_problems and bench is None:
+    if adapter is None:
         return _skipped_section(_BENCH_TITLE, "bench")
 
     try:
@@ -602,10 +597,6 @@ def _environment_info() -> EnvironmentInfo:
 def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
     """Coordinate the git probe, config inspection, and section builders into a single report.
 
-    Config inspection yields no config only when it found problems. The config
-    defaults then stand in so the bench section still has an adapter to name;
-    the workflow section collapses to its skip check.
-
     Args:
         flags: The command-line overrides to apply during config inspection.
         cwd: The working directory to probe git and config from.
@@ -625,17 +616,15 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
         git_error=git_env.git_error,
     )
     config_section = build_config_section(inspection)
-    resolved = inspection.config or CONFIG_DEFAULTS
+    settled = inspection.config
     workflow_section = build_workflow_section(
-        resolved,
-        config_has_problems=bool(inspection.problems),
+        settled,
         skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
         config_file_exists=inspection.config_path is not None,
     )
     bench_section = build_bench_section(
         bench=inspection.bench,
-        adapter=flags.adapter or resolved.adapter,
-        config_problems=bool(inspection.problems),
+        adapter=settled.adapter if settled is not None else None,
         base_dir=base_dir,
     )
 
