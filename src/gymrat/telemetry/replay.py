@@ -45,10 +45,11 @@ def replay_session(
 ) -> int:
     """Replay JSONL session and supervisor logs into deterministic OTel spans.
 
-    A session-log line that cannot be parsed is skipped with a warning on
-    stderr, and so is a supervisor log that cannot be read or whose launch line
-    names this session but is not a valid launch event. A supervisor log whose
-    first line is not a launch of this session is skipped silently.
+    A session-log or supervisor-log line that cannot be parsed is skipped with
+    a warning on stderr, and so is a supervisor log that cannot be read or whose
+    launch line names this session but is not a valid launch event. A
+    supervisor log whose first line is not a launch of this session is skipped
+    silently.
 
     Args:
         session_log: Path to the session JSONL log file.
@@ -253,31 +254,6 @@ def _read_bytes(path: str) -> bytes:
         return b""
 
 
-def _read_lines(path: str) -> list[bytes]:
-    """Read *path* as raw lines, leaving each one to be decoded on its own.
-
-    Decoding the whole file at once would let one undecodable line, such as a
-    final record torn mid-character by a crash, hide every other line. CRLF and
-    lone CR are folded into a line feed, as text-mode reading would.
-
-    Deliberately narrower than :meth:`str.splitlines`, which also breaks on
-    U+0085, U+2028 and U+2029 — characters a JSON string may carry raw, so
-    splitting there would tear one record into two invalid halves.
-
-    Args:
-        path: The file to read.
-
-    Returns:
-        The file's lines split on line feeds, or ``[]`` when the file does not
-        exist.
-    """
-    content = _read_bytes(path)
-    lines = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
-    if lines[-1] == b"":
-        lines.pop()
-    return lines
-
-
 def _read_session_log(path: str) -> list[SessionLogRecord]:
     """Parse a session JSONL log into typed records, reading lines as the store reads them.
 
@@ -301,23 +277,35 @@ def _read_session_log(path: str) -> list[SessionLogRecord]:
     return records
 
 
-def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
-    """Parse one JSONL line into a typed record, or None to skip it."""
+def _warn_skipped_line(log_kind: str, path: str, line_number: int, reason: str) -> None:
+    warn_to_stderr(f"warning: {log_kind} log {path}: skipping line {line_number} ({reason})")
+
+
+def _decode_log_line(
+    log_kind: str, path: str, line_number: int, line: bytes, noun: str
+) -> dict[str, object] | None:
+    """Decode one JSONL line as an object, warning and returning None when it is not one."""
     try:
         wire_value = loads_strict_json(line.decode("utf-8"))
     except ValueError:
-        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (invalid JSON)")
+        _warn_skipped_line(log_kind, path, line_number, "invalid JSON")
         return None
     if not isinstance(wire_value, dict):
-        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (not a record)")
+        _warn_skipped_line(log_kind, path, line_number, f"not {noun}")
+        return None
+    return wire_value
+
+
+def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
+    """Parse one JSONL line into a typed record, or None to skip it."""
+    wire_value = _decode_log_line("session", path, line_number, line, "a record")
+    if wire_value is None:
         return None
     try:
         return parse_record(wire_value)
     except GymratError:
         kind = wire_value.get("type", "untyped")
-        warn_to_stderr(
-            f"warning: session log {path}: skipping line {line_number} (invalid {kind} record)"
-        )
+        _warn_skipped_line("session", path, line_number, f"invalid {kind} record")
         return None
 
 
@@ -327,7 +315,10 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
     The typed launch event alone decides whether the log belongs to the
     session. A log that cannot be read, or whose launch line names the session
     but fails to parse as a launch event, is reported on stderr; any other
-    mismatch is skipped silently.
+    mismatch is skipped silently. The lines after the launch are read as the
+    session log's are: blank lines and an unterminated final line are dropped,
+    and a complete line that matches no event is skipped with a warning naming
+    its line number.
 
     Args:
         log_path: The supervisor log to read.
@@ -354,17 +345,28 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
 
     run = _ParsedRun(launch=launch, last_at=launch.at)
 
-    for line in _read_lines(log_path)[1:]:
-        obj = _decode_object_line(line)
-        if obj is None:
+    for line_number, line in enumerate(complete_lines(_read_bytes(log_path)), start=1):
+        if line_number == 1 or is_blank_line(line):
             continue
-        event = event_from_wire(obj)
+        event = _parse_supervisor_log_line(log_path, line_number, line)
         if event is None:
             continue
         run.last_at = max(run.last_at, event.at)
         _collect_run_event(run, event)
 
     return run
+
+
+def _parse_supervisor_log_line(path: str, line_number: int, line: bytes) -> SessionEvent | None:
+    """Parse one supervisor JSONL line into a typed event, or None to skip it."""
+    wire_value = _decode_log_line("supervisor", path, line_number, line, "an event")
+    if wire_value is None:
+        return None
+    event = event_from_wire(wire_value)
+    if event is None:
+        kind = wire_value.get("type", "untyped")
+        _warn_skipped_line("supervisor", path, line_number, f"invalid {kind} event")
+    return event
 
 
 def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:

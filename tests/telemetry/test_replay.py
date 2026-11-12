@@ -464,6 +464,13 @@ def test_replay_session_when_session_line_fails_validation_does_skip_it_with_std
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
 
+def _turn_end_costs(spans: tuple[Any, ...]) -> list[float]:
+    run_span = span_by_name(spans, RUN_SPAN)
+    return [
+        ev.attributes[TURN_SESSION_COST_USD] for ev in run_span.events if ev.name == EVENT_TURN_END
+    ]
+
+
 def test_replay_session_when_supervisor_line_undecodable_does_mirror_the_lines_after_it(
     log_paths: tuple[str, str],
 ):
@@ -475,16 +482,73 @@ def test_replay_session_when_supervisor_line_undecodable_does_mirror_the_lines_a
         to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode(),
         to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode(),
     ]
-    Path(sup_log).write_bytes(b"\n".join(lines))
+    Path(sup_log).write_bytes(b"".join(line + b"\n" for line in lines))
 
     spans = _replay(session_log, sup_log)
 
-    run_span = span_by_name(spans, RUN_SPAN)
-    turn_end_costs = [
-        ev.attributes[TURN_SESSION_COST_USD] for ev in run_span.events if ev.name == EVENT_TURN_END
-    ]
-    assert run_span.attributes[RUN_COST_USD] == pytest.approx(0.42)
-    assert turn_end_costs == [pytest.approx(0.10), pytest.approx(0.42)]
+    assert span_by_name(spans, RUN_SPAN).attributes[RUN_COST_USD] == pytest.approx(0.42)
+    assert _turn_end_costs(spans) == [pytest.approx(0.10), pytest.approx(0.42)]
+
+
+# ---------------------------------------------------------------------------
+# observability: stderr warnings for skipped supervisor-log lines
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        pytest.param(b"{not json", id="not-json"),
+        pytest.param(TORN_UTF8_LINE, id="not-utf8"),
+        pytest.param(b"[1, 2]", id="not-an-object"),
+        pytest.param(b'{"type": "unknown_future_event"}', id="matches-no-event"),
+    ],
+)
+def test_replay_session_when_supervisor_line_after_launch_unreadable_does_skip_it_with_stderr_warning(
+    *,
+    log_paths: tuple[str, str],
+    capsys: pytest.CaptureFixture[str],
+    bad_line: bytes,
+):
+    session_log, sup_log = log_paths
+    write_records_log(session_log, [session_record(at=T0)])
+    launch = to_json_line(replay_launch_event(at=T1)).encode()
+    turn_end = to_json_line(replay_turn_end(at=T3)).encode()
+    Path(sup_log).write_bytes(launch + b"\n\n" + bad_line + b"\n" + turn_end + b"\n")
+
+    _replay(session_log, sup_log)
+
+    _assert_one_stderr_warning_naming(capsys.readouterr().err, sup_log, "line 3")
+
+
+def test_replay_session_when_supervisor_log_last_line_unterminated_does_drop_it(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    write_records_log(session_log, [session_record(at=T0)])
+    launch = to_json_line(replay_launch_event(at=T1)).encode()
+    first = to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode()
+    torn = to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode()
+    Path(sup_log).write_bytes(launch + b"\n" + first + b"\n" + torn)
+
+    spans = _replay(session_log, sup_log)
+
+    assert _turn_end_costs(spans) == [pytest.approx(0.10)]
+
+
+def test_replay_session_when_supervisor_line_holds_a_carriage_return_does_not_split_it(
+    log_paths: tuple[str, str],
+):
+    session_log, sup_log = log_paths
+    write_records_log(session_log, [session_record(at=T0)])
+    launch = to_json_line(replay_launch_event(at=T1)).encode()
+    first = to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode()
+    second = to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode()
+    Path(sup_log).write_bytes(launch + b"\n" + first + b"\r" + second + b"\n")
+
+    spans = _replay(session_log, sup_log)
+
+    assert _turn_end_costs(spans) == []
 
 
 # ---------------------------------------------------------------------------
