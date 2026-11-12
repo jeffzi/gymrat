@@ -19,6 +19,7 @@ from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.sampling import TargetSpec
+from gymrat.verdict import compute_verdicts
 from tests._git import (
     emit_bench,
     list_worktree_dirs,
@@ -30,6 +31,10 @@ from tests._platform import needs_posix_shell
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _ignore(_message: str) -> None:
+    pass
 
 
 def _options(
@@ -63,15 +68,22 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 
     result = await compare(_options(samples=6, candidate_targets=("a", "b")))
 
-    # Against the shared baseline (median 10.35) a moves about +97% and b about
-    # -51%; judging b against a instead would put b near -75%.
+    # Against the shared baseline a moves about +97% and b about -51%; judging
+    # b against a instead would put b near -75%.
+    meta = {"x": result.metrics["x"].meta}
+    expected = [
+        compute_verdicts(
+            baseline, samples, meta, unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT, warn=_ignore
+        )["x"].delta
+        for samples in (cand_a, cand_b)
+    ]
     deltas = [
         None if candidate.verdict is None else candidate.verdict.delta
         for candidate in result.metrics["x"].candidates
     ]
-    assert deltas == pytest.approx([96.6, -51.4], abs=0.1)
-    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == pytest.approx(
-        [96.6, -51.4], abs=0.1
+    assert deltas == expected
+    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == (
+        pytest.approx(expected)
     )
 
 

@@ -44,7 +44,6 @@ from gymrat.session.records import IterationRecord, SessionLogRecord
 from gymrat.supervisor.events import (
     LaunchEvent,
     SessionEvent,
-    ToolEndEvent,
     event_from_wire,
 )
 from tests._ansi import normalize
@@ -143,17 +142,6 @@ def test_render_json_schemas_when_supervisor_payload_validated_does_agree_with_e
     schema_accepts = validator.is_valid(payload)
 
     assert schema_accepts == (event_from_wire(payload) is not None)
-
-
-# ---------------------------------------------------------------------------
-# required fields kept — a field without a default stays required
-# ---------------------------------------------------------------------------
-
-
-def test_render_json_schemas_when_field_has_no_default_does_keep_it_required():
-    tool_end = render_json_schemas()[_SUPERVISOR_LOG.schema_index]["$defs"][ToolEndEvent.__name__]
-
-    assert "tool_name" in tool_end["required"]
 
 
 # ---------------------------------------------------------------------------

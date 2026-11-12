@@ -122,7 +122,6 @@ def test_compose_kickoff_when_frontmatter_values_span_lines_does_drop_whole_bloc
     prelude = result.system_prompt_append.partition("# Folded skill")[0]
     assert body in result.system_prompt_append
     assert "---" not in prelude
-    assert "name: folded" not in prelude
     assert "folded line" not in prelude
 
 

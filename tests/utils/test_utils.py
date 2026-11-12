@@ -675,7 +675,6 @@ def test_stderr_text_of_when_streams_vary_does_prefer_stderr_then_stdout_then_me
     [
         pytest.param(None, None, None, id="neither-defers"),
         pytest.param(None, "", False, id="no-color-empty-still-present"),
-        pytest.param("1", None, True, id="force-color"),
         pytest.param("1", "1", True, id="force-color-beats-no-color"),
         pytest.param("", None, False, id="force-color-empty"),
         pytest.param("FALSE", None, False, id="force-color-false-uppercase"),

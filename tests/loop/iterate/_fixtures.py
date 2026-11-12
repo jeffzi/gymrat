@@ -14,7 +14,6 @@ imported as ``tests.loop.iterate._fixtures``.
 
 from __future__ import annotations
 
-import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,8 +34,6 @@ from gymrat.session.records import (
 )
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
-from tests._exec_fixtures import expected_result
-from tests.adapters._inputs import malformed_line_warning
 from tests.session.records._fixtures import (
     SESSION_ID,
     log_records,
@@ -46,8 +43,6 @@ from tests.session.records._fixtures import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-
-    from gymrat.exec import ExecOptions, ExecResult
 
 #: Where ``iterate_session`` looks up ``collect_samples``, the one sampling seam the stubs replace.
 COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.judge.collect_samples"
@@ -389,21 +384,3 @@ def last_iteration_of(root: str) -> IterationRecord:
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
     )
     return last
-
-
-#: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
-MALFORMED_LINE_WARNING = malformed_line_warning("METRIC foo=bar")
-
-
-def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand in for the bench process: every run reports, the first one a malformed line too."""
-    run_indexes = itertools.count()
-
-    async def fake_exec(_command: str, _options: ExecOptions) -> ExecResult:
-        index = next(run_indexes)
-        stdout = f"METRIC total_ms={BASELINE_MS[index % len(BASELINE_MS)]}"
-        if index == 0:
-            stdout += "\nMETRIC foo=bar"
-        return expected_result(stdout)
-
-    monkeypatch.setattr("gymrat.sampling.exec", fake_exec)

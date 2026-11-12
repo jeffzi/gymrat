@@ -450,14 +450,14 @@ def test_advance_when_liveness_is_blocking_does_ignore_thinking_and_phase_events
 
 
 _NESTED_MODEL_PHASES = [
-    pytest.param("responding", None, id="responding"),
-    pytest.param("tool_input", "Edit", id="tool-input"),
+    pytest.param("responding", "Edit", None, id="responding"),
+    pytest.param("tool_input", "Edit", "Edit", id="tool-input"),
 ]
 
 
-@pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
+@pytest.mark.parametrize(("phase", "tool_name", "expected_tool_name"), _NESTED_MODEL_PHASES)
 def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
-    phase: NestedModelPhase, tool_name: str | None
+    phase: NestedModelPhase, tool_name: str, expected_tool_name: str | None
 ):
     before = bash_in_flight_state()
 
@@ -469,7 +469,7 @@ def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent
 
     assert after.liveness == before.liveness
     assert dict(after.nested) == {
-        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=tool_name)
+        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=expected_tool_name)
     }
 
 

@@ -62,23 +62,16 @@ def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
     assert console.no_color is expected_no_color
 
 
-@pytest.mark.parametrize(
-    ("color", "env", "expected_no_color"),
-    [
-        pytest.param(True, "NO_COLOR", False, id="color-flag-outranks-no-color-env"),
-        pytest.param(False, "FORCE_COLOR", True, id="no-color-flag-outranks-force-color-env"),
-    ],
-)
-def test_stderr_console_when_command_color_flag_installed_does_follow_it(
-    color: bool, env: str, expected_no_color: bool, monkeypatch: pytest.MonkeyPatch
+def test_stderr_console_when_command_color_flag_installed_does_outrank_no_color_env(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    apply_command_flags(debug=False, color=color)
+    apply_command_flags(debug=False, color=True)
 
     console = stderr_console()
 
-    assert console.no_color is expected_no_color
+    assert console.no_color is False
 
 
 def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flags(

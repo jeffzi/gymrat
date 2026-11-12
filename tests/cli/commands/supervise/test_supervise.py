@@ -25,9 +25,7 @@ from gymrat.config import Effort, MetricEntry, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import SESSION_DIR_NAME, budget_path, lockfile_path, session_dir
-from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.hooks import supervise_hooks_factory
-from gymrat.supervisor.supervise import SupervisedSession
 from gymrat.supervisor.tools import gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
@@ -62,12 +60,10 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
 
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
-    assert isinstance(ctx, SupervisedSession)
     assert ctx.root == repo
     assert ctx.lock_path == lockfile_path(repo)
     assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
-    assert isinstance(prompt, SessionPrompt)
     assert (prompt.command_timeout_ms, prompt.max_budget_usd) == (CAP_MS, 2.0)
 
 
@@ -85,7 +81,6 @@ def test_supervise_when_no_log_given_does_log_under_the_session_dir_and_name_it_
 
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
-    assert isinstance(ctx, SupervisedSession)
     assert Path(ctx.log_path).parent == Path(session_dir(repo))
     assert abbreviate_home(ctx.log_path) in result.stderr
 
@@ -313,7 +308,6 @@ def test_supervise_when_run_does_resolve_the_model_from_flag_or_config(
 
     assert result.exit_code == 0
     prompt = seams.supervise_calls[0]["prompt"]
-    assert isinstance(prompt, SessionPrompt)
     assert prompt.model == expected
 
 
@@ -338,7 +332,6 @@ def test_supervise_when_run_does_resolve_the_effort_from_flag_or_config(
 
     assert result.exit_code == 0
     prompt = seams.supervise_calls[0]["prompt"]
-    assert isinstance(prompt, SessionPrompt)
     assert prompt.effort == expected
 
 

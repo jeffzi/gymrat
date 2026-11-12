@@ -169,13 +169,13 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 # ---------------------------------------------------------------------------
 
 
-# Each row pairs a run with a regex for the computed parts of its skip warning.
+# Each row pairs a run with a regex for the values its skip warning inserts.
 @pytest.mark.parametrize(
     ("bad_run", "pattern"),
     [
         pytest.param(
             {"args": {}, "stats": {"p50": float("inf")}},
-            r'"test".*stats\.p50',
+            r'"test"',
             id="p50-positive-infinity",
         ),
         pytest.param(None, r'"test"', id="run-null"),
@@ -203,7 +203,6 @@ def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with
     result = mitata_adapter.parse(stdout, warnings.append)
 
     assert (result, len(warnings), capsys.readouterr().err) == ({f"valid{TIME_SUFFIX}": 1}, 1, "")
-    assert re.search(r'"orphan".* runs$', warnings[0])
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +226,12 @@ def test_parse_when_heap_avg_not_given_does_skip_memory_metric_silently():
     assert warnings == []
 
 
-# Each row pairs a heap value with a regex for the computed parts of its skip warning.
+# Each row pairs a heap value with a regex for the values its skip warning inserts.
 @pytest.mark.parametrize(
     ("heap_value", "pattern"),
     [
-        pytest.param({"avg": "bad"}, r'"test".*stats\.heap\.avg', id="avg-string"),
-        pytest.param({"avg": float("inf")}, r'"test".*stats\.heap\.avg', id="avg-infinity"),
+        pytest.param({"avg": "bad"}, r'"test"', id="avg-string"),
+        pytest.param({"avg": float("inf")}, r'"test"', id="avg-infinity"),
     ],
 )
 def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(

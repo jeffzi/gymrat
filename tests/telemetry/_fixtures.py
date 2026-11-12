@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from gymrat.telemetry.provider import configure_tracing, reset_tracing, span_id_of, trace_id_of
@@ -78,7 +78,7 @@ def disable_otel_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @contextmanager
-def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMemorySpanExporter]:
+def memory_tracing(session_id: str) -> Generator[InMemorySpanExporter]:
     """Configure tracing with an in-memory exporter for testing.
 
     For the duration of the block, ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set to
@@ -88,9 +88,6 @@ def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMe
 
     Args:
         session_id: The session the traced spans belong to.
-        buffered: Hold finished spans in a batch processor whose schedule never
-            fires during a test, so they reach the exporter only on a flush.
-            The default exports each span the moment it ends.
 
     Yields:
         The exporter that collects the finished spans.
@@ -99,11 +96,7 @@ def memory_tracing(session_id: str, *, buffered: bool = False) -> Generator[InMe
         AssertionError: When tracing could not be configured.
     """
     exporter = InMemorySpanExporter()
-    processor = (
-        BatchSpanProcessor(exporter, schedule_delay_millis=60_000)
-        if buffered
-        else SimpleSpanProcessor(exporter)
-    )
+    processor = SimpleSpanProcessor(exporter)
     previous_endpoint = os.environ.get(ENDPOINT_ENV)
     os.environ[ENDPOINT_ENV] = PLACEHOLDER_ENDPOINT
     try:

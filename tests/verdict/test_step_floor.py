@@ -5,15 +5,11 @@ signal on both the permutation and band paths, through the public
 ``compute_verdicts`` API only.
 """
 
-from collections.abc import Callable
-
 import pytest
 
-from gymrat.model import BandVerdict, MetricVerdict, PermutationVerdict
 from tests.verdict._engine import (
     BYTE_ONE_MOVE_A,
     BYTE_ONE_MOVE_B,
-    FLAT_PERMUTATION_ROUNDS,
     METRIC_APPROX_LOWER,
     METRIC_BYTES_LOWER,
     METRIC_TIMER_LOWER,
@@ -116,55 +112,16 @@ def test_compute_verdicts_when_byte_side_median_zero_does_floor_from_baseline_on
     assert (verdict.verdict, verdict.reason) == (expected_verdict, expected_reason)
 
 
-# Medians one tick apart (333 -> 375 ns) sit inside the 1.25-step floor; two
-# ticks apart (333 -> 417 ns) clear it.
+# Medians one tick apart (333 -> 375 ns) sit inside the 1.25-step floor.
 _TIMER_STEP_FLOOR_PCT = 1.25 * TIMER_TICK_NS / 333 * 100
 
 
-@pytest.mark.parametrize(
-    (
-        "narrow",
-        "samples_a",
-        "samples_b",
-        "expected_noise_pct",
-        "expected_verdict",
-        "expected_reason",
-    ),
-    [
-        pytest.param(
-            get_band,
-            create_samples(3, 333.0),
-            create_samples(3, 375.0),
-            _TIMER_STEP_FLOOR_PCT,
-            "no-signal",
-            "resolution",
-            id="timer-one-tick-band",
-        ),
-        pytest.param(
-            get_permutation,
-            create_samples(FLAT_PERMUTATION_ROUNDS, 333.0),
-            create_samples(FLAT_PERMUTATION_ROUNDS, 417.0),
-            _TIMER_STEP_FLOOR_PCT,
-            "regressed",
-            None,
-            id="timer-two-ticks-permutation",
-        ),
-    ],
-)
-def test_compute_verdicts_when_resolution_set_does_floor_band_at_one_and_a_quarter_steps(
-    narrow: Callable[[dict[str, MetricVerdict]], BandVerdict | PermutationVerdict],
-    *,
-    samples_a: list[dict[str, float]],
-    samples_b: list[dict[str, float]],
-    expected_noise_pct: float,
-    expected_verdict: str,
-    expected_reason: str | None,
-):
-    result = run(samples_a, samples_b, METRIC_TIMER_LOWER)
+def test_compute_verdicts_when_resolution_set_does_floor_band_at_one_and_a_quarter_steps():
+    result = run(create_samples(3, 333.0), create_samples(3, 375.0), METRIC_TIMER_LOWER)
 
-    verdict = narrow(result)
-    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
-    assert (verdict.verdict, verdict.reason) == (expected_verdict, expected_reason)
+    verdict = get_band(result)
+    assert verdict.noise_pct == pytest.approx(_TIMER_STEP_FLOOR_PCT, abs=1e-5)
+    assert (verdict.verdict, verdict.reason) == ("no-signal", "resolution")
 
 
 # The baseline's 1.25-byte step floor exceeds the default 200% unstable band

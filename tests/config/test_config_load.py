@@ -78,7 +78,7 @@ def test_load_config_file_collecting_when_key_unknown_does_report_its_path(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def test_load_config_file_collecting_when_metrics_not_a_mapping_does_name_key_path_and_expected_shape(
+def test_load_config_file_collecting_when_metrics_not_a_mapping_does_name_key_path_and_rejected_value(
     tmp_path: Path,
 ):
     config_path = write_config(tmp_path, {"metrics": 42})
@@ -87,7 +87,7 @@ def test_load_config_file_collecting_when_metrics_not_a_mapping_does_name_key_pa
 
     assert (result.config_file, len(result.problems)) == (None, 1)
     assert "metrics" in result.problems[0]
-    assert "an object" in result.problems[0]
+    assert result.problems[0].endswith("42")
 
 
 def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(
@@ -117,11 +117,11 @@ def test_load_config_file_collecting_when_section_key_embeds_line_break_does_rep
     result = load_config_file_collecting(config_path, required=False)
 
     # The rejected value is an object; only its key is bad, so the message names
-    # the escaped key and its line break instead of demanding an object.
+    # the escaped key instead of echoing the whole rejected object.
     assert (result.config_file, len(result.problems)) == (None, 1)
     assert "metrics" in result.problems[0]
     assert json.dumps(smuggled) in result.problems[0]
-    assert "line break" in result.problems[0]
+    assert json.dumps({smuggled: {"gating": False}}) not in result.problems[0]
 
 
 # ---------------------------------------------------------------------------

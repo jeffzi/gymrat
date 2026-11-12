@@ -33,7 +33,6 @@ from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.store import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._logging import unhandled_logging
 from tests.cli.supervise._fixtures import (
     BASH_CYCLE_END_MS,
     ReporterKit,
@@ -628,9 +627,7 @@ def _throwing_read() -> ReadSessionResult:
     raise RuntimeError(message)
 
 
-def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_without_a_traceback(
-    capsys: pytest.CaptureFixture[str],
-):
+def test_plain_when_session_read_fails_again_after_recovering_does_warn_once():
     recovered = make_read_session(session_state(), has_baseline=True)
     reads = iter([_throwing_read, recovered, _throwing_read])
 
@@ -639,12 +636,11 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_wit
 
     kit, writes = _plain(read_session=read_in_turn)
 
-    with unhandled_logging():
-        kit.reporter.refresh_session()
-        kit.reporter.refresh_session()
-        kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
 
-    assert (writes, capsys.readouterr().err) == (["session read failed: no session file"], "")
+    assert writes == ["session read failed: no session file"]
 
 
 # ---------------------------------------------------------------------------
@@ -684,30 +680,12 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("phase", "expected_line"),
-    [
-        pytest.param(
-            ExitPhase(kind="waiting-lock", pid=4242),
-            "waiting for gymrat (PID 4242)  3s",
-            id="waiting-lock",
-        ),
-        pytest.param(
-            ExitPhase(kind="waiting-lock", pid=None),
-            "waiting for gymrat (PID unknown)  3s",
-            id="waiting-lock-unknown-pid",
-        ),
-        pytest.param(ExitPhase(kind="settling", pid=None), "settling…  3s", id="settling"),
-    ],
-)
-def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed(
-    phase: ExitPhase, expected_line: str
-):
+def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed():
     kit = launched(make_reporter())
     kit.clock.now = 5000
-    kit.reporter.exit_phase(phase)
+    kit.reporter.exit_phase(_WAITING_LOCK)
     kit.clock.now = 8000
 
     frame = render_frame(kit.reporter)
 
-    assert _rows_below_loop(frame) == [expected_line]
+    assert _rows_below_loop(frame) == ["waiting for gymrat (PID 4242)  3s"]

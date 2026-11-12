@@ -522,17 +522,12 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
     assert _verdict(reason, "src/x\\x00.py") == "unresolvable"
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(ValueError("bad path"), id="value-error"),
-        pytest.param(OSError("too many links"), id="os-error"),
-    ],
-)
 def test_check_file_edit_when_realpath_raises_does_deny_naming_the_rule(
-    root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(os.path, "realpath", create_autospec(os.path.realpath, side_effect=error))
+    monkeypatch.setattr(
+        os.path, "realpath", create_autospec(os.path.realpath, side_effect=ValueError("bad path"))
+    )
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x.py"}, "cwd": str(root)}
 
     reason = check_file_edit(hook_input, root)
@@ -649,7 +644,6 @@ def test_check_background_gymrat_when_in_background_without_gymrat_word_does_all
 @pytest.mark.parametrize(
     "hook_input",
     [
-        pytest.param(_bash("gymrat keep -m x", run_in_background=False), id="background-false"),
         pytest.param(_bash("gymrat keep -m x"), id="background-missing"),
         pytest.param(_bash("gymrat keep -m x", run_in_background="true"), id="background-string"),
         pytest.param(

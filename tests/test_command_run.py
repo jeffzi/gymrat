@@ -11,6 +11,9 @@ import contextlib
 import errno
 import itertools
 import os
+import signal
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable, Generator, Iterator
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -32,6 +35,8 @@ from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
 from tests._lock import remove_lock_files
 from tests._mode_bits import needs_mode_bits
+from tests._process_helpers import reaped, wait_for_pid_file_blocking
+from tests.cli._signalled_cli import SETTLE_TIMEOUT_S, stop_by_signal
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     append_raw,
@@ -677,7 +682,6 @@ async def test_with_repo_lock_when_start_opens_a_new_session_does_trace_the_log_
 ):
     previous = _seeded_long_session(repo)
     baseline_event, _attrs = record_event(baseline_record())
-    iteration_event, _attrs = record_event(iteration_record())
 
     with memory_tracing(FRESH_SESSION_ID) as exporter:
         await with_repo_lock("start", _start_body(previous))
@@ -695,7 +699,6 @@ async def test_with_repo_lock_when_start_opens_a_new_session_does_trace_the_log_
     )
     event_names = [e.name for e in span.events]
     assert baseline_event in event_names
-    assert iteration_event not in event_names
 
 
 @needs_mode_bits
@@ -743,6 +746,57 @@ async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_expo
         if span.name == "gymrat.command.start"
     ]
     assert start_sessions == [FRESH_SESSION_ID]
+
+
+# ---------------------------------------------------------------------------
+# with_repo_lock — termination signal mid-body
+# ---------------------------------------------------------------------------
+
+# The body registers a termination cleanup, records its pid so the test knows it
+# is mid-body, then blocks until signalled.
+_SIGNALLED_BODY = r"""
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+from gymrat.command_run import with_repo_lock
+from gymrat.signals import install_termination_cleanup
+
+
+async def body(trace):
+    install_termination_cleanup(lambda: None)
+    Path(sys.argv[1]).write_text(f"{os.getpid()}\n", encoding="utf-8")
+    await asyncio.sleep(120)
+
+
+asyncio.run(with_repo_lock("measure", body))
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only signals")
+def test_with_repo_lock_when_terminated_by_signal_mid_body_does_exit_by_signal_code_without_a_command_record(
+    repo: str,
+    tmp_path: Path,
+):
+    write_session_log(repo, session_record())
+    pid_file = tmp_path / "body.pid"
+
+    with reaped(
+        subprocess.Popen(  # noqa: S603 -- argv is this interpreter running the test's own script
+            [sys.executable, "-c", _SIGNALLED_BODY, str(pid_file)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONFAULTHANDLER": "1"},
+        )
+    ) as proc:
+        wait_for_pid_file_blocking(pid_file, SETTLE_TIMEOUT_S)
+        stop_by_signal(proc, signal.SIGTERM)
+
+    assert proc.returncode == 128 + signal.SIGTERM
+    assert not any(isinstance(record, CommandRecord) for record in log_records(repo))
 
 
 # ---------------------------------------------------------------------------

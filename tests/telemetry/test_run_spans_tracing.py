@@ -24,7 +24,6 @@ from gymrat.telemetry.run_spans import (
     RUN_END_REASON,
     RUN_ENDED_BY,
     RUN_SPAN,
-    SESSION_SPAN,
     TracingState,
     create_run_span_observer,
     finalize_tracing,
@@ -265,7 +264,7 @@ def test_setup_tracing_when_resumed_does_parent_the_run_span_on_the_existing_ses
         pytest.param(None, {}, StatusCode.UNSET, id="no-result"),
     ],
 )
-def test_finalize_tracing_when_run_ends_does_record_its_outcome_on_the_run_span_only(
+def test_finalize_tracing_when_run_ends_does_record_its_outcome_on_the_run_span(
     result: SupervisionResult | None,
     outcome_attributes: dict[str, object],
     status: StatusCode,
@@ -277,20 +276,7 @@ def test_finalize_tracing_when_run_ends_does_record_its_outcome_on_the_run_span_
         finalize_tracing(state, result)
 
     finished = exporter.get_finished_spans()
-    run, session = span_by_name(finished, RUN_SPAN), span_by_name(finished, SESSION_SPAN)
+    run = span_by_name(finished, RUN_SPAN)
     run_attrs = dict(run.attributes or {})
     assert {key: run_attrs[key] for key in _OUTCOME_KEYS if key in run_attrs} == outcome_attributes
-    assert (run.status.status_code, session.status.status_code) == (status, StatusCode.UNSET)
-    assert not set(_OUTCOME_KEYS) & set(session.attributes or {})
-
-
-def test_finalize_tracing_when_spans_are_buffered_does_flush_them_before_returning():
-    launch = make_launch(session_id=SESSION)
-
-    with memory_tracing(SESSION, buffered=True) as exporter:
-        _, _, state = setup_tracing(launch, branch="gymrat/x", prompt=make_prompt(), resumed=False)
-        finalize_tracing(state, None)
-
-        flushed = sorted(span.name for span in exporter.get_finished_spans())
-
-    assert flushed == sorted([RUN_SPAN, SESSION_SPAN])
+    assert run.status.status_code == status

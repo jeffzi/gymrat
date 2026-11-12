@@ -42,15 +42,12 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     ToolStartEvent,
     TurnEndEvent,
-    summarize,
-    summarize_input,
 )
 from gymrat.supervisor.tool_names import MCP_SERVER
 from tests._clock import install_monotonic_clock
 from tests._rich import Clock
 from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 from tests.supervisor._fixtures import (
-    PROMPT_CWD,
     SDK_SESSION_ID,
     FactoryProbe,
     FakeClient,
@@ -297,7 +294,6 @@ async def test_start_when_tool_result_content_not_json_encodable_does_fall_back_
 # ---------------------------------------------------------------------------
 
 _READ_INPUT: dict[str, object] = {"file_path": "/foo.ts"}
-_READ_UNDER_CWD_INPUT: dict[str, object] = {"file_path": f"{PROMPT_CWD}/src/main.py"}
 _WEB_SEARCH_INPUT: dict[str, object] = {"query": "benchmark noise"}
 _WEB_SEARCH_RESULT: dict[str, object] = {
     "type": "web_search_tool_result",
@@ -308,24 +304,16 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
 
 
 @pytest.mark.parametrize(
-    ("block", "parent", "expected_input_summary"),
+    ("block", "parent"),
     [
         pytest.param(
             ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT),
             "tu_parent",
-            summarize_input(_READ_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
             id="client-tool-under-a-parent",
-        ),
-        pytest.param(
-            ToolUseBlock(id="tu_1", name="Read", input=_READ_UNDER_CWD_INPUT),
-            None,
-            summarize_input(_READ_UNDER_CWD_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
-            id="client-read-under-cwd-is-relative",
         ),
         pytest.param(
             ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
             None,
-            summarize_input(_WEB_SEARCH_INPUT, tool_name="web_search", supervised_root=PROMPT_CWD),
             id="server-tool",
         ),
     ],
@@ -333,7 +321,6 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
 async def test_start_when_tool_use_block_does_emit_tool_start(
     block: ToolUseBlock | ServerToolUseBlock,
     parent: str | None,
-    expected_input_summary: str,
 ):
     events = await run_with_messages([assistant(block, parent_tool_use_id=parent)])
 
@@ -343,7 +330,6 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
     assert starts[0].tool_use_id == block.id
     assert starts[0].tool_name == block.name
     assert starts[0].input == block.input
-    assert starts[0].input_summary == expected_input_summary
 
 
 @pytest.mark.parametrize(
@@ -365,7 +351,6 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                 "tu_1",
                 "Read",
                 "file contents\n  here\n",
-                summarize("file contents\n  here\n"),
             ),
             id="client-tool-under-a-parent",
         ),
@@ -381,7 +366,6 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                 "tu_web",
                 "web_search",
                 json.dumps(_WEB_SEARCH_RESULT),
-                summarize(json.dumps(_WEB_SEARCH_RESULT)),
             ),
             id="server-tool",
         ),
@@ -389,14 +373,13 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
 )
 async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
     messages: list[object],
-    expected: tuple[str | None, str, str, str, str],
+    expected: tuple[str | None, str, str, str],
 ):
     events = await run_with_messages(messages)
 
     ends = events_of(events, ToolEndEvent)
     assert [
-        (end.parent_tool_use_id, end.tool_use_id, end.tool_name, end.result, end.result_summary)
-        for end in ends
+        (end.parent_tool_use_id, end.tool_use_id, end.tool_name, end.result) for end in ends
     ] == [expected]
 
 

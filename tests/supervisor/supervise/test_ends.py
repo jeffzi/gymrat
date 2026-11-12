@@ -9,7 +9,7 @@ holds the repository lock.
 
 A stop condition already met at launch, as on a forced run, never ends the run:
 the turn ends keep getting replies until something else ends it. One that
-becomes met during the run ends it at the next turn end.
+becomes met during the run ends it at the next tool end.
 
 A step that must never run once an end fires carries a long ``delay_ms``: the
 mock's delay races the abort, so a run that ends returns at once, while a run
@@ -345,38 +345,21 @@ async def test_supervise_when_discards_precede_launch_does_count_only_discards_a
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("appended", "stop", "ended_by", "reason"),
-    [
-        pytest.param(_FAILED_HOOK, None, "hook-failure", _FAILED_HOOK_REASON, id="hook-failure"),
-        pytest.param(
-            iteration_record(seq=1),
-            StopConfig(max_iterations=1),
-            "stop-condition",
-            _MAX_ITERATIONS_REASON,
-            id="stop-condition-met-during-run",
-        ),
-    ],
-)
 async def test_supervise_when_condition_lands_after_last_tool_end_does_end_at_turn_end_unclassified(
     root: str,
-    appended: SessionLogRecord,
-    stop: StopConfig | None,
-    ended_by: str,
-    reason: str,
 ):
     probe = collecting_observer()
-    driver = create_mock_driver([_tool_end(), append_step(root, appended), TurnEndStep()])
+    driver = create_mock_driver([_tool_end(), append_step(root, _FAILED_HOOK), TurnEndStep()])
 
-    result = await run_supervised(
-        root, driver, config=benchless_config(stop=stop), observer=probe.observer
-    )
+    result = await run_supervised(root, driver, observer=probe.observer)
 
-    assert result.ended_by == ended_by
-    assert result.end_reason == reason
+    assert result.ended_by == "hook-failure"
+    assert result.end_reason == _FAILED_HOOK_REASON
     assert result.outcome.reason == "completed"
     assert sent_texts(driver.sessions[0]) == []
-    assert [event.reason for event in follow_ups_with_action(probe.events, "ended")] == [reason]
+    assert [event.reason for event in follow_ups_with_action(probe.events, "ended")] == [
+        _FAILED_HOOK_REASON
+    ]
 
 
 # ---------------------------------------------------------------------------

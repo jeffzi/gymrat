@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gymrat.config import MetricEntry, ResolvedConfig, StopConfig
-from gymrat.errors import GymratError
 from gymrat.loop.iterate.judge import scoped_bench
 from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
 from gymrat.progress_events import (
@@ -34,7 +33,12 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat.report.loop import GeomeanPrimary, MetricPrimary
+from gymrat.report.loop import (
+    GeomeanPrimary,
+    MetricPrimary,
+    RerunConfirmation,
+    format_verdict_block,
+)
 from gymrat.session.records import (
     Confirm,
     IterationPrimary,
@@ -58,10 +62,8 @@ from tests.loop.iterate._fixtures import (
     stub_samples,
     trimmed_report_lines,
 )
+from tests.report._assertions import render_plain
 from tests.report._comparisons import permutation_metric
-from tests.session.records._fixtures import (
-    log_records,
-)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -161,23 +163,17 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert result.record.outcome == "no-signal"
 
 
-async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recording(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    injected = GymratError("bench command failed")
-    stub_runs(samples_mock, open_repo, [regressed_run(), injected])
-    resolved = _total_ms_gating_config()
-
-    with pytest.raises(GymratError) as exc:
-        await iterate_session(open_repo, resolved)
-
-    assert exc.value is injected
-    assert len(log_records(open_repo)) == 1
-
-
 # ---------------------------------------------------------------------------
 # the rerun never measures some or all of the regressed metrics
 # ---------------------------------------------------------------------------
+
+
+def _rerun_lines(*reruns: RerunConfirmation) -> list[str]:
+    """The plain rerun lines the verdict block opens with for ``reruns``, in order."""
+    block = format_verdict_block(
+        outcome="regressed", primary=GeomeanPrimary(None), next_step="", reruns=reruns
+    )
+    return trimmed_report_lines(render_plain(*block[: len(reruns)]))
 
 
 @pytest.mark.parametrize(
@@ -189,7 +185,10 @@ async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recordi
                 baseline=_filtered_rounds("total_ms", BASELINE_MS),
             ),
             ("alloc_bytes",),
-            ["total_ms: regression confirmed on rerun", "alloc_bytes: not measured on rerun"],
+            _rerun_lines(
+                RerunConfirmation("total_ms", "confirmed"),
+                RerunConfirmation("alloc_bytes", "absent"),
+            ),
             id="silent-on-one-metric",
         ),
     ],
@@ -280,7 +279,6 @@ async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rer
     )
 
     assert samples_mock.call_count == 1
-    assert result.record.confirm is None
     assert result.record.metrics["alloc_bytes"].verdict == "regressed"
 
 

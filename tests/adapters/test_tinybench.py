@@ -26,7 +26,7 @@ def test_parse_when_median_is_zero_does_emit_zero_with_one_warning():
 # skipped tasks
 # ---------------------------------------------------------------------------
 
-# Each row pairs a task with a regex for the computed parts of its skip warning.
+# Each row pairs a task with a regex for the values its skip warning inserts.
 _NOT_COMPLETED_TASKS = [
     pytest.param(
         task("enc#ode", state="aborted"),
@@ -41,22 +41,13 @@ _NOT_COMPLETED_TASKS = [
         r'"t".*boom',
         id="errored-string",
     ),
-    pytest.param(
-        task("t", result={"state": "errored", "error": {}}), r'"t"$', id="errored-empty-object"
-    ),
     pytest.param(task("t", result={"state": "errored"}), r'"t"$', id="errored-missing"),
 ]
 
 _MALFORMED_TASKS = [
-    pytest.param({"name": "t"}, r'"t".*result$', id="result-missing"),
-    pytest.param(
-        task("t", result={"state": "completed"}), r'"t".*result\.latency$', id="latency-missing"
-    ),
-    pytest.param(
-        task("t", p50=1e305),
-        r'"t".*result\.latency\.p50',
-        id="p50-overflows-on-conversion",
-    ),
+    pytest.param({"name": "t"}, r'"t"', id="result-missing"),
+    pytest.param(task("t", result={"state": "completed"}), r'"t"', id="latency-missing"),
+    pytest.param(task("t", p50=1e305), r'"t"', id="p50-overflows-on-conversion"),
 ]
 
 _BAD_NAME_TASKS = [

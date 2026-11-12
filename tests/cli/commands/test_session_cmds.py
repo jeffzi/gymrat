@@ -1,4 +1,4 @@
-"""Command-level tests for stop and ``start --format json``.
+"""Command-level tests for stop and the guards session commands share.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
@@ -11,17 +11,14 @@ here each is driven once, through the one command that reaches it differently:
 closed-stdout table also covers ``supervise``.
 """
 
-import json
 from collections.abc import Callable
 
 import pytest
 
 from gymrat.cli.app import app
 from gymrat.session.records import CommandRecord
-from tests._config import resolved_config
 from tests.cli._command_stubs import (
     force_render_mode,
-    stub_config,
     stub_measure,
 )
 from tests.cli._runner import (
@@ -123,23 +120,3 @@ def test_iterate_when_supervised_run_live_does_refuse_as_supervised_use_tool(
     assert [(cmd.name, cmd.exit_code, cmd.reason, cmd.origin, cmd.seq) for cmd in commands] == [
         ("iterate", 2, "supervised-use-tool", "cli", None)
     ]
-
-
-# ---------------------------------------------------------------------------
-# start --format json
-# ---------------------------------------------------------------------------
-
-
-_RUNBOOK = ".claude/skills/ecstatic-bench/SKILL.md"
-
-
-@pytest.mark.usefixtures("repo")
-def test_start_command_when_format_json_and_fresh_does_emit_the_configured_runbook(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    stub_config(monkeypatch, "session", resolved_config(runbook=_RUNBOOK))
-
-    result = runner.invoke(app, ["start", "--baseline", "main", "--format", "json"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.stdout)["runbook"] == _RUNBOOK

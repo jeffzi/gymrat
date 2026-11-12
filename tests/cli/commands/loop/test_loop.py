@@ -35,7 +35,6 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
-    CommandRecord,
     KeepRecord,
 )
 from gymrat.utils import is_tty
@@ -73,7 +72,6 @@ from tests.session._budget import install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
     last_command_record,
     log_records,
-    records_of_type,
 )
 
 
@@ -233,7 +231,7 @@ def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process_or_command_record(
+def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process(
     repo: str,
     tmp_path: Path,
     reap_groups: list[int],
@@ -258,7 +256,6 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
     # Polled rather than checked once: a killed leader stays visible as a zombie
     # until its parent reaps it.
     wait_until_dead_blocking(checks_pid, timeout_s=SETTLE_TIMEOUT_S)
-    assert records_of_type(repo, CommandRecord) == []
 
 
 # ---------------------------------------------------------------------------

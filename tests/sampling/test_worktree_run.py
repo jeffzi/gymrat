@@ -665,7 +665,7 @@ def test_plan_worktree_when_tmpdir_nonexistent_does_raise_naming_temp_dir(
     with pytest.raises(GymratError) as exc_info:
         plan_worktree(RefTarget(ref="v1", resolved_sha=UNKNOWN_SHA))
 
-    assert bogus_dir in str(exc_info.value)
+    assert bogus_dir in str(exc_info.value).partition(": ")[0]
 
 
 def test_materialize_worktree_when_git_refuses_does_fail_leaving_no_worktree(repo: str):
@@ -674,7 +674,7 @@ def test_materialize_worktree_when_git_refuses_does_fail_leaving_no_worktree(rep
     with pytest.raises(GymratError) as exc_info:
         materialize_worktree(worktree, repo)
 
-    assert worktree.sha in str(exc_info.value)
+    assert worktree.sha in str(exc_info.value).partition(": ")[0]
     assert worktree.created is False
 
 

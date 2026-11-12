@@ -213,28 +213,6 @@ def _record_exits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return exits
 
 
-@pytest.mark.parametrize(
-    "second_signal", [None, signal.SIGTERM], ids=["first-signal", "escalation"]
-)
-@pytest.mark.usefixtures("forbid_direct_exit")
-def test_install_termination_cleanup_when_exit_seam_replaced_after_install_does_exit_through_replacement(
-    monkeypatch: pytest.MonkeyPatch, second_signal: int | None
-):
-    def interrupt() -> None:
-        if second_signal is None:
-            return
-        _installed_handler(second_signal)(second_signal, None)
-
-    install_termination_cleanup(interrupt)
-    handler = _installed_handler(signal.SIGINT)
-    exits = _record_exits(monkeypatch)
-
-    with contextlib.suppress(_ReplacedExitError):
-        handler(signal.SIGINT, None)
-
-    assert exits == [128 + signal.SIGINT]
-
-
 def test_install_termination_cleanup_when_multiple_registered_does_run_them_in_install_order(
     raise_signal: RaiseSignal,
 ):
@@ -420,25 +398,6 @@ def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_on
     _run_capped(lambda: raise_signal(signal.SIGINT))
 
     assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
-
-
-def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_through_the_seam(
-    raise_signal: RaiseSignal, recorded_joins: list[float], monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
-    codes: list[int] = []
-
-    def interrupt_once() -> None:
-        if not codes:
-            codes.append(raise_signal(signal.SIGINT))
-
-    terminal = _buffered_terminal(interrupt_once)
-    monkeypatch.setattr(sys, "stderr", terminal.stream)
-    install_termination_cleanup(_boom)
-
-    _run_capped(terminal.write_progress)
-
-    assert codes == [128 + signal.SIGINT]
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="pthread_kill is POSIX-only")

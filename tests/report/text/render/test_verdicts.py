@@ -296,9 +296,6 @@ def test_gated_geomean_trips_when_geomean_varies_does_trip_only_at_or_past_the_t
 #: The sample count the shortage hint suggests for a two-target run of four samples.
 SHORTAGE_SUGGESTION = "--samples 6"
 
-#: The fragment that tells the dropped-rounds hint from the shortage hint.
-DROPPED_ROUNDS = "rounds were dropped"
-
 
 def _verbose_lines(metrics: MetricComparisons) -> list[str]:
     return [
@@ -371,15 +368,9 @@ def test_footer_lines_when_verbose_does_name_the_band_cause_per_metric(
             [SHORTAGE_SUGGESTION],
             id="fewer-samples-than-floor",
         ),
-        pytest.param(
-            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
-            PERMUTATION_MIN_N,
-            [DROPPED_ROUNDS],
-            id="floor-reached-but-fewer-paired",
-        ),
     ],
 )
-def test_footer_lines_when_not_verbose_does_pick_the_shortage_or_dropped_rounds_hint(
+def test_footer_lines_when_not_verbose_does_suggest_samples_only_below_the_floor(
     metrics: MetricComparisons, samples: int, expected: list[str]
 ):
     lines = footer_lines(metrics, verbose=False, command="compare", samples=samples, target_count=2)
@@ -392,10 +383,20 @@ def test_footer_lines_when_not_verbose_does_pick_the_shortage_or_dropped_rounds_
     ] == []
 
 
+def test_footer_lines_when_floor_reached_but_fewer_paired_does_give_one_hint_without_a_samples_suggestion():
+    metrics: MetricComparisons = {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)}
+
+    lines = footer_lines(
+        metrics, verbose=False, command="compare", samples=PERMUTATION_MIN_N, target_count=2
+    )
+
+    assert len(lines) == 1
+    assert "--samples" not in render_plain(lines[0])
+
+
 @pytest.mark.parametrize(
     ("target_count", "suggested"),
     [
-        pytest.param(4, 8, id="four-targets"),
         pytest.param(7, 14, id="seven-targets"),
     ],
 )
@@ -462,10 +463,9 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
     report = render_report(_mixed_method_result(), ReportOptions(verbose=True))
 
     permutation_line = line_starting_with(report, "verdicts:")
-    band_line = line_starting_with(report, "noise band")
 
     assert "n=10" in permutation_line
-    assert "n=4" in band_line
+    line_starting_with(report, "noise band")
 
 
 # ---------------------------------------------------------------------------

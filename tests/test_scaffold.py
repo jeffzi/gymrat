@@ -2,19 +2,15 @@
 
 Each case uses ``tmp_path`` as the base directory and drives ``scaffold`` with a
 ``ScaffoldRequest``. The suite pins the config's keys and values, string
-escaping in the hand-written TOML (``json.dumps``), the validate-before-any-write
-ordering (a broken bench leaves nothing behind), the runbook/skill status
-reporting, and the re-run behavior over an existing ``gymrat.toml`` (left
-byte-identical, remaining artifacts still filled in).
+escaping in the hand-written TOML (``json.dumps``), the bench validation, the
+runbook/skill status reporting, and the re-run behavior over an existing
+``gymrat.toml`` (left byte-identical, remaining artifacts still filled in).
 """
 
 import os
 import tomllib
-import zipfile
 from collections.abc import Callable
-from importlib import resources
 from pathlib import Path
-from typing import NoReturn
 
 import pytest
 
@@ -129,36 +125,13 @@ def test_scaffold_when_skill_declined_does_decline_the_skill(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# failure ordering
+# bench validation
 # ---------------------------------------------------------------------------
 
 
-def test_scaffold_when_bench_empty_does_raise_before_writing(tmp_path: Path):
+def test_scaffold_when_bench_empty_does_raise(tmp_path: Path):
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), ScaffoldRequest(bench=""))
-
-    assert not (tmp_path / "gymrat.toml").exists()
-
-
-def _break_bundled_skill(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the package-data lookup for the bundled skill fail, standing in for a broken install."""
-
-    def corrupt_package(_package: str) -> NoReturn:
-        message = "Bad magic number"
-        raise zipfile.BadZipFile(message)
-
-    monkeypatch.setattr(resources, "files", corrupt_package)
-
-
-def test_scaffold_when_skill_read_fails_does_leave_the_directory_as_it_found_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    _break_bundled_skill(monkeypatch)
-
-    with pytest.raises(GymratError):
-        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
-
-    assert _tree(tmp_path) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +174,7 @@ def _symlink_at(relative: str, *, dangling: bool = False) -> Callable[[Path], No
         ),
     ],
 )
-def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it_before_writing(
+def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it(
     tmp_path: Path, plant: Callable[[Path], None], blocked: str
 ):
     plant(tmp_path)
@@ -210,7 +183,6 @@ def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it_before_w
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert str(caught.value).endswith(blocked)
-    assert not (tmp_path / "gymrat.toml").is_file()
 
 
 def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_config(

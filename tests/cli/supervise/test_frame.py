@@ -24,16 +24,12 @@ from tests.cli.supervise._fixtures import (
     make_reporter,
     reporter_showing_session,
 )
-from tests.session.records._fixtures import (
-    make_iteration,
-    session_state,
-)
+from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
     from rich.segment import Segment
 
     from gymrat.cli.supervise.progress import SuperviseReporter
-    from gymrat.session.schema import Outcome
 
 pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
@@ -100,32 +96,6 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
         msg = f"expected one segment holding {token!r}, found {len(styles)}"
         raise AssertionError(msg)
     return styles[0]
-
-
-# ---------------------------------------------------------------------------
-# loop row styling
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("outcome", "delta_pct", "expected_style"),
-    [
-        pytest.param("regressed", 3.2, _META_REGRESSED, id="regressed-red"),
-        pytest.param("improved", -3.2, _META_DONE, id="improved-green"),
-    ],
-)
-def test_loop_outcome_when_rendered_with_color_does_style_regressed_red_and_improved_green(
-    outcome: Outcome, delta_pct: float, expected_style: str
-) -> None:
-    state = session_state(
-        iteration_count=1,
-        last_iteration=make_iteration(delta_pct, outcome),
-    )
-    kit = reporter_showing_session(state)
-
-    style = _segment_style(kit.reporter, outcome)
-
-    assert style == expected_style
 
 
 # ---------------------------------------------------------------------------

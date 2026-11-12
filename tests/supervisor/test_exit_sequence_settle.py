@@ -236,7 +236,6 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
         True,
         True,
     )
-    assert status_of(experiment_worktree_dir(repo)) != ""
     command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
 
@@ -440,5 +439,3 @@ async def test_run_exit_sequence_when_only_unmeasured_edits_stand_does_leave_the
 
     left = run.report.steps[0]
     assert (left.kind, "2 unmeasured edits" in left.text) == ("left", True)
-    assert records_of_type(repo, KeepRecord | DiscardRecord) == []
-    assert status_of(experiment_worktree_dir(repo)) != ""

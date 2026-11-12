@@ -280,10 +280,10 @@ def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_ba
     )
 
     samples = _find(section, "samples")
-    assert (samples.status, "11" in samples.detail, "10 or 12" in (samples.hint or "")) == (
+    assert (samples.status, "11" in samples.detail, re.findall(r"\d+", samples.hint or "")) == (
         "fail",
         True,
-        True,
+        ["10", "12"],
     )
 
 

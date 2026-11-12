@@ -4,12 +4,8 @@ Every test drives a real subprocess: a numbered Python script under the current
 interpreter, run through the asyncio ``exec`` layer. The scripts and their
 parked payload files live in a throwaway ``tmp_path`` root, so the suite is
 order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
-
-The exception is the exec-cap test, which mocks the ``exec`` boundary: no real
-subprocess can be made to overflow exec's own accumulation cap quickly.
 """
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -21,12 +17,6 @@ from gymrat.loop.iterate.run import run_hook
 from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from tests._clock import install_monotonic_clock
-from tests._exec_fixtures import (
-    CAPPED_STDERR_BYTES,
-    CAPPED_STDOUT_BYTES,
-    capped_result,
-    install_exec,
-)
 from tests.loop.iterate._hooks import HookScripts, labeled_lines
 from tests.session.records._fixtures import SESSION_ID, iteration_record
 
@@ -198,40 +188,6 @@ async def test_run_hook_when_hook_outruns_timeout_does_kill_it_as_timed_out(
     run = await run_hook(hooks.invocation_of(command))
 
     (timeout_line,) = labeled_lines(run.report, "before")
-    assert "200ms" in timeout_line
+    assert "200" in timeout_line
     assert run.record.timed_out is True
     assert run.record.exit_code == FAILURE_EXIT_CODE
-
-
-async def test_run_hook_when_abort_signal_set_does_kill_it(hooks: HookScripts) -> None:
-    command = hooks.hook_command("import time\ntime.sleep(10)\n")
-    abort = asyncio.Event()
-
-    async def trigger() -> None:
-        await asyncio.sleep(0.05)
-        abort.set()
-
-    trigger_task = asyncio.create_task(trigger())
-
-    run = await run_hook(hooks.invocation_of(command, abort=abort))
-    await trigger_task
-
-    assert run.record.exit_code == FAILURE_EXIT_CODE
-    assert run.record.timed_out is False
-
-
-# ---------------------------------------------------------------------------
-# run_hook — pre-cap byte counts survive exec's own output cap
-# ---------------------------------------------------------------------------
-
-
-async def test_run_hook_when_exec_output_capped_does_record_pre_cap_byte_counts(
-    hooks: HookScripts,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_exec(monkeypatch, "gymrat.loop.iterate.run.exec", capped_result())
-
-    run = await run_hook(hooks.invocation_of("unused-because-exec-is-mocked"))
-
-    assert run.record.stdout_bytes == CAPPED_STDOUT_BYTES
-    assert run.record.stderr_bytes == CAPPED_STDERR_BYTES

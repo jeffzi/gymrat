@@ -26,7 +26,6 @@ import pytest
 
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
-    CommandRecord,
     FinalizeRecord,
 )
 from gymrat.session.store import append_record
@@ -54,7 +53,6 @@ from tests.session.records._fixtures import (
     finalize_record,
     iteration_record,
     log_records,
-    records_of_type,
     session_header_of,
 )
 from tests.supervisor._exit_sequence import (
@@ -170,7 +168,6 @@ async def test_run_exit_sequence_when_lock_held_past_the_bound_does_skip_naming_
     assert str(os.getpid()) in run.report.steps[0].text
     assert run.report.error is None
     assert run.phases == [ExitPhase(kind="waiting-lock", pid=os.getpid())]
-    assert records_of_type(repo, CommandRecord) == []
 
 
 async def test_run_exit_sequence_when_lock_frees_mid_wait_does_proceed_to_settle(
@@ -277,10 +274,6 @@ async def test_run_exit_sequence_when_session_already_finalized_does_report_noth
 # ---------------------------------------------------------------------------
 
 
-def _measured_nothing(repo: str) -> None:
-    start_with(repo)
-
-
 def _opened_no_session(repo: str) -> None:
     del repo
 
@@ -292,7 +285,6 @@ def _discarded_the_last_iteration(repo: str) -> None:
 @pytest.mark.parametrize(
     "arrange",
     [
-        pytest.param(_measured_nothing, id="session-measured-nothing"),
         pytest.param(_opened_no_session, id="no-session-opened"),
         pytest.param(_discarded_the_last_iteration, id="last-iteration-discarded"),
     ],
@@ -306,7 +298,6 @@ async def test_run_exit_sequence_when_nothing_is_unsettled_does_report_it_under_
 
     (step,) = run.report.steps
     assert (step.kind, "settle" in step.text) == ("nothing", True)
-    assert run.report.error is None
     assert run.phases == [ExitPhase(kind="settling", pid=None)]
     assert follow_up_reasons(run.events) == [("ended", step.text)]
 

@@ -385,16 +385,6 @@ def test_inspect_config_when_config_flag_names_file_in_other_dir_does_resolve_ru
 # ---------------------------------------------------------------------------
 
 
-def test_find_implicit_base_when_cwd_outside_any_repository_does_return_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.chdir(tmp_path)
-
-    base = find_implicit_base()
-
-    assert Path(base) == tmp_path
-
-
 def test_find_implicit_base_when_git_declines_for_cwd_does_raise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

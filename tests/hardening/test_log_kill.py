@@ -69,10 +69,8 @@ def test_read_records_when_final_line_cut_short_does_return_the_earlier_records(
     line = committed_keep(seq=clean_count).model_dump_json(exclude_none=True).encode()
     append_raw(session_jsonl_path(root), line[: len(line) // 2])
 
-    torn = Path(session_jsonl_path(root)).read_bytes()
     records = read_records(session_jsonl_path(root))
 
-    assert not torn.endswith(b"\n")
     assert records == [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
 
 

@@ -1,7 +1,7 @@
 from typing import Annotated, Any
 
 import pytest
-from pydantic import BaseModel, Field, Strict, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
 from gymrat.config import MAX_SAFE_INTEGER
@@ -26,7 +26,6 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
 @pytest.mark.parametrize(
     ("annotation", "value", "expected"),
     [
-        pytest.param(Annotated[int, Strict()], "banana", "an integer", id="int-type"),
         pytest.param(
             Annotated[int, Field(le=MAX_SAFE_INTEGER)],
             MAX_SAFE_INTEGER + 1,

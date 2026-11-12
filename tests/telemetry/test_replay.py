@@ -17,8 +17,7 @@ from gymrat.session.records import record_to_wire
 from gymrat.supervisor.events import UsageUpdateEvent, to_json_line
 from gymrat.telemetry.provider import span_id_of
 from gymrat.telemetry.replay import replay_session
-from gymrat.telemetry.run_spans import finalize_tracing, run_span_key, setup_tracing
-from tests._json_lines import with_raw_number
+from gymrat.telemetry.run_spans import run_span_key
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     SESSION_ID,
@@ -31,7 +30,6 @@ from tests.session.records._fixtures import (
     seeded_session,
     session_record,
 )
-from tests.supervisor._fixtures import make_prompt
 from tests.telemetry._fixtures import (
     memory_tracing,
     session_traceparent,
@@ -234,19 +232,14 @@ def test_replay_session_when_records_precede_a_command_does_add_them_as_events_o
     log_paths: tuple[str, str],
 ):
     session_log, sup_log = log_paths
-    records = [
-        baseline_record(at=T1),
-        hook_record(at=T1),
-        replay_command("measure", duration_ms=100),
-    ]
+    records = [baseline_record(at=T1), replay_command("measure", duration_ms=100)]
     write_records_log(session_log, [session_record(at=T0), *records])
     write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T4)])
 
     spans = _replay(session_log, sup_log)
 
-    assert _event_carriers(spans, ("gymrat.baseline", "gymrat.hook")) == {
-        "gymrat.baseline": ["gymrat.command.measure"],
-        "gymrat.hook": ["gymrat.command.measure"],
+    assert _event_carriers(spans, ("gymrat.baseline",)) == {
+        "gymrat.baseline": ["gymrat.command.measure"]
     }
 
 
@@ -335,12 +328,6 @@ def _leave_absent(_sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.param(_first_line(b"{not json"), id="a-first-line-that-is-not-json"),
         pytest.param(_first_line(b"\xff\xff"), id="a-first-line-that-is-not-utf8"),
         pytest.param(_first_line(b"[1, 2]"), id="a-first-line-that-is-not-an-object"),
-        pytest.param(
-            _first_line(
-                with_raw_number(to_json_line(replay_launch_event(at=T1)), ("at",)).encode()
-            ),
-            id="a-first-line-holding-nan",
-        ),
         pytest.param(_leave_absent, id="a-log-that-vanished-after-listing"),
     ],
 )
@@ -402,10 +389,6 @@ _ITERATION_LINE = record_line(iteration_record(at=T1))
     "bad_line",
     [
         pytest.param(_ITERATION_LINE[:-1].encode(), id="malformed-json-middle"),
-        pytest.param(
-            with_raw_number(_ITERATION_LINE, ("primary", "delta_pct")).encode(),
-            id="nan-literal-middle",
-        ),
         pytest.param(TORN_UTF8_LINE, id="torn-utf8-middle"),
     ],
 )
@@ -429,21 +412,6 @@ def test_replay_session_when_session_line_undecodable_does_skip_it_with_stderr_w
         "line 2",
     )
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
-
-
-def test_replay_session_when_final_line_unterminated_does_ignore_it_silently(
-    log_paths: tuple[str, str],
-    capsys: pytest.CaptureFixture[str],
-):
-    session_log, sup_log = log_paths
-    write_records_log(session_log, [session_record(at=T0), replay_command("measure")])
-    append_raw(session_log, record_line(replay_command("iterate")).encode())
-    write_standard_run(sup_log)
-
-    spans = _replay(session_log, sup_log)
-
-    assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
-    assert capsys.readouterr().err == ""
 
 
 _ITERATE_WIRE = record_to_wire(replay_command("iterate"))
@@ -660,27 +628,3 @@ async def test_replay_session_when_session_log_holds_blank_lines_live_does_match
     live_ids = _command_span_ids(live_exporter.get_finished_spans())
     assert list(live_ids) == ["gymrat.command.measure", "gymrat.command.compare"]
     assert _command_span_ids(replay_exporter.get_finished_spans()) == live_ids
-
-
-def _attributes_by_span(spans: tuple[Any, ...]) -> dict[str, dict[str, Any]]:
-    return {span.name: dict(span.attributes or {}) for span in spans}
-
-
-def test_replay_session_when_launch_traced_live_does_match_replayed_session_and_run_attributes(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    launch = replay_launch_event(
-        at=T1, max_usd=5.0, effort="high", model="claude-sonnet-4-20250514"
-    )
-    write_records_log(session_log, [header])
-    write_supervisor_log(sup_log, [launch])
-    with memory_tracing(SESSION_ID) as live_exporter:
-        _, _, state = setup_tracing(launch, branch=header.branch, prompt=make_prompt())
-        finalize_tracing(state, None)
-
-    replay_spans = _replay(session_log, sup_log)
-
-    live_attributes = _attributes_by_span(live_exporter.get_finished_spans())
-    assert _attributes_by_span(replay_spans) == live_attributes

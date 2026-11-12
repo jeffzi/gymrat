@@ -24,8 +24,6 @@ from tests.cli._runner import (
 from tests.config._toml import EXISTING_CONFIG, write_raw
 from tests.session._budget import install_budget
 
-LIVE_REFUSAL = "a supervised run is live; init is not part of the loop"
-
 
 @pytest.fixture
 def existing_config_cwd(_in_non_repo: None, tmp_path: Path) -> Path:
@@ -151,10 +149,10 @@ def test_init_when_run_in_a_git_repo_subdirectory_does_print_summary_paths_relat
 
 
 def test_init_when_supervised_run_live_does_refuse(live_repo: str, monkeypatch: pytest.MonkeyPatch):
-    # Run from the tool and without a bench: the live check alone decides the refusal.
+    # Run from the tool with a bench: only the live check can stop the scaffold.
     set_origin(monkeypatch, "tool")
 
-    result = runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["init", "--bench", "npm run bench"])
 
     assert result.exit_code == 2
-    assert LIVE_REFUSAL in result.stderr
+    assert not (Path(live_repo) / CONFIG_FILENAME).exists()

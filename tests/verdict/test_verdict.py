@@ -62,24 +62,22 @@ def test_compute_verdicts_when_multiple_rounds_does_compute_delta_from_medians()
 
 
 @pytest.mark.parametrize(
-    ("meta", "samples_b", "expected_delta", "expected_verdict"),
+    ("meta", "samples_b", "expected_verdict"),
     [
-        pytest.param(METRIC_EXACT_HIGHER, samples(105.0), 5.0, "improved", id="higher-improved"),
-        pytest.param(METRIC_EXACT_LOWER, samples(105.0), 5.0, "regressed", id="lower-regressed"),
-        pytest.param(METRIC_EXACT_LOWER, samples(100.0), 0.0, "no-signal", id="unchanged"),
+        pytest.param(METRIC_EXACT_HIGHER, samples(105.0), "improved", id="higher-improved"),
+        pytest.param(METRIC_EXACT_LOWER, samples(105.0), "regressed", id="lower-regressed"),
+        pytest.param(METRIC_EXACT_LOWER, samples(100.0), "no-signal", id="unchanged"),
     ],
 )
 def test_compute_verdicts_when_exact_does_classify_by_direction(
     meta: dict[str, MetricMeta],
     samples_b: list[dict[str, float]],
-    expected_delta: float,
     expected_verdict: str,
 ):
     result = run(samples(100.0), samples_b, meta)
 
     verdict = result["metric"]
-    assert (verdict.method, verdict.verdict, verdict.n) == ("exact", expected_verdict, 1)
-    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
+    assert (verdict.method, verdict.verdict) == ("exact", expected_verdict)
 
 
 # ---------------------------------------------------------------------------

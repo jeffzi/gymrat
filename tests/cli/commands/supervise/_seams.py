@@ -96,7 +96,7 @@ class Seams:
         default_factory=lambda: create_autospec(doctor_gate, name="doctor_gate")
     )
     preflight_calls: list[dict[str, object]] = field(default_factory=list)
-    supervise_calls: list[dict[str, object]] = field(default_factory=list)
+    supervise_calls: list[dict[str, Any]] = field(default_factory=list)
     reporter_calls: list[dict[str, object]] = field(default_factory=list)
     compose_calls: list[object] = field(default_factory=list)
 

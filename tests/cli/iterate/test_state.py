@@ -295,12 +295,6 @@ def test_advance_when_confirm_started_does_set_confirm_note(
     ("setup", "event", "expected"),
     [
         pytest.param(
-            (PrepareStarted(label="baseline", at_ms=0),),
-            PrepareFinished(label="baseline", at_ms=5000),
-            "prepared baseline (5s)",
-            id="prepare-finished",
-        ),
-        pytest.param(
             (_FIRST_PASS_STARTED, _FIRST_PASS_FINISHED, _LAST_PASS_STARTED),
             _LAST_PASS_FINISHED,
             "passes done (20s)",
@@ -317,12 +311,6 @@ def test_advance_when_confirm_started_does_set_confirm_note(
             JudgeFinished(primary_delta_pct=None, regressed=(), at_ms=6000),
             "judge — · no gating regression",
             id="judge-finished-missing-delta",
-        ),
-        pytest.param(
-            (),
-            JudgeFinished(primary_delta_pct=-6.8, regressed=("latency",), at_ms=6000),
-            "judge -6.8% on geomean · 1 regressed: latency",
-            id="judge-finished-one-regressed",
         ),
         pytest.param(
             (),

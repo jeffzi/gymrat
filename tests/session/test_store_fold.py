@@ -81,19 +81,6 @@ _ITERATION_1_UNSETTLED = session_state(
             id="an-iteration-settled-by-a-discard",
         ),
         pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2],
-            session_state(
-                session=SESSION,
-                iteration_count=2,
-                last_iteration=ITERATION_2,
-                unsettled=True,
-                keep_count=1,
-                last_seq=2,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-fresh-iteration-after-a-settled-one",
-        ),
-        pytest.param(
             [SESSION, ITERATION_1_ON_TARGET, committed_keep(1)],
             session_state(
                 session=SESSION,

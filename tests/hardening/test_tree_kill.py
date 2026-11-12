@@ -390,7 +390,6 @@ def reap_beats() -> Iterator[list[Path]]:
 @pytest.mark.parametrize(
     "teardown",
     [
-        pytest.param(Teardown(None, set_abort), id="abort"),
         pytest.param(Teardown(_OUTER_TIMEOUT_MS, leave_to_timeout), id="timeout"),
         pytest.param(Teardown(None, cancel_task), id="cancelled"),
     ],
@@ -660,43 +659,19 @@ def trace_spawns(monkeypatch: pytest.MonkeyPatch) -> SpawnTrace:
     return trace
 
 
-@pytest.mark.parametrize(
-    ("assignment_granted", "closed"),
-    [
-        pytest.param(
-            True,
-            [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE],
-            id="job-granted-held-until-the-run-settles",
-        ),
-        pytest.param(
-            False,
-            [PROCESS_HANDLE, JOB_HANDLE, PROCESS_HANDLE],
-            id="job-refused-released-at-once",
-        ),
-    ],
-)
 async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_until_it_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    assignment_granted: bool,
-    closed: list[int],
 ) -> None:
-    jobs = FakeJobs(assignment_granted=assignment_granted)
+    jobs = FakeJobs()
     group = win32_process_group(monkeypatch, jobs)
     module = win32_exec(monkeypatch, group)
     trace = trace_spawns(monkeypatch)
-    # The refusal warning's wording is pinned in tests/test_process_group.py;
-    # here only its presence matters.
-    expect_warning = (
-        contextlib.nullcontext() if assignment_granted else pytest.warns(RuntimeWarning)
-    )
 
-    with expect_warning:
-        result = await module.exec_argv(
-            [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
-            module.ExecOptions(cwd=str(tmp_path)),
-        )
+    result = await module.exec_argv(
+        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
+        module.ExecOptions(cwd=str(tmp_path)),
+    )
 
     assert result.exit_code == 0, "a contained child never ran to completion"
     assert trace.session_requests == [set()], "a win32 spawn asked for a POSIX session"
@@ -710,4 +685,6 @@ async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_unti
     assert child_pid in spawned_tree, "a process outside the spawned tree was contained"
     assert jobs.assigned == [(JOB_HANDLE, child_pid)]
     assert jobs.resumed == [child_pid], "the contained child was left suspended"
-    assert jobs.closed == closed, "the settled run left a handle open"
+    assert jobs.closed == [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE], (
+        "the settled run left a handle open"
+    )

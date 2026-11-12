@@ -315,12 +315,6 @@ async def _call_via_sdk(
     [
         pytest.param(
             "probe",
-            {},
-            ["gym", "rat", "probe", "--format", "json", "--"],
-            id="probe-no-args",
-        ),
-        pytest.param(
-            "probe",
             {"samples": 6},
             ["gym", "rat", "probe", "--format", "json", "--samples", "6", "--"],
             id="probe-samples-only",

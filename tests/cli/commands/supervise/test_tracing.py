@@ -20,7 +20,6 @@ from opentelemetry.sdk.trace import Span as SdkSpan
 
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
-from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import create_event_log_writer
 from gymrat.telemetry.run_spans import RUN_SPAN, SESSION_SPAN
 from tests._cli import combined_output
@@ -81,7 +80,6 @@ def test_supervise_when_tracing_enabled_does_hand_supervise_the_run_span_context
         run()
 
     prompt = seams.supervise_calls[0]["prompt"]
-    assert isinstance(prompt, SessionPrompt)
     assert prompt.traceparent is not None
 
 
