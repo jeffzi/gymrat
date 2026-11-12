@@ -254,6 +254,23 @@ def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_
         _warn()
 
 
+def _git_cannot_run(monkeypatch: pytest.MonkeyPatch) -> OSError:
+    missing = FileNotFoundError(2, "No such file or directory", "git")
+
+    def launch(*_args: object, **_kwargs: object) -> str:
+        raise missing
+
+    monkeypatch.setattr("gymrat.session.paths.run_git", launch)
+    return missing
+
+
+@pytest.mark.parametrize(
+    "refuse",
+    [
+        pytest.param(refuse_git_lookups, id="dubious-ownership"),
+        pytest.param(_git_cannot_run, id="git-not-runnable"),
+    ],
+)
 @pytest.mark.parametrize(
     "run",
     [
@@ -263,9 +280,11 @@ def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_
 )
 @pytest.mark.usefixtures("_in_non_repo")
 def test_budget_lookup_when_git_declines_the_repository_lookup_does_raise_git_diagnostic(
-    run: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+    run: Callable[[], None],
+    refuse: Callable[[pytest.MonkeyPatch], Exception],
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    refusal = refuse_git_lookups(monkeypatch)
+    refusal = refuse(monkeypatch)
     expected = str(repository_lookup_error(str(Path.cwd()), refusal))
 
     with pytest.raises(GymratError) as exc:
