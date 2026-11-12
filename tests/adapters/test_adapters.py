@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from gymrat.adapters.contract import (
@@ -143,7 +145,7 @@ def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
     result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
 
     assert (result, len(warnings)) == ({"valid": 1.0}, 1)
-    assert offending in warnings[0]
+    assert json.dumps(offending) in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +153,20 @@ def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
-    with pytest.raises(AdapterError, match="bad#name#extra"):
-        metric_lines_adapter.parse("METRIC bad#name#extra=42")
+@pytest.mark.parametrize(
+    ("name", "quoted_name"),
+    [
+        pytest.param("bad#name#extra", '"bad#name#extra"', id="plain"),
+        pytest.param('bad#na"me#extra', '"bad#na\\"me#extra"', id="double-quote"),
+    ],
+)
+def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error(
+    name: str, quoted_name: str
+):
+    with pytest.raises(AdapterError) as exc:
+        metric_lines_adapter.parse(f"METRIC {name}=42")
+
+    assert quoted_name in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +234,20 @@ def test_parse_when_no_valid_metrics_does_raise_adapter_error():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning():
+@pytest.mark.parametrize(
+    ("name", "quoted_name"),
+    [
+        pytest.param("METRIC foo", '"METRIC foo"', id="plain"),
+        pytest.param('METRIC f"oo', '"METRIC f\\"oo"', id="double-quote"),
+    ],
+)
+def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning(
+    name: str, quoted_name: str
+):
     warnings: list[str] = []
 
-    result = metric_lines_adapter.parse("METRIC METRIC foo=42", warnings.append)
+    result = metric_lines_adapter.parse(f"METRIC {name}=42", warnings.append)
 
-    assert result == {"METRIC foo": 42.0}
+    assert result == {name: 42.0}
     assert len(warnings) == 1
-    assert '"METRIC foo"' in warnings[0]
+    assert quoted_name in warnings[0]

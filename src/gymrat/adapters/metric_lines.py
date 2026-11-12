@@ -97,7 +97,7 @@ def _follows_grammar(metric_name: str, warn: WarnSink) -> bool:
         parse_metric_name(metric_name)
     except MultipleHashesError as exc:
         msg = (
-            f'Metric name "{metric_name}" contains {exc.flaw}; '
+            f"Metric name {json.dumps(metric_name)} contains {exc.flaw}; "
             "only a single '#' is allowed as the metric-type separator"
         )
         raise AdapterError(msg) from exc
@@ -137,7 +137,7 @@ class _MetricLinesAdapter:
             trimmed = line.strip()
             if not trimmed.startswith(_PREFIX):
                 continue
-            parse_failure = f"Failed to parse METRIC line: {trimmed}"
+            parse_failure = f"Failed to parse METRIC line: {json.dumps(trimmed)}"
             if not trimmed.startswith(_PREFIX_WITH_SPACE):
                 warn(parse_failure)
                 continue
@@ -165,7 +165,7 @@ class _MetricLinesAdapter:
 
             if _PREFIX_WITH_SPACE in metric_name:
                 warn(
-                    f'Parsed metric name "{metric_name}" embeds the METRIC token '
+                    f"Parsed metric name {json.dumps(metric_name)} embeds the METRIC token "
                     "— the line may carry a duplicate METRIC prefix"
                 )
 
