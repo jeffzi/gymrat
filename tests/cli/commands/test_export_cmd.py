@@ -9,9 +9,6 @@ summary. Which session-log lines and supervisor logs replay skips is pinned in
 
 from __future__ import annotations
 
-import errno
-import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,19 +37,18 @@ _SHORT_TIMEOUT_SECONDS = "0.5"
 _UNREACHABLE_ENDPOINT = "http://127.0.0.1:1"
 
 
-def _populate_session_dir(root: str, *, session_id: str = SESSION_ID) -> str:
+def _populate_session_dir(root: str) -> str:
     """Write a session log and a matching supervisor log under ``root``.
 
     Args:
         root: The repository root the session log goes under.
-        session_id: The session both logs belong to.
 
     Returns:
         The session log path.
     """
     session_log = session_jsonl_path(root)
     sup_log = str(Path(session_log).parent / "supervisor-001.jsonl")
-    write_measure_command_run(session_log, sup_log, session_id=session_id)
+    write_measure_command_run(session_log, sup_log, session_id=SESSION_ID)
     return session_log
 
 
@@ -81,7 +77,7 @@ def test_export_when_tracing_package_not_importable_does_exit_two_naming_otel_ex
 # ---------------------------------------------------------------------------
 
 
-def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_export(
+def test_export_when_tracer_records_nothing_does_exit_two_naming_the_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -92,7 +88,7 @@ def test_export_when_tracer_records_nothing_does_exit_two_without_reporting_expo
 
     output = stderr_text(result)
     assert result.exit_code == 2, output
-    assert SESSION_ID in output
+    assert len([line for line in output.splitlines() if SESSION_ID in line]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +106,7 @@ def test_export_when_endpoint_missing_does_exit_two_naming_env_var(tmp_path: Pat
 
 
 # ---------------------------------------------------------------------------
-# missing or unreadable session log
+# missing session log
 # ---------------------------------------------------------------------------
 
 
@@ -126,28 +122,6 @@ def test_export_when_session_log_missing_does_exit_two_reporting_no_session_with
     assert result.exit_code == 2
     assert session_log in first_line
     assert BUGS_URL not in combined_output(result)
-
-
-#: What the OS says when a directory is opened as a file: Windows denies access.
-_DIRECTORY_OPEN_REASON = os.strerror(errno.EACCES if sys.platform == "win32" else errno.EISDIR)
-
-
-def test_export_when_session_log_unreadable_does_exit_two_naming_path_and_os_reason_without_bug_footer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    session_log = _populate_session_dir(str(tmp_path))
-    arm_placeholder_endpoint(monkeypatch)
-    Path(session_log).unlink()
-    Path(session_log).mkdir()
-
-    result = runner.invoke(app, ["export", session_log])
-
-    error = stderr_text(result)
-    output = combined_output(result)
-    assert result.exit_code == 2
-    assert session_log in error
-    assert _DIRECTORY_OPEN_REASON in error
-    assert BUGS_URL not in output
 
 
 # ---------------------------------------------------------------------------

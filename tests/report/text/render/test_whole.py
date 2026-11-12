@@ -1,4 +1,4 @@
-"""Whole-report assembly and layout tests for the comparison report.
+"""Whole-report tests for the comparison and measurement reports.
 
 Representative layouts are pinned byte for byte as plain golden outputs, so a
 change to how the table is drawn cannot shift a padding space or a rule dash
@@ -9,6 +9,9 @@ a change in how rich encodes a style does not read as a regression. The run
 header, column labels, section and group titles and aggregate rows are styled
 here; verdict-cell colors live in ``test_verdicts`` and multi-candidate cell
 colors in ``test_multi``.
+
+The comparison table's run header override and label truncation, and the
+measurement report's golden output, are pinned here too.
 """
 
 from __future__ import annotations
@@ -20,14 +23,17 @@ import pytest
 
 from gymrat.config import KindEntry
 from gymrat.model import Exclusion
+from gymrat.report.labels import truncate_labels
 from gymrat.report.style import EMPHASIZED_DIRECTION_STYLES
-from gymrat.report.text.render import render_report
+from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.worktree_sweep import CleanupResult, WorktreeRemovalFailure
 from tests.report._assertions import (
     line_containing,
+    line_starting_with,
     sgr_for,
+    stripped_cells,
     styles_at,
+    table_region,
 )
 from tests.report._comparisons import (
     NWayCandidate,
@@ -38,13 +44,13 @@ from tests.report._comparisons import (
     gating_kind,
     grouped_comparison,
     informational_kind,
-    kind_metric,
     mixed_methods_result,
     n_way_kind_metric,
     other_kind,
     two_kind_result,
     undefined_ratio_metric,
 )
+from tests.report._measurements import two_kind_measurement
 from tests.report._verdicts import (
     band_verdict,
     exact_verdict,
@@ -71,18 +77,6 @@ def _one_kind_result() -> ComparisonResult:
     return create_comparison_result(
         metrics=entity_time_metrics(),
         candidates=[create_candidate(kinds=[gating_kind("time", geomean, {"entity": geomean})])],
-    )
-
-
-def _non_gating_result() -> ComparisonResult:
-    """One ``time`` kind that gates nothing, so its geomean covers every metric of the kind."""
-    return create_comparison_result(
-        metrics={
-            "warmup#time": kind_metric(
-                kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
-            ),
-        },
-        candidates=[create_candidate(kinds=[informational_kind("time", geomean_of(-10, 1))])],
     )
 
 
@@ -201,13 +195,6 @@ def _degenerate_result() -> ComparisonResult:
                 ]
             )
         ],
-        cleanup=CleanupResult(
-            removed=1,
-            failures=(
-                WorktreeRemovalFailure(dir="/tmp/gymrat-abc123", error="contains modified files"),
-            ),
-            prune_error="could not lock config file",
-        ),
     )
 
 
@@ -294,7 +281,6 @@ def _two_candidate_result() -> ComparisonResult:
         pytest.param(_two_candidate_result, id="flat-two-candidates-plain"),
         pytest.param(two_kind_result, id="sectioned-single-candidate-plain"),
         pytest.param(grouped_comparison, id="sectioned-multi-candidate-plain"),
-        pytest.param(_non_gating_result, id="flat-informational-plain"),
         pytest.param(
             _non_gating_two_candidate_result, id="flat-two-candidates-informational-plain"
         ),
@@ -339,3 +325,46 @@ def test_render_report_when_colored_does_style_each_element(
     line = line_containing(render_report(make_result(), ReportOptions(color=True)), needle)
 
     assert styles_at(line, marker) == expected
+
+
+# ---------------------------------------------------------------------------
+# run header and column labels
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_header_override_given_does_replace_the_compare_header():
+    result = create_comparison_result()
+
+    report = render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
+
+    assert table_region(report)[:2] == ["iteration 3 · experiment vs baseline", "metric"]
+
+
+def test_render_report_when_variant_label_overflows_does_truncate_it():
+    result = create_comparison_result(
+        baseline_label="main",
+        candidates=[create_candidate(label="feature/entity-spawn-fastpath")],
+    )
+    shown = truncate_labels(["main", "feature/entity-spawn-fastpath"])[1]
+
+    output = render_report(result)
+
+    header = output.split("\n")[0]
+    assert shown in header
+    assert stripped_cells(line_starting_with(output, "metric")) == [
+        "metric",
+        "main",
+        shown,
+        "vs main",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# measurement report — golden
+# ---------------------------------------------------------------------------
+
+
+def test_render_measure_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):
+    report = render_measure_report(two_kind_measurement(), ReportOptions(color=False))
+
+    assert report.split("\n") == snapshot

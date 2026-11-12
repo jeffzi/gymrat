@@ -261,26 +261,27 @@ def test_render_discard_json_when_record_present_or_not_does_report_whether_the_
 
 
 @pytest.mark.parametrize(
-    ("result", "budget", "expected"),
+    ("result", "expected"),
     [
-        pytest.param(start_result(), None, {"archived": None}, id="fresh"),
+        pytest.param(start_result(), {"archived": None}, id="fresh"),
         pytest.param(
             start_result(archived=ARCHIVED_SESSION_ID, archived_path=ARCHIVED_SESSION_PATH),
-            None,
             {"archived": {"session_id": ARCHIVED_SESSION_ID, "path": ARCHIVED_SESSION_PATH}},
             id="archived",
         ),
-        pytest.param(
-            start_result(),
-            BudgetSummary(cap_minutes=30, remaining_seconds=900),
-            {"budget": {"cap_minutes": 30, "remaining_seconds": 900}},
-            id="budget",
-        ),
     ],
 )
-def test_render_start_json_when_start_varies_does_reflect_the_start_state(
-    result: StartResult, budget: BudgetSummary | None, expected: dict[str, object]
+def test_render_start_json_when_session_archived_or_not_does_serialize_the_archived_session(
+    result: StartResult, expected: dict[str, object]
 ):
-    doc = json.loads(render_start_json(result, runbook=None, budget=budget))
+    doc = json.loads(render_start_json(result, runbook=None, budget=None))
 
     assert {key: doc[key] for key in expected} == expected
+
+
+def test_render_start_json_when_budget_given_does_append_the_budget_block():
+    budget = BudgetSummary(cap_minutes=30, remaining_seconds=900)
+
+    doc = json.loads(render_start_json(start_result(), runbook=None, budget=budget))
+
+    assert doc["budget"] == {"cap_minutes": 30, "remaining_seconds": 900}

@@ -24,11 +24,12 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.errors import GymratError
 from gymrat.session.paths import lockfile_path, session_jsonl_path
 from gymrat.session.records import (
     FinalizeRecord,
 )
-from gymrat.session.store import append_record
+from gymrat.session.store import append_record, read_records
 from gymrat.supervisor.exit_sequence import (
     ExitPhase,
     ExitReport,
@@ -103,11 +104,16 @@ class SlowHeldProbe(HeldProbe):
         return super().__call__()
 
 
-def _make_log_unreadable(root: str) -> str:
-    """Append a line no record schema matches, returning the session log path."""
-    jsonl_path = session_jsonl_path(root)
-    append_raw(jsonl_path, UNREADABLE_LINE.encode())
-    return jsonl_path
+def _make_log_unreadable(root: str) -> None:
+    """Append a line no record schema matches to the session log."""
+    append_raw(session_jsonl_path(root), UNREADABLE_LINE.encode())
+
+
+def _log_read_error(root: str) -> str:
+    """Return the message the store raises when reading the session log."""
+    with pytest.raises(GymratError) as raised:
+        read_records(session_jsonl_path(root))
+    return str(raised.value)
 
 
 def _keep_iteration(root: str, seq: int) -> None:
@@ -332,8 +338,7 @@ async def test_run_exit_sequence_when_finalize_refuses_does_record_the_refusal_n
     run = await run_sequence(session_context(repo, checks=CHECKS), finalize=True)
 
     refused = run.report.steps[-1]
-    assert (refused.kind, taken in refused.text) == ("refused", True)
-    assert run.report.error is None
+    assert (refused.kind, run.report.error) == ("refused", None)
 
 
 async def test_run_exit_sequence_when_finalize_is_off_and_all_settled_does_leave_the_session_open(
@@ -383,16 +388,14 @@ async def test_run_exit_sequence_when_a_step_raises_does_close_on_the_error(
     repo: str,
 ):
     start_with(repo)
-    jsonl_path = _make_log_unreadable(repo)
+    _make_log_unreadable(repo)
+    expected = _log_read_error(repo)
 
     run = await run_sequence(session_context(repo))
 
-    assert run.report.steps == ()
-    assert run.report.error is not None
-    assert jsonl_path in run.report.error
-    error = run.report.error
+    assert (run.report.steps, run.report.error) == ((), expected)
     assert [
-        (action, reason is not None and error in reason)
+        (action, reason is not None and expected in reason)
         for action, reason in follow_up_reasons(run.events)
     ] == [("ended", True)]
 
@@ -474,12 +477,12 @@ async def test_run_exit_sequence_when_the_closing_event_raises_does_still_report
     repo: str,
 ):
     start_with(repo)
-    jsonl_path = _make_log_unreadable(repo)
+    _make_log_unreadable(repo)
+    expected = _log_read_error(repo)
 
     run = await run_sequence(session_context(repo), log=_raising_observer)
 
-    assert run.report.error is not None
-    assert jsonl_path in run.report.error
+    assert run.report.error == expected
 
 
 # ---------------------------------------------------------------------------

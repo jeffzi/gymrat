@@ -47,10 +47,7 @@ from tests._ansi import (
 )
 from tests._config import benchless_config as _config
 from tests.report._assertions import render_plain
-from tests.session._store_records import (
-    BASELINE,
-    HOOK,
-)
+from tests.session._store_records import BASELINE
 from tests.session.records._fixtures import (
     RECOGNIZABLE_BASELINE_SHA,
     RECOGNIZABLE_KEEP_COMMIT,
@@ -59,6 +56,7 @@ from tests.session.records._fixtures import (
     discard_record,
     finalize_record,
     gate_block,
+    hook_record,
     make_iteration,
     session_record,
     stop_record,
@@ -114,7 +112,7 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     """
     return (
         BASELINE,
-        HOOK,
+        hook_record(),
         make_iteration(-7.2, "improved"),
         committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
         make_iteration(9.4, "regressed", seq=2),
@@ -164,7 +162,7 @@ def _header(root: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_status_session_when_log_holds_a_whole_history_does_render_header_records_and_totals(
+def test_status_session_when_log_holds_a_whole_history_does_render_the_full_report(
     tmp_path: Path,
 ):
     root = str(tmp_path)
@@ -296,7 +294,7 @@ def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_und
         pytest.param((stop_record(message="target reached"),), (False, True), id="stopped"),
     ],
 )
-def test_status_data_when_session_closes_or_not_does_flag_finalized_and_stopped(
+def test_status_data_when_session_closes_does_flag_how_it_closed(
     tmp_path: Path, closing: tuple[SessionLogRecord, ...], flags: tuple[bool, bool]
 ):
     root = str(tmp_path)

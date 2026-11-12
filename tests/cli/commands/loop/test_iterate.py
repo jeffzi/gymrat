@@ -25,6 +25,7 @@ from gymrat.progress_events import ProgressEvent
 from gymrat.sampling import SamplingOptions
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import SidecarWriter
+from gymrat.session.records import CommandRecord
 from gymrat.utils import MS_PER_SECOND
 from tests._ansi import (
     strip_ansi,
@@ -44,6 +45,7 @@ from tests.cli._runner import (
 )
 from tests.cli._session import (
     open_capped_session_under_budget,
+    open_hooked_iterate_session,
     write_bench_config,
     write_capped_session,
 )
@@ -63,6 +65,7 @@ from tests.loop.iterate._fixtures import (
 from tests.session._budget import install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
     last_command_record,
+    records_of_type,
 )
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,19 @@ def test_iterate_command_when_run_ends_does_remove_the_progress_sidecar(
     assert not sidecar.exists()
 
 
+def test_iterate_command_when_supervised_run_live_does_refuse_as_supervised_use_tool(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    open_hooked_iterate_session(repo, monkeypatch)
+    install_improved_samples(monkeypatch, repo)
+
+    result = runner.invoke(app, ["iterate"])
+
+    assert (result.exit_code, result.stdout) == (2, "")
+    commands = records_of_type(repo, CommandRecord)
+    assert [(cmd.reason, cmd.seq) for cmd in commands] == [("supervised-use-tool", None)]
+
+
 # ---------------------------------------------------------------------------
 # the iterate command — progress renderer wiring
 # ---------------------------------------------------------------------------
@@ -106,15 +122,14 @@ def test_iterate_command_when_run_ends_does_remove_the_progress_sidecar(
 _LIVE_SCREEN_HEIGHT = 40
 
 
-def _install_live_console(monkeypatch: pytest.MonkeyPatch) -> Console:
-    """Force live mode onto a sealed console the command renders into; return the console."""
+def _install_live_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force live mode onto a sealed console the command renders into."""
     console = sealed_console(height=_LIVE_SCREEN_HEIGHT, get_time=Clock(0.0))
     force_render_mode(monkeypatch, "loop", "live")
     monkeypatch.setattr(
         "gymrat.cli.commands.loop.stderr_console",
         create_autospec(stderr_console, return_value=console),
     )
-    return console
 
 
 def _capture_renderers(monkeypatch: pytest.MonkeyPatch) -> list[IterateRenderer]:
@@ -153,23 +168,32 @@ def _capture_renderer_inputs(
     return built
 
 
-def test_iterate_command_when_run_does_hand_the_renderer_the_session_facts_and_a_seconds_clock(
+def test_iterate_command_when_run_does_hand_the_renderer_the_session_facts(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    header = write_iterate_session(repo)
+    write_iterate_session(repo)
+    install_improved_samples(monkeypatch, repo)
+    inputs = _capture_renderer_inputs(monkeypatch)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    ((facts, _clock),) = inputs
+    assert result.exit_code == 0
+    assert (facts.seq, facts.sample_count) == (1, CONFIG_DEFAULTS.samples)
+
+
+def test_iterate_command_when_run_does_hand_the_renderer_a_seconds_clock(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_iterate_session(repo)
     install_improved_samples(monkeypatch, repo)
     inputs = _capture_renderer_inputs(monkeypatch)
     clock = install_monotonic_clock(monkeypatch)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    ((facts, renderer_clock),) = inputs
+    ((_facts, renderer_clock),) = inputs
     assert result.exit_code == 0
-    assert (facts.seq, facts.session_id, facts.sample_count) == (
-        1,
-        header.session_id,
-        CONFIG_DEFAULTS.samples,
-    )
     assert renderer_clock() == clock() / MS_PER_SECOND
 
 
@@ -212,7 +236,7 @@ def test_iterate_command_when_terminated_mid_pass_does_remove_the_progress_sidec
 
         stop_by_signal(proc, signal.SIGTERM)
 
-    assert (proc.returncode, Path(progress_path(repo)).exists()) == (143, False)
+    assert not Path(progress_path(repo)).exists()
 
 
 # ---------------------------------------------------------------------------

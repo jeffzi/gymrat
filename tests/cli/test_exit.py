@@ -160,7 +160,6 @@ def _raised(message: str) -> ValueError:
     [
         pytest.param(_raised("boom"), True, True, id="debug"),
         pytest.param(_raised("boom"), False, False, id="no-debug"),
-        pytest.param(ValueError("boom"), True, False, id="debug-and-never-raised"),
     ],
 )
 def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_debug(
@@ -169,6 +168,12 @@ def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_d
     output = format_cli_error(error, debug=debug)
 
     assert ("Traceback" in output) is has_stack
+
+
+def test_format_cli_error_when_debug_and_error_never_raised_does_omit_the_exception_line():
+    output = format_cli_error(ValueError("boom"), debug=True)
+
+    assert "ValueError" not in output
 
 
 def test_format_cli_error_when_gymrat_error_carries_hint_does_append_the_hint_without_footer(

@@ -49,12 +49,12 @@ def fake_exec() -> AsyncMock:
 
 
 @pytest.fixture
-def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
-    """A ToolHost wired to the fake executor, with a trivial prefix and any indirect extra env."""
+def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
+    """A ToolHost wired to the fake executor, with a trivial prefix and no extra env."""
     return ToolHost(
         root=str(tmp_path),
         abort=asyncio.Event(),
-        extra_env=getattr(request, "param", {}),
+        extra_env={},
         argv_prefix=["gym", "rat"],
         _exec_fn=fake_exec,
     )
@@ -65,21 +65,22 @@ def host(request: pytest.FixtureRequest, tmp_path: pathlib.Path, fake_exec: Asyn
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("host", "expected_env"),
-    [
-        pytest.param({"NO_COLOR": "0"}, {"NO_COLOR": "0"}, id="extra-env-wins-over-fixed"),
-    ],
-    indirect=["host"],
-)
-async def test_probe_when_called_does_compose_the_child_env(
-    host: ToolHost, fake_exec: AsyncMock, expected_env: dict[str, str]
+async def test_probe_when_extra_env_names_a_fixed_key_does_let_the_extra_value_win(
+    tmp_path: pathlib.Path, fake_exec: AsyncMock
 ) -> None:
+    host = ToolHost(
+        root=str(tmp_path),
+        abort=asyncio.Event(),
+        extra_env={"NO_COLOR": "0"},
+        argv_prefix=["gym", "rat"],
+        _exec_fn=fake_exec,
+    )
+
     await host.probe({})
 
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.env is not None
-    assert {key: opts.env.get(key) for key in expected_env} == expected_env
+    assert opts.env.get("NO_COLOR") == "0"
     assert opts.env.get("PATH") == os.environ.get("PATH")
 
 

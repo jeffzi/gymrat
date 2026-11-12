@@ -121,10 +121,9 @@ def test_format_metric_cell_parts_when_spread_exceeds_the_cap_does_state_absolut
 @pytest.mark.parametrize(
     ("delta", "expected"),
     [
-        pytest.param(2.2, "+2.2%", id="signs-a-regression"),
         pytest.param(-17.9, "-17.9%", id="signs-an-improvement"),
         pytest.param(-0.04, "0.0%", id="negative-rounds-to-zero-unsigned"),
-        pytest.param(0.06, "+0.1%", id="just-above-rounding-floor"),
+        pytest.param(0.06, "+0.1%", id="signs-a-regression-just-above-rounding-floor"),
     ],
 )
 def test_format_percent_delta_when_finite_does_round_to_a_signed_one_decimal_percentage(

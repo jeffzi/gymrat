@@ -7,7 +7,7 @@ from gymrat.adapters.tinybench import tinybench_adapter
 from tests.adapters._inputs import VALID_TASK, build_tinybench_stdout, task
 
 # ---------------------------------------------------------------------------
-# basic parsing
+# zero median
 # ---------------------------------------------------------------------------
 
 
@@ -45,7 +45,6 @@ _NOT_COMPLETED_TASKS = [
 ]
 
 _MALFORMED_TASKS = [
-    pytest.param({"name": "t"}, r'"t"', id="result-missing"),
     pytest.param(task("t", result={"state": "completed"}), r'"t"', id="latency-missing"),
     pytest.param(task("t", p50=1e305), r'"t"', id="p50-overflows-on-conversion"),
 ]
@@ -56,7 +55,6 @@ _BAD_NAME_TASKS = [
         r'"enc\\u2028ode"',
         id="line-terminator",
     ),
-    pytest.param(task("a//b", p50=0), r'"a//b"', id="empty-path-segment-zero-median"),
 ]
 
 
@@ -74,3 +72,23 @@ def test_parse_when_task_is_skipped_does_skip_only_that_task_with_one_warning(
     assert result == {f"valid{TIME_SUFFIX}": 500_000}
     assert len(warnings) == 1
     assert re.search(pattern, warnings[0])
+
+
+# Rows whose warning text comes from shared helpers with their own tests.
+@pytest.mark.parametrize(
+    "bad_task",
+    [
+        pytest.param({"name": "t"}, id="result-missing"),
+        pytest.param(task("a//b", p50=0), id="empty-path-segment-zero-median"),
+    ],
+)
+def test_parse_when_task_fails_a_shared_check_does_skip_only_that_task_with_one_warning(
+    bad_task: object,
+):
+    stdout = build_tinybench_stdout([bad_task, VALID_TASK])
+    warnings: list[str] = []
+
+    result = tinybench_adapter.parse(stdout, warnings.append)
+
+    assert result == {f"valid{TIME_SUFFIX}": 500_000}
+    assert len(warnings) == 1

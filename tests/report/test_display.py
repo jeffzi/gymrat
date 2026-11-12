@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         ),
     ],
 )
-def test_display_class_when_non_exact_pair_count_below_minimum_does_read_inconclusive(
+def test_display_class_when_pair_count_below_minimum_does_read_inconclusive_only_if_non_exact(
     verdict: MetricVerdict, expected: DisplayClass
 ):
     assert display_class(verdict) == expected

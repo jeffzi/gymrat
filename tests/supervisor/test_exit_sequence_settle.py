@@ -98,17 +98,6 @@ def _no_fingerprint(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     append_records(root, iteration_record(seq=1, measured_tree=None))
 
 
-def _failed_before_hook_on_a_retry(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """An improved iteration whose before hook failed, recorded after an attempt that raised."""
-    append_records(
-        root,
-        hook_record(seq=1, stage="before"),
-        command_record(seq=1),
-        hook_record(seq=1, stage="before", exit_code=1),
-    )
-    measured(root, iteration_record(seq=1))
-
-
 def _failed_after_hook_ahead_of_a_command_record(
     root: str, _monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -266,9 +255,6 @@ GATE_FAILURES = [
     pytest.param(_stale_tree, TREE_CHANGED, id="tree-changed-after-measuring"),
     pytest.param(_no_fingerprint, "fingerprint unavailable", id="fingerprint-unavailable"),
     pytest.param(
-        _failed_before_hook_on_a_retry, "before hook failed", id="before-hook-failed-on-a-retry"
-    ),
-    pytest.param(
         _failed_after_hook_ahead_of_a_command_record,
         "after hook failed",
         id="after-hook-failed-ahead-of-a-command-record",
@@ -285,7 +271,7 @@ GATE_FAILURES = [
 
 
 @pytest.mark.parametrize(("arrange", "reason"), GATE_FAILURES)
-async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_leave_the_iteration_naming_why_and_where(
+async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_leave_the_iteration_naming_the_gate_failure(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     arrange: Callable[[str, pytest.MonkeyPatch], None],

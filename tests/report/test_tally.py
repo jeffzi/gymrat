@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.style import VERDICT_STYLES
+from gymrat.report.style import VERDICT_STYLES, markup
 from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
 from tests.report._assertions import (
     render_colored,
@@ -122,10 +122,10 @@ def test_verdict_summary_parts_when_zero_count_does_style_the_whole_part():
 
     parts = verdict_summary_parts(only_improved, 0)
 
-    assert [
-        bool(styles_at(render_colored(part), glyph))
-        for part, glyph in zip(parts, _GLYPHS, strict=True)
-    ] == [False, True, True, True, True, True]
+    assert [render_colored(part) for part in parts[1:]] == [
+        render_colored(markup(render_plain(part), "dim")) for part in parts[1:]
+    ]
+    assert render_colored(parts[0]) != render_colored(markup(render_plain(parts[0]), "dim"))
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

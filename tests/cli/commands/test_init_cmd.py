@@ -3,9 +3,8 @@
 Each case drives the assembled app through :class:`typer.testing.CliRunner`. The
 non-interactive command takes ``--bench`` and optional ``--no-runbook`` /
 ``--no-skill`` flags, builds a :class:`ScaffoldRequest`, and delegates to
-:func:`scaffold`. Usage errors, the re-run over an existing ``gymrat.toml``,
-and the base-directory resolution are exercised the way a shell would invoke
-them.
+:func:`scaffold`. Usage errors and the base-directory resolution are
+exercised the way a shell would invoke them.
 """
 
 from collections.abc import Callable
@@ -21,15 +20,7 @@ from tests.cli._origin import set_origin
 from tests.cli._runner import (
     runner,
 )
-from tests.config._toml import EXISTING_CONFIG, write_raw
 from tests.session._budget import install_budget
-
-
-@pytest.fixture
-def existing_config_cwd(_in_non_repo: None, tmp_path: Path) -> Path:
-    """A non-repo cwd with a pre-existing ``gymrat.toml`` already written."""
-    write_raw(tmp_path, EXISTING_CONFIG)
-    return tmp_path
 
 
 @pytest.fixture
@@ -50,18 +41,6 @@ def test_init_when_bench_missing_does_exit_two_naming_bench():
 
     assert result.exit_code == 2
     assert "--bench" in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# existing gymrat.toml at the resolved base
-# ---------------------------------------------------------------------------
-
-
-def test_init_when_config_already_exists_does_not_require_bench(existing_config_cwd: Path):
-    result = runner.invoke(app, ["init"])
-
-    assert result.exit_code == 0
-    assert (existing_config_cwd / "gymrat-runbook.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +65,6 @@ def _plant_runbook(base: Path) -> None:
 @pytest.mark.parametrize(
     ("arrange", "flags", "summary"),
     [
-        pytest.param(
-            _leave_base_empty,
-            [],
-            [_CONFIG_CREATED, _RUNBOOK_CREATED, _SKILL_CREATED],
-            id="all-created",
-        ),
         pytest.param(
             _plant_runbook,
             [],

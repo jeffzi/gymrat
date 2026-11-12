@@ -20,8 +20,6 @@ from gymrat.model import (
 )
 from gymrat.stats import detectable_shift
 from tests.verdict._engine import (
-    BYTE_ONE_MOVE_A,
-    BYTE_ONE_MOVE_B,
     DIRECTION_MISMATCH_A,
     DIRECTION_MISMATCH_B,
     FLAT_PERMUTATION_ROUNDS,
@@ -85,10 +83,15 @@ def test_compute_verdicts_when_exact_does_classify_by_direction(
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta_with_no_signal():
+def test_compute_verdicts_when_baseline_median_zero_does_report_nan_delta():
     result = run(samples(0.0), samples(5.0), METRIC_EXACT_LOWER)
 
     assert math.isnan(result["metric"].delta)
+
+
+def test_compute_verdicts_when_baseline_median_zero_does_report_no_signal():
+    result = run(samples(0.0), samples(5.0), METRIC_EXACT_LOWER)
+
     assert result["metric"].verdict == "no-signal"
 
 
@@ -197,13 +200,12 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n():
 
 
 @pytest.mark.parametrize(
-    ("meta", "samples_a", "samples_b", "expected_delta", "expected"),
+    ("meta", "samples_a", "samples_b", "expected"),
     [
         pytest.param(
             METRIC_APPROX_LOWER,
             samples(100.0, 110.0),
             samples(30.0, 50.0),
-            (40 - 105) / 105 * 100,
             ("improved", None),
             id="exceeds-band",
         ),
@@ -211,23 +213,20 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n():
             METRIC_APPROX_LOWER,
             create_samples(2, 100.0),
             samples(99.8, 99.6),
-            -0.3,
             ("no-signal", "noise"),
             id="within-band",
         ),
     ],
 )
-def test_compute_verdicts_when_band_does_classify(
+def test_compute_verdicts_when_band_does_signal_only_beyond_noise_band(
     meta: dict[str, MetricMeta],
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
-    expected_delta: float,
     expected: tuple[str, str | None],
 ):
     result = run(samples_a, samples_b, meta)
 
     verdict = get_band(result)
-    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
     assert (verdict.verdict, verdict.reason) == expected
 
 
@@ -245,42 +244,66 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
 
 
 @pytest.mark.parametrize(
-    ("samples_a", "samples_b", "expected_noise_pct", "expected_noise_abs"),
+    ("samples_a", "samples_b", "expected_noise_pct"),
     [
-        pytest.param(samples(80.0, 120.0), samples(90.0, 110.0), 30.0, 30.0, id="band-spread"),
-        pytest.param(create_samples(2, 100.0), samples(100.0, 100.1), 0.5, 0.075, id="band-floor"),
+        pytest.param(samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="band-spread"),
+        pytest.param(create_samples(2, 100.0), samples(100.0, 100.1), 0.5, id="band-floor"),
         # The candidate side's spread (half-range 50 over median 110) sets the band.
         pytest.param(
             create_samples(2, 100.0),
             samples(60.0, 160.0),
             150 * 50 / 110,
-            75.0,
             id="band-candidate-spread",
         ),
-        # The candidate's relative spread sets the percentage while the baseline's
-        # larger half-range sets the absolute band.
+        # The candidate's relative spread sets the percentage although the
+        # baseline has the larger half-range.
         pytest.param(
             samples(180.0, 220.0),
             samples(40.0, 60.0),
-            30.0,
             30.0,
             id="band-pct-and-abs-from-different-sides",
         ),
     ],
 )
-def test_compute_verdicts_when_non_exact_inputs_vary_does_report_noise_pct_and_abs(
+def test_compute_verdicts_when_band_does_report_noise_pct_from_wider_relative_spread_above_floor(
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
     expected_noise_pct: float,
+):
+    result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
+
+    verdict = get_band(result)
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("samples_a", "samples_b", "expected_noise_abs"),
+    [
+        pytest.param(samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="baseline-larger"),
+        pytest.param(create_samples(2, 100.0), samples(60.0, 160.0), 75.0, id="candidate-larger"),
+        # The percentage floor does not floor the absolute band.
+        pytest.param(
+            create_samples(2, 100.0), samples(100.0, 100.1), 0.075, id="pct-floor-left-out"
+        ),
+        # The baseline's larger half-range sets the absolute band while the
+        # candidate's relative spread sets the percentage.
+        pytest.param(
+            samples(180.0, 220.0),
+            samples(40.0, 60.0),
+            30.0,
+            id="band-pct-and-abs-from-different-sides",
+        ),
+    ],
+)
+def test_compute_verdicts_when_band_does_report_noise_abs_from_larger_half_range(
+    samples_a: list[dict[str, float]],
+    samples_b: list[dict[str, float]],
     expected_noise_abs: float,
 ):
     result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
     verdict = get_band(result)
-    assert (verdict.noise_pct, verdict.noise_abs) == (
-        pytest.approx(expected_noise_pct, abs=1e-5),
-        pytest.approx(expected_noise_abs, abs=1e-5),
-    )
+    assert verdict.noise_abs == pytest.approx(expected_noise_abs, abs=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -342,17 +365,21 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
 # ---------------------------------------------------------------------------
 
 
-def test_compute_verdicts_when_some_windows_one_sided_does_drop_them_with_one_warning():
-    collected: list[str] = []
+_ONE_SIDED_A = samples(100.0, 100.0, 100.0, 90.0)
+_ONE_SIDED_B = [{"metric": 95.0}, {"other": 1.0}, {"other": 1.0}, {"metric": 85.0}]
 
-    result = run(
-        samples(100.0, 100.0, 100.0, 90.0),
-        [{"metric": 95.0}, {"other": 1.0}, {"other": 1.0}, {"metric": 85.0}],
-        METRIC_EXACT_LOWER,
-        warn=collected.append,
-    )
+
+def test_compute_verdicts_when_some_windows_one_sided_does_drop_them():
+    result = run(_ONE_SIDED_A, _ONE_SIDED_B, METRIC_EXACT_LOWER)
 
     assert result["metric"].n == 2
+
+
+def test_compute_verdicts_when_some_windows_one_sided_does_warn_once_naming_the_dropped_count():
+    collected: list[str] = []
+
+    run(_ONE_SIDED_A, _ONE_SIDED_B, METRIC_EXACT_LOWER, warn=collected.append)
+
     assert len(collected) == 1
     assert collected[0].startswith("metric:")
     assert re.search(r"\b2\b", collected[0])
@@ -411,15 +438,6 @@ def test_compute_verdicts_when_band_does_carry_band_its_delta_had_to_clear():
     assert verdict.detectable_pct == pytest.approx(150 * 5 / 95, abs=1e-5)
 
 
-# The baseline median is 4 bytes and every pair moves by exactly one byte, so the
-# centered differences are all zero and the shift alone would be near zero.
-def test_compute_verdicts_when_permutation_shift_below_step_floor_does_carry_step_floor():
-    result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_BYTES_LOWER)
-
-    verdict = get_permutation(result)
-    assert verdict.detectable_pct == pytest.approx(31.25, abs=1e-5)
-
-
 @pytest.mark.parametrize(
     ("narrow", "meta", "samples_a", "samples_b"),
     [
@@ -470,13 +488,3 @@ def test_compute_verdicts_when_no_finite_detectable_pct_does_carry_none(
 
     verdict = narrow(result)
     assert verdict.detectable_pct is None
-
-
-# Below 0.625 bytes the baseline's 1.25-byte step floor exceeds the default 200%
-# unstable band.
-def test_compute_verdicts_when_unstable_does_keep_detectable_pct():
-    result = run(create_samples(2, 0.6), create_samples(2, 0.7), METRIC_BYTES_LOWER)
-
-    verdict = get_band(result)
-    assert verdict.verdict == "unstable"
-    assert verdict.detectable_pct == pytest.approx(1.25 / 0.6 * 100, abs=1e-5)

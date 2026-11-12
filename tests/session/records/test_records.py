@@ -4,14 +4,31 @@ The validation tests cover how each rejection names the value it refused: values
 that are not an object, unknown record types, missing and unknown keys, and the
 field checks this module decides itself — number-before-string ordering, explicit
 nulls on optional fields, integers coerced from a whole float, tuple items of the
-wrong type, and the key path a nested error reports.
+wrong type, and the key path a nested error reports. The ``record_event`` tests
+cover the event name and scalar attributes each record type maps to.
 """
 
 import pytest
 
 from gymrat.errors import GymratError
-from gymrat.session.records import parse_record, record_to_wire
-from tests.session.records._fixtures import hook_record
+from gymrat.session.records import (
+    ITERATION_DELTA_PCT,
+    ITERATION_OUTCOME,
+    ITERATION_SEQ,
+    SESSION_LOG_MODELS,
+    IterationPrimary,
+    SessionLogRecord,
+    parse_record,
+    record_event,
+    record_to_wire,
+    wire_type,
+)
+from tests.session.records._fixtures import (
+    baseline_record,
+    committed_keep,
+    hook_record,
+    iteration_record,
+)
 from tests.session.records._wire import (
     BASELINE_RECORD,
     COMMAND_RECORD,
@@ -82,7 +99,7 @@ def test_parse_record_when_type_unknown_does_hint_every_known_record_type():
         parse_record({"type": "banana"})
 
     hint = exc.value.hint or ""
-    assert ("session" in hint, "command" in hint) == (True, True)
+    assert all(wire_type(model) in hint for model in SESSION_LOG_MODELS)
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +155,6 @@ def test_parse_record_when_key_unknown_does_reject_naming_key():
             '"15200"',
             id="baseline-sample-string",
         ),
-        # integers coerced from a whole float
-        pytest.param(
-            patching(nested_with(SESSION_RECORD, "config", samples=0.0), {"samples": 0}),
-            "config.samples",
-            "at or above 1",
-            "0",
-            id="config-samples-zero-float-beside-equal-stray-key",
-        ),
     ],
 )
 def test_parse_record_when_field_invalid_does_reject_naming_key_shape_and_value(
@@ -160,6 +169,16 @@ def test_parse_record_when_field_invalid_does_reject_naming_key_shape_and_value(
         True,
         True,
     )
+
+
+def test_parse_record_when_whole_float_coerces_below_minimum_does_reject_naming_key_and_value():
+    value = patching(nested_with(SESSION_RECORD, "config", samples=0.0), {"samples": 0})
+
+    with pytest.raises(GymratError) as exc:
+        parse_record(value)
+
+    message = str(exc.value)
+    assert (" config.samples: " in message, message.endswith(" 0")) == (True, True)
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +204,61 @@ def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_wit
         parse_record(value)
 
     assert fragment in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# record_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        pytest.param(
+            iteration_record(
+                seq=3, outcome="improved", primary=IterationPrimary(kind="geomean", delta_pct=-7.2)
+            ),
+            (
+                "gymrat.iteration",
+                {
+                    ITERATION_SEQ: 3,
+                    ITERATION_OUTCOME: "improved",
+                    ITERATION_DELTA_PCT: -7.2,
+                },
+            ),
+            id="iteration",
+        ),
+        pytest.param(
+            iteration_record(primary=IterationPrimary(kind="geomean", delta_pct=None)),
+            (
+                "gymrat.iteration",
+                {ITERATION_SEQ: 1, ITERATION_OUTCOME: "improved"},
+            ),
+            id="iteration-without-delta",
+        ),
+        pytest.param(
+            committed_keep(1),
+            (
+                "gymrat.keep",
+                {
+                    ITERATION_SEQ: 1,
+                    "gymrat.keep.status": "committed",
+                    "gymrat.keep.commit": "b" * 40,
+                    "gymrat.keep.message": "cache the regex",
+                },
+            ),
+            id="committed-keep",
+        ),
+        pytest.param(
+            baseline_record(label="initial"),
+            ("gymrat.baseline", {"gymrat.baseline.label": "initial"}),
+            id="baseline-has-no-seq",
+        ),
+    ],
+)
+def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
+    record: SessionLogRecord, expected: tuple[str, dict[str, object]]
+):
+    result = record_event(record)
+
+    assert result == expected

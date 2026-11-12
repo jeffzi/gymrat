@@ -1,7 +1,7 @@
-"""Tests for the root ``gymrat`` typer app: version, debug, dispatch.
+"""Tests for the root ``gymrat`` typer app: version, dispatch.
 
 These drive the assembled CLI through :class:`typer.testing.CliRunner`, so the
-root callback, the ``--version`` eager option and the root ``--debug`` flag are
+root callback and the ``--version`` eager option are
 exercised the way a shell would invoke them. How a command's color flag replaces the root's is
 pinned in ``tests/cli/test_console.py``.
 """
@@ -9,8 +9,6 @@ pinned in ``tests/cli/test_console.py``.
 import errno
 import importlib.metadata
 import os
-
-import pytest
 
 from gymrat.cli.app import app
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
@@ -38,15 +36,3 @@ def test_app_when_version_and_stdout_write_fails_with_disk_full_does_exit_two_wi
 
     assert result.exit_code == TOOL_FAILURE_EXIT_CODE
     assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)
-
-
-# ---------------------------------------------------------------------------
-# --debug
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_app_when_debug_flag_does_show_traceback_on_error():
-    result = runner.invoke(app, ["--debug", "status"])
-
-    assert "Traceback" in result.output

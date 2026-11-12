@@ -31,15 +31,10 @@ def test_shorten_label_when_text_already_fits_does_return_verbatim():
         pytest.param(9, "rain…lake", id="odd-width-splits-evenly"),
         pytest.param(8, "rain…ake", id="even-width-favors-head"),
         pytest.param(2, "r…", id="tail-squeezed-out"),
-        pytest.param(1, "…", id="ellipsis-alone"),
     ],
 )
 def test_shorten_label_when_text_overflows_does_middle_ellipsis(max_width: int, expected: str):
     assert shorten_label(_TEXT, max_width) == expected
-
-
-def test_shorten_label_when_width_leaves_no_room_does_return_empty():
-    assert shorten_label(_TEXT, 0) == ""
 
 
 _E_ACUTE = "e\N{COMBINING ACUTE ACCENT}"

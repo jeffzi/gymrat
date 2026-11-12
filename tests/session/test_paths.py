@@ -83,6 +83,19 @@ def test_repo_root_when_directory_not_in_repo_does_raise_not_a_git_repository(tm
     assert str(tmp_path) in str(excinfo.value)
 
 
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_repo_root_when_git_cannot_be_started_does_raise_a_lookup_error_naming_the_directory(
+    tmp_path: Path,
+):
+    with pytest.raises(GymratError) as excinfo:
+        repo_root(str(tmp_path))
+
+    assert type(excinfo.value) is GymratError
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+    assert str(tmp_path) in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # git_common_dir
 # ---------------------------------------------------------------------------

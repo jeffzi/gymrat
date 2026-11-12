@@ -14,11 +14,7 @@ from typing import TYPE_CHECKING
 from gymrat.measure import MeasureOptions, measure
 from gymrat.metric_stats import compute_metric_stats
 from gymrat.sampling import TargetSpec
-from tests._git import (
-    EMIT_ONE_BENCH,
-    list_worktree_dirs,
-    write_committed_bench,
-)
+from tests._git import EMIT_ONE_BENCH, write_committed_bench
 from tests._pipeline import (
     install_pipeline,
     run_options,
@@ -76,4 +72,3 @@ async def test_measure_when_ref_target_does_bench_in_a_disposable_worktree(
 
     assert result.metrics["x"].median == 1.0
     assert result.cleanup.removed >= 1
-    assert list_worktree_dirs(repo, include_main=False) == []

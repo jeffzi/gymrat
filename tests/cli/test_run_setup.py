@@ -47,9 +47,9 @@ def test_resolve_render_mode_when_color_env_varies_does_follow_the_tty_alone(
 # ---------------------------------------------------------------------------
 
 
-async def test_run_with_signal_abort_when_termination_signal_received_does_kill_live_groups_setting_abort(
+async def _run_signalled_body(
     raise_signal: Callable[[int], int],
-):
+) -> tuple[asyncio.subprocess.Process, list[bool]]:
     abort_after_cleanup: list[bool] = []
     children: list[asyncio.subprocess.Process] = []
 
@@ -59,8 +59,26 @@ async def test_run_with_signal_abort_when_termination_signal_received_does_kill_
         abort_after_cleanup.append(abort.is_set())
 
     await run_with_signal_abort(execute)
+    return children[0], abort_after_cleanup
 
-    exit_code = await asyncio.wait_for(children[0].wait(), timeout=5)
-    release_contained(children[0].pid)
+
+async def test_run_with_signal_abort_when_termination_signal_received_does_kill_the_live_process_groups(
+    raise_signal: Callable[[int], int],
+):
+    child, _ = await _run_signalled_body(raise_signal)
+
+    exit_code = await asyncio.wait_for(child.wait(), timeout=5)
+
+    release_contained(child.pid)
     assert exit_code != 0
+
+
+async def test_run_with_signal_abort_when_termination_signal_received_does_set_the_abort_event(
+    raise_signal: Callable[[int], int],
+):
+    child, abort_after_cleanup = await _run_signalled_body(raise_signal)
+
+    await asyncio.wait_for(child.wait(), timeout=5)
+
+    release_contained(child.pid)
     assert abort_after_cleanup == [True]

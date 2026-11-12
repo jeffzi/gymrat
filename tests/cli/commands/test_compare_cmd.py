@@ -149,22 +149,17 @@ def test_should_fail_gate_when_evaluated_does_trip_only_on_a_matching_gating_con
 # ---------------------------------------------------------------------------
 
 
-_BENCH_TRACE = {"bench": "sh bench.sh"}
-"""The config override every traced compare below is invoked with."""
-
-
 @pytest.mark.parametrize(
     ("argv", "traced"),
     [
         pytest.param(
             ["main", "cand"],
-            {**_BENCH_TRACE, "baseline": "main", "candidates": ["cand"]},
+            {"baseline": "main", "candidates": ["cand"]},
             id="no-fail-on",
         ),
         pytest.param(
             ["main", "cand", "--fail-on", "regressed", "--fail-on", "geomean:99.5"],
             {
-                **_BENCH_TRACE,
                 "baseline": "main",
                 "candidates": ["cand"],
                 "fail_on": "regressed,geomean:99.5",
@@ -173,7 +168,7 @@ _BENCH_TRACE = {"bench": "sh bench.sh"}
         ),
         pytest.param(
             ["before=main", "after=cand"],
-            {**_BENCH_TRACE, "baseline": "before", "candidates": ["after"]},
+            {"baseline": "before", "candidates": ["after"]},
             id="labeled-targets",
         ),
     ],
@@ -188,7 +183,7 @@ def test_compare_when_success_does_record_trace_with_only_the_args_given(
     open_session(repo)
     stub_compare_command(monkeypatch)
 
-    result = runner.invoke(app, ["compare", *argv, "--bench", "sh bench.sh"])
+    result = runner.invoke(app, ["compare", *argv])
 
     assert result.exit_code == 0
     cmd = last_command_record(repo)

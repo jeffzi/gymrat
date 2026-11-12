@@ -127,9 +127,8 @@ def _git_answer(
 ) -> str | None:
     """How the scripted git seam answers one sweep call.
 
-    A removal of a ``refused`` directory fails and leaves it as it was; any
-    other removal deletes the directory and succeeds. A prune answers
-    ``prune_error``.
+    A removal of a ``refused`` directory fails; any other removal succeeds.
+    A prune answers ``prune_error``.
 
     Args:
         args: The git arguments the sweep passed.
@@ -143,7 +142,6 @@ def _git_answer(
         return prune_error
     if Path(args[-1]) in refused:
         return _REFUSED
-    shutil.rmtree(args[-1], ignore_errors=True)
     return None
 
 
@@ -622,11 +620,6 @@ def _create_stray_worktree(tmp_path: Path) -> WorktreeInfo:
     return WorktreeInfo(dir=str(stray_dir), sha=UNKNOWN_SHA, created=True)
 
 
-def _default_temp_base(_monkeypatch: pytest.MonkeyPatch, _tmp_path: Path) -> str:
-    """Leave ``tempfile.gettempdir`` alone; the planner resolves the host's own base."""
-    return str(Path(tempfile.gettempdir()).resolve())
-
-
 def _symlinked_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     """Route ``tempfile.gettempdir`` through a symlink to a real base under ``tmp_path``."""
     real_base = tmp_path / "real-base"
@@ -638,19 +631,11 @@ def _symlinked_temp_base(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str
     return str(real_base.resolve())
 
 
-@pytest.mark.parametrize(
-    "point_base",
-    [
-        pytest.param(_default_temp_base, id="host-temp-base"),
-        pytest.param(_symlinked_temp_base, id="symlinked-base", marks=needs_symlinks),
-    ],
-)
-def test_plan_worktree_when_given_ref_target_does_name_a_dir_under_the_real_temp_base(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    point_base: Callable[[pytest.MonkeyPatch, Path], str],
+@needs_symlinks
+def test_plan_worktree_when_temp_base_symlinked_does_name_a_dir_under_its_real_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    real_base = point_base(monkeypatch, tmp_path)
+    real_base = _symlinked_temp_base(monkeypatch, tmp_path)
 
     worktree = plan_worktree(RefTarget(ref="my-tag", resolved_sha=UNKNOWN_SHA))
 

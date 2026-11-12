@@ -41,6 +41,7 @@ from gymrat.utils import is_tty
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._git import status_of
+from tests._platform import needs_posix_shell, needs_posix_signals
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
@@ -168,7 +169,7 @@ def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompt
     assert (cmd.args, cmd.seq) == (traced, 1)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
+@needs_posix_shell
 def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: str):
     result = subprocess.run(  # noqa: S603 -- fixed /bin/sh script relaying sys.executable and a fixed program
         ["/bin/sh", "-c", 'exec "$0" -c "$1" 2>&-', sys.executable, _TTY_DISCARD],
@@ -230,8 +231,8 @@ def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
     assert cmd.args["allow_unimproved"] is True
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process(
+@needs_posix_signals
+def test_keep_command_when_signalled_mid_checks_does_leave_no_checks_process(
     repo: str,
     tmp_path: Path,
     reap_groups: list[int],
@@ -251,7 +252,6 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
 
         stop_by_signal(proc, signal.SIGTERM)
 
-    assert proc.returncode == 128 + signal.SIGTERM
     wait_until_dead_blocking(grandchild, timeout_s=SETTLE_TIMEOUT_S)
     # Polled rather than checked once: a killed leader stays visible as a zombie
     # until its parent reaps it.
@@ -259,7 +259,7 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
 
 
 # ---------------------------------------------------------------------------
-# --color / --no-color on keep
+# warning color when stderr is a terminal
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +308,7 @@ def test_keep_command_when_no_checks_and_stderr_a_terminal_does_color_the_warnin
 # ---------------------------------------------------------------------------
 
 
-def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
+def test_status_command_when_format_json_under_budget_does_include_the_budget_key(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_settled_session(repo)

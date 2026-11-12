@@ -84,26 +84,32 @@ def build_inputs(
 # ---------------------------------------------------------------------------
 
 
-def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order_averaging_the_rest():
-    # Neither names nor reasons are in sorted order, so only the metric_meta
-    # order explains the expected sequence.
-    verdicts, meta = build_inputs(
-        [
-            MetricSpec(name="metric2", delta=math.nan),
-            MetricSpec(name="metric1", no_verdict=True),
-            MetricSpec(name="metric3", delta=-5.0),
-        ],
-    )
+# Neither names nor reasons are in sorted order, so only the metric_meta order
+# explains the expected exclusion sequence.
+_TWO_EXCLUDED = [
+    MetricSpec(name="metric2", delta=math.nan),
+    MetricSpec(name="metric1", no_verdict=True),
+    MetricSpec(name="metric3", delta=-5.0),
+]
+
+
+def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order():
+    verdicts, meta = build_inputs(_TWO_EXCLUDED)
 
     result = compute_geomean(verdicts, meta)
 
-    assert (result.n, result.excluded) == (
-        1,
-        (
-            Exclusion(metric="metric2", reason="undefined-ratio"),
-            Exclusion(metric="metric1", reason="no-verdict"),
-        ),
+    assert result.excluded == (
+        Exclusion(metric="metric2", reason="undefined-ratio"),
+        Exclusion(metric="metric1", reason="no-verdict"),
     )
+
+
+def test_compute_geomean_when_metrics_excluded_does_average_only_the_rest():
+    verdicts, meta = build_inputs(_TWO_EXCLUDED)
+
+    result = compute_geomean(verdicts, meta)
+
+    assert result.n == 1
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +254,7 @@ def test_compute_kind_aggregates_when_many_kinds_and_groups_does_order_by_first_
 # ---------------------------------------------------------------------------
 
 
-def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_gate_over_gating_alone():
+def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_drop_non_gating_metrics_from_gated_geomean_only():
     [kind] = kinds_of(
         [
             MetricSpec(name="decode/time#time", gating=True, delta=-10.0),

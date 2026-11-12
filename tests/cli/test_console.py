@@ -40,22 +40,21 @@ def test_console_module_when_imported_does_not_import_the_exit_module():
 
 
 @pytest.mark.parametrize(
-    ("color_flag", "tty", "env", "expected_no_color"),
+    ("color_flag", "env", "expected_no_color"),
     [
-        pytest.param(False, True, {}, True, id="no-color-flag-vetoes"),
-        pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
+        pytest.param(False, {}, True, id="no-color-flag-vetoes"),
+        pytest.param(True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
     ],
 )
-def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
-    color_flag: bool | None,
-    tty: bool,
+def test_stderr_console_when_color_flag_given_does_override_the_environment(
+    color_flag: bool,
     env: dict[str, str],
     expected_no_color: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
 
     console = stderr_console(color_flag=color_flag)
 

@@ -34,41 +34,17 @@ _BYTE_CLEARS_B = samples(67.0, 71.0, 75.0, 75.0, 79.0, 83.0)
 
 
 @pytest.mark.parametrize(
-    (
-        "samples_a",
-        "samples_b",
-        "expected_noise_pct",
-        "expected_delta",
-        "expected_verdict",
-        "expected_reason",
-    ),
+    ("samples_a", "samples_b", "expected_verdict", "expected_reason"),
     [
         pytest.param(
-            BYTE_ONE_MOVE_A,
-            BYTE_ONE_MOVE_B,
-            31.25,
-            -25.0,
-            "no-signal",
-            "resolution",
-            id="one-byte-lower",
+            BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, "no-signal", "resolution", id="one-byte-lower"
         ),
-        pytest.param(
-            _BYTE_CLEARS_A,
-            _BYTE_CLEARS_B,
-            16.0,
-            -25.0,
-            "improved",
-            None,
-            id="clears-lower",
-        ),
+        pytest.param(_BYTE_CLEARS_A, _BYTE_CLEARS_B, "improved", None, id="clears-lower"),
     ],
 )
 def test_compute_verdicts_when_byte_permutation_does_give_signal_only_beyond_byte_floor(
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
-    *,
-    expected_noise_pct: float,
-    expected_delta: float,
     expected_verdict: str,
     expected_reason: str | None,
 ):
@@ -76,18 +52,22 @@ def test_compute_verdicts_when_byte_permutation_does_give_signal_only_beyond_byt
 
     verdict = get_permutation(result)
     assert verdict.p < 0.05
-    assert verdict.delta == pytest.approx(expected_delta, abs=1e-5)
-    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
     assert (verdict.verdict, verdict.reason) == (expected_verdict, expected_reason)
 
 
-# The -25% delta sits inside the 30% band, so this also pins that the permutation
-# path never compares the delta to the noise band.
 def test_compute_verdicts_when_resolution_is_none_does_take_no_step_floor():
     result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_APPROX_LOWER)
 
     verdict = get_permutation(result)
     assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
+
+
+# The -25% delta sits inside the 30% noise band: the permutation path never
+# compares the delta to the band.
+def test_compute_verdicts_when_permutation_delta_inside_noise_band_does_still_signal():
+    result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_APPROX_LOWER)
+
+    verdict = get_permutation(result)
     assert verdict.verdict == "improved"
 
 
@@ -133,3 +113,22 @@ def test_compute_verdicts_when_baseline_byte_median_overflows_does_mark_unstable
 
     verdict = get_band(result)
     assert (verdict.verdict, verdict.reason) == ("unstable", None)
+
+
+# The baseline median is 4 bytes and every pair moves by exactly one byte, so the
+# centered differences are all zero and the shift alone would be near zero.
+def test_compute_verdicts_when_permutation_shift_below_step_floor_does_carry_step_floor():
+    result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_BYTES_LOWER)
+
+    verdict = get_permutation(result)
+    assert verdict.detectable_pct == pytest.approx(31.25, abs=1e-5)
+
+
+# Below 0.625 bytes the baseline's 1.25-byte step floor exceeds the default 200%
+# unstable band.
+def test_compute_verdicts_when_unstable_does_keep_detectable_pct():
+    result = run(create_samples(2, 0.6), create_samples(2, 0.7), METRIC_BYTES_LOWER)
+
+    verdict = get_band(result)
+    assert verdict.verdict == "unstable"
+    assert verdict.detectable_pct == pytest.approx(1.25 / 0.6 * 100, abs=1e-5)

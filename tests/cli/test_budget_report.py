@@ -15,9 +15,11 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 """
 
 import json
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -128,11 +130,7 @@ def _outside_a_repository(request: pytest.FixtureRequest) -> None:
 
 def _fail_getcwd(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     """Make reading the process working directory raise ``error``."""
-
-    def getcwd() -> str:
-        raise error
-
-    monkeypatch.setattr("os.getcwd", getcwd)
+    monkeypatch.setattr("os.getcwd", create_autospec(os.getcwd, side_effect=error))
 
 
 def _repo_root_io_error(request: pytest.FixtureRequest) -> None:
@@ -248,29 +246,27 @@ def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_
             raise RuntimeError(message)
         return real_read_bytes(path)
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(
+        Path, "read_bytes", create_autospec(Path.read_bytes, side_effect=read_bytes)
+    )
 
     with pytest.raises(RuntimeError, match="patched wrong"):
         _warn()
 
 
-def _git_cannot_run(monkeypatch: pytest.MonkeyPatch) -> OSError:
-    missing = FileNotFoundError(2, "No such file or directory", "git")
+@pytest.mark.usefixtures("_in_non_repo")
+def test_emit_report_when_git_declines_the_repository_lookup_does_raise_git_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    refusal = refuse_git_lookups(monkeypatch)
+    expected = str(repository_lookup_error(str(Path.cwd()), refusal))
 
-    def launch(*_args: object, **_kwargs: object) -> str:
-        raise missing
+    with pytest.raises(GymratError) as exc:
+        _emit("text")
 
-    monkeypatch.setattr("gymrat.session.paths.run_git", launch)
-    return missing
+    assert str(exc.value) == expected
 
 
-@pytest.mark.parametrize(
-    "refuse",
-    [
-        pytest.param(refuse_git_lookups, id="dubious-ownership"),
-        pytest.param(_git_cannot_run, id="git-not-runnable"),
-    ],
-)
 @pytest.mark.parametrize(
     "run",
     [
@@ -278,41 +274,16 @@ def _git_cannot_run(monkeypatch: pytest.MonkeyPatch) -> OSError:
         pytest.param(_warn, id="warn-duration-over-budget"),
     ],
 )
-@pytest.mark.usefixtures("_in_non_repo")
-def test_budget_lookup_when_git_declines_the_repository_lookup_does_raise_git_diagnostic(
-    run: Callable[[], None],
-    refuse: Callable[[pytest.MonkeyPatch], Exception],
-    monkeypatch: pytest.MonkeyPatch,
-):
-    refusal = refuse(monkeypatch)
-    expected = str(repository_lookup_error(str(Path.cwd()), refusal))
-
-    with pytest.raises(GymratError) as exc:
-        run()
-
-    assert str(exc.value) == expected
-
-
-def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(repo: str):
-    _seed_session(repo, budget=LIVE_BUDGET)
-
-    with block_supervise_lock(repo):
-        expected = lock_probe_error(supervise_lockfile_path(repo))
-        with pytest.raises(GymratError) as exc:
-            _emit("text")
-
-    assert str(exc.value) == expected
-
-
-def test_warn_duration_over_budget_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
-    repo: str,
+def test_budget_lookup_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    run: Callable[[], None], repo: str
 ):
     _seed_session(repo, budget=LIVE_BUDGET)
 
     with block_supervise_lock(repo):
         expected = lock_probe_error(supervise_lockfile_path(repo))
+
         with pytest.raises(GymratError) as exc:
-            _warn()
+            run()
 
     assert str(exc.value) == expected
 

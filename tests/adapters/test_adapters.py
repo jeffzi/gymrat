@@ -153,20 +153,13 @@ def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("name", "quoted_name"),
-    [
-        pytest.param("bad#name#extra", '"bad#name#extra"', id="plain"),
-        pytest.param('bad#na"me#extra', '"bad#na\\"me#extra"', id="double-quote"),
-    ],
-)
-def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error(
-    name: str, quoted_name: str
-):
+def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
+    name = 'bad#na"me#extra'
+
     with pytest.raises(AdapterError) as exc:
         metric_lines_adapter.parse(f"METRIC {name}=42")
 
-    assert quoted_name in str(exc.value)
+    assert '"bad#na\\"me#extra"' in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -188,22 +181,14 @@ def test_parse_when_name_has_empty_part_does_skip_line_with_warning():
     assert f'"{name}"' in warnings[0]
 
 
-@pytest.mark.parametrize(
-    ("name", "warned_name"),
-    [
-        pytest.param('a//b"c', '"a//b\\"c"', id="double-quote"),
-        pytest.param("a//b\x07c", '"a//b\\u0007c"', id="control-character"),
-    ],
-)
-def test_parse_when_skipped_name_needs_escaping_does_warn_with_json_escaped_name(
-    name: str, warned_name: str
-):
+def test_parse_when_skipped_name_needs_escaping_does_warn_with_json_escaped_name():
+    name = 'a//b"c'
     warnings: list[str] = []
 
     metric_lines_adapter.parse(f"METRIC {name}=42\nMETRIC valid=1", warnings.append)
 
     assert len(warnings) == 1
-    assert warned_name in warnings[0]
+    assert '"a//b\\"c"' in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +208,8 @@ def test_parse_when_name_repeats_does_return_median_per_name():
 
 
 def test_parse_when_no_valid_metrics_does_raise_adapter_error():
-    warnings: list[str] = []
-
     with pytest.raises(AdapterError):
-        metric_lines_adapter.parse("some output\nwith no metrics", warnings.append)
+        metric_lines_adapter.parse("some output\nwith no metrics")
 
 
 # ---------------------------------------------------------------------------
@@ -234,20 +217,12 @@ def test_parse_when_no_valid_metrics_does_raise_adapter_error():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("name", "quoted_name"),
-    [
-        pytest.param("METRIC foo", '"METRIC foo"', id="plain"),
-        pytest.param('METRIC f"oo', '"METRIC f\\"oo"', id="double-quote"),
-    ],
-)
-def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning(
-    name: str, quoted_name: str
-):
+def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning():
+    name = 'METRIC f"oo'
     warnings: list[str] = []
 
     result = metric_lines_adapter.parse(f"METRIC {name}=42", warnings.append)
 
     assert result == {name: 42.0}
     assert len(warnings) == 1
-    assert quoted_name in warnings[0]
+    assert '"METRIC f\\"oo"' in warnings[0]

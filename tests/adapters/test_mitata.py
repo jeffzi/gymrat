@@ -90,8 +90,8 @@ def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serializ
 
 # One non-ASCII terminator per skip site catches both a missing escape and an
 # ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
-# on describe_error in tests/utils/test_utils.py, which also pins which characters
-# count as line terminators.
+# on describe_error in tests/adapters/test_payload_entry.py, and which characters
+# count as line terminators is pinned on LINE_TERMINATORS in tests/utils/test_utils.py.
 _LINE_TERMINATOR_ALIAS = "enc\u2028ode"
 
 
@@ -299,7 +299,7 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
     stdout = build_stdout([
         {
             "alias": "test",
-            "runs": [{"name": "test", "args": {}, "error": None, "stats": {"p50": 10}}],
+            "runs": [{"args": {}, "error": None, "stats": {"p50": 10}}],
         }
     ])
 

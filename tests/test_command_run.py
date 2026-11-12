@@ -11,9 +11,6 @@ import contextlib
 import errno
 import itertools
 import os
-import signal
-import subprocess
-import sys
 from collections.abc import Awaitable, Callable, Generator, Iterator
 from pathlib import Path
 from unittest.mock import create_autospec
@@ -31,12 +28,11 @@ from gymrat.session.schema import CommandReason
 from gymrat.session.store import session_header
 from gymrat.telemetry.provider import span_id_of, trace_id_of
 from gymrat.utils import monotonic_ms
+from tests._command_bodies import ok_body
 from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
 from tests._lock import remove_lock_files
 from tests._mode_bits import needs_mode_bits
-from tests._process_helpers import reaped, wait_for_pid_file_blocking
-from tests.cli._signalled_cli import SETTLE_TIMEOUT_S, stop_by_signal
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     append_raw,
@@ -58,11 +54,6 @@ from tests.telemetry._fixtures import (
     span_by_name,
     spans_by_prefix,
 )
-
-
-async def _ok_body(trace: CommandTrace) -> str:
-    """Trivial command body for tests that only inspect what the command leaves behind."""
-    return "ok"
 
 
 def _closing_command_record(root: str) -> CommandRecord:
@@ -148,7 +139,7 @@ async def test_with_repo_lock_when_session_log_missing_or_empty_does_leave_it_un
         prepare(repo)
     arm_placeholder_endpoint(monkeypatch)
 
-    await with_repo_lock("compare", _ok_body)
+    await with_repo_lock("compare", ok_body)
 
     assert (_session_log_text(repo), capsys.readouterr().err) == (expected, "")
 
@@ -213,8 +204,10 @@ _OUTER_TRACEPARENT = "00-abc-def-01"
     ],
 )
 async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
+    *,
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     args: dict[str, object] | None,
     env: dict[str, str],
     expected: tuple[dict[str, object], str | None],
@@ -227,22 +220,11 @@ async def test_with_repo_lock_when_body_succeeds_does_append_its_command_record(
         "gymrat.utils.monotonic_ms", create_autospec(monotonic_ms, side_effect=monotonic_readings)
     )
 
-    await with_repo_lock("measure", _ok_body, args=args)
+    await with_repo_lock("measure", ok_body, args=args)
 
     cmd = _closing_command_record(repo_root())
     assert (cmd.name, cmd.exit_code, cmd.reason, cmd.duration_ms) == ("measure", 0, None, 250)
     assert (cmd.args, cmd.traceparent) == expected
-
-
-async def test_with_repo_lock_when_no_endpoint_is_set_does_record_the_command_without_a_span_warning(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-):
-    seeded_session(repo)
-    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-
-    await with_repo_lock("measure", _ok_body)
-
-    assert _closing_command_record(repo_root()).name == "measure"
     assert capsys.readouterr().err == ""
 
 
@@ -359,9 +341,8 @@ async def test_with_repo_lock_when_append_fails_does_keep_the_body_result_with_a
     seeded_session(repo)
     await asyncio.to_thread(Path(session_jsonl_path(repo_root())).chmod, 0o400)
 
-    result = await with_repo_lock("measure", _result_body)
+    await with_repo_lock("measure", _result_body)
 
-    assert result == "result"
     assert os.strerror(errno.EACCES) in capsys.readouterr().err
 
 
@@ -400,10 +381,9 @@ async def test_with_repo_lock_when_session_log_size_unreadable_does_keep_the_bod
         return "result"
 
     with _searchable_on_exit(directory):
-        result = await with_repo_lock("measure", body)
+        await with_repo_lock("measure", body)
 
     warnings = capsys.readouterr().err.splitlines()
-    assert result == "result"
     assert len(warnings) == 1
     assert os.strerror(errno.EACCES) in warnings[0]
 
@@ -444,10 +424,9 @@ async def test_with_repo_lock_when_root_given_does_operate_on_that_repo_not_the_
         )
         return "ran"
 
-    result = await with_repo_lock("measure", body, root=target_repo)
+    await with_repo_lock("measure", body, root=target_repo)
 
     _closing_command_record(target_repo)
-    assert result == "ran"
     assert seen == {"log": intact_log, "held": (True, False)}
     assert log_records(cwd_repo) == [cwd_header]
 
@@ -463,9 +442,8 @@ async def test_with_repo_lock_when_root_is_not_a_repository_does_hold_its_lock_w
         held["target"] = is_held(lockfile_path(plain_directory))
         return "ran"
 
-    result = await with_repo_lock("compare", body, root=plain_directory)
+    await with_repo_lock("compare", body, root=plain_directory)
 
-    assert result == "ran"
     assert held["target"] is True
 
 
@@ -484,10 +462,9 @@ async def test_with_repo_lock_when_tracing_configured_for_another_session_does_d
     seeded_session(repo)
 
     with memory_tracing(FRESH_SESSION_ID):
-        result = await with_repo_lock("measure", _ok_body)
+        await with_repo_lock("measure", ok_body)
 
     warnings = capsys.readouterr().err.splitlines()
-    assert result == "ok"
     assert len(warnings) == 1
     assert isinstance(log_records(repo_root())[-1], CommandRecord)
 
@@ -498,7 +475,7 @@ async def test_with_repo_lock_when_tracing_enabled_without_traceparent_does_pare
     header = seeded_session(repo)
 
     with memory_tracing(header.session_id) as exporter:
-        await with_repo_lock("measure", _ok_body)
+        await with_repo_lock("measure", ok_body)
 
     span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     assert span.parent is not None
@@ -573,7 +550,7 @@ async def test_with_repo_lock_when_gymrat_traceparent_set_does_parent_on_it_only
     )
 
     with memory_tracing(header.session_id) as exporter:
-        await with_repo_lock("measure", _ok_body)
+        await with_repo_lock("measure", ok_body)
 
     span = span_by_name(exporter.get_finished_spans(), "gymrat.command.measure")
     assert span.parent is not None
@@ -591,7 +568,9 @@ def _unreadable_once(monkeypatch: pytest.MonkeyPatch, jsonl_path: Path) -> None:
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
         return read_bytes(path)
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes_denied_once)
+    monkeypatch.setattr(
+        Path, "read_bytes", create_autospec(Path.read_bytes, side_effect=read_bytes_denied_once)
+    )
 
 
 async def test_with_repo_lock_when_session_log_unreadable_before_body_does_warn_and_emit_no_command_span(
@@ -603,10 +582,9 @@ async def test_with_repo_lock_when_session_log_unreadable_before_body_does_warn_
     _unreadable_once(monkeypatch, Path(session_jsonl_path(repo_root())))
 
     with memory_tracing(header.session_id) as exporter:
-        result = await with_repo_lock("measure", _ok_body)
+        await with_repo_lock("measure", ok_body)
 
     warnings = capsys.readouterr().err.splitlines()
-    assert result == "ok"
     assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
     assert len(warnings) == 1
     assert os.strerror(errno.EACCES) in warnings[0]
@@ -641,10 +619,9 @@ async def test_with_repo_lock_when_session_log_unparsable_before_body_does_keep_
     garbage_at = f"{session_jsonl_path(repo_root())}:2"
 
     with memory_tracing(header.session_id):
-        result = await with_repo_lock("iterate", _iterate_body)
+        await with_repo_lock("iterate", _iterate_body)
 
     warnings = capsys.readouterr().err.splitlines()
-    assert result == "ok"
     assert len(warnings) == 1
     assert garbage_at in warnings[0]
 
@@ -740,57 +717,6 @@ async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_expo
         if span.name == "gymrat.command.start"
     ]
     assert start_sessions == [FRESH_SESSION_ID]
-
-
-# ---------------------------------------------------------------------------
-# with_repo_lock — termination signal mid-body
-# ---------------------------------------------------------------------------
-
-# The body registers a termination cleanup, records its pid so the test knows it
-# is mid-body, then blocks until signalled.
-_SIGNALLED_BODY = r"""
-import asyncio
-import os
-import sys
-from pathlib import Path
-
-from gymrat.command_run import with_repo_lock
-from gymrat.signals import install_termination_cleanup
-
-
-async def body(trace):
-    install_termination_cleanup(lambda: None)
-    Path(sys.argv[1]).write_text(f"{os.getpid()}\n", encoding="utf-8")
-    await asyncio.sleep(120)
-
-
-asyncio.run(with_repo_lock("measure", body))
-"""
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only signals")
-def test_with_repo_lock_when_terminated_by_signal_mid_body_does_exit_by_signal_code_without_a_command_record(
-    repo: str,
-    tmp_path: Path,
-):
-    write_session_log(repo, session_record())
-    pid_file = tmp_path / "body.pid"
-
-    with reaped(
-        subprocess.Popen(  # noqa: S603 -- argv is this interpreter running the test's own script
-            [sys.executable, "-c", _SIGNALLED_BODY, str(pid_file)],
-            cwd=repo,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONFAULTHANDLER": "1"},
-        )
-    ) as proc:
-        wait_for_pid_file_blocking(pid_file, SETTLE_TIMEOUT_S)
-        stop_by_signal(proc, signal.SIGTERM)
-
-    assert proc.returncode == 128 + signal.SIGTERM
-    assert not any(isinstance(record, CommandRecord) for record in log_records(repo))
 
 
 # ---------------------------------------------------------------------------

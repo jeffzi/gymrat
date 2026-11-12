@@ -5,9 +5,7 @@ Real-subprocess tests are parallel-safe: the ``create_scratch_repo`` factory
 """
 
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import create_autospec
 
 import pytest
 
@@ -61,8 +59,8 @@ def test_try_git_when_command_succeeds_does_return_none(repo: str):
 _UNKNOWN_REF_ARGS = ["rev-parse", "--verify", "does-not-exist"]
 
 
-def _git_fails(_monkeypatch: pytest.MonkeyPatch, repo: str) -> str:
-    """Leave ``subprocess.run`` alone and return git's own stderr for the failing command."""
+def _unknown_ref_stderr(repo: str) -> str:
+    """Git's own stderr for looking up an unknown ref in ``repo``."""
     return subprocess.run(  # noqa: S603 -- fixed git binary plus test-chosen args
         ["git", *_UNKNOWN_REF_ARGS],  # noqa: S607 -- git resolved from PATH like a user's shell
         cwd=repo,
@@ -72,36 +70,23 @@ def _git_fails(_monkeypatch: pytest.MonkeyPatch, repo: str) -> str:
     ).stderr.strip()
 
 
-def _git_missing(monkeypatch: pytest.MonkeyPatch, _repo: str) -> str:
-    """Make ``subprocess.run`` raise as if git were absent and return the error's message."""
-    message = "git"
-
-    def raise_not_found(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError(message)
-
-    monkeypatch.setattr(
-        subprocess, "run", create_autospec(subprocess.run, side_effect=raise_not_found)
-    )
-    return message
-
-
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        pytest.param(_git_fails, id="command-fails"),
-        pytest.param(_git_missing, id="git-binary-missing"),
-    ],
-)
-def test_try_git_when_the_call_fails_does_return_the_diagnostic_text(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    arrange: Callable[[pytest.MonkeyPatch, str], str],
-):
-    expected = arrange(monkeypatch, repo)
+def test_try_git_when_command_fails_does_return_gits_stderr(repo: str):
+    expected = _unknown_ref_stderr(repo)
 
     result = try_git(_UNKNOWN_REF_ARGS, repo)
 
     assert result == expected
+
+
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_try_git_when_git_cannot_be_started_does_return_the_launch_error_naming_git(
+    tmp_path: Path,
+):
+    result = try_git(_UNKNOWN_REF_ARGS, str(tmp_path))
+
+    assert result is not None
+    assert "'git'" in result
 
 
 # ---------------------------------------------------------------------------
@@ -110,10 +95,12 @@ def test_try_git_when_the_call_fails_does_return_the_diagnostic_text(
 
 
 def test_run_git_step_when_command_fails_does_raise_with_git_diagnostics(repo: str):
-    with pytest.raises(GymratError) as exc_info:
-        run_git_step(["rev-parse", "--verify", "does-not-exist"], repo, "lookup failed", "retry")
+    expected_stderr = _unknown_ref_stderr(repo)
 
-    assert str(exc_info.value).startswith("lookup failed: ")
+    with pytest.raises(GymratError) as exc_info:
+        run_git_step(_UNKNOWN_REF_ARGS, repo, "lookup failed", "retry")
+
+    assert str(exc_info.value) == f"lookup failed: {expected_stderr}"
     assert isinstance(exc_info.value.__cause__, subprocess.CalledProcessError)
     assert exc_info.value.hint == "retry"
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.iterate.state import IterationFacts
+from gymrat.cli.progress import ProgressReporter, RunShape
 from gymrat.progress_events import PassFinished, PassStarted
 from tests._rich import Clock, sealed_console, track
 
@@ -179,3 +180,47 @@ def iterate_renderer(
         clock=clock,
     )
     return console, clock, track(renderer)
+
+
+def progress_reporter(
+    mode: Literal["live", "plain"],
+    *,
+    console: Console | None = None,
+    height: int = 24,
+    target_count: int = 1,
+    sample_count: int = 3,
+    command: str | None = None,
+    target_labels: tuple[str, ...] = (),
+) -> tuple[Console, Clock[float], ProgressReporter]:
+    """Build a measure/compare progress reporter driven by a hand-advanced clock.
+
+    The reporter is tracked, so the CLI tests' autouse teardown stops it.
+
+    Args:
+        mode: ``"live"`` for a rich live display, ``"plain"`` for milestone lines.
+        console: The console to render to; a sealed 80-column console on the
+            reporter's clock when omitted.
+        height: Rows of the console built when ``console`` is omitted.
+        target_count: Targets sampled per pass.
+        sample_count: Samples per target.
+        command: The command named in the display, or ``None``.
+        target_labels: The labels of the targets, in order.
+
+    Returns:
+        The console, the clock, and the reporter.
+    """
+    clock = Clock(0.0)
+    if console is None:
+        console = sealed_console(width=80, height=height, get_time=clock)
+    reporter = ProgressReporter(
+        mode=mode,
+        console=console,
+        shape=RunShape(
+            target_count=target_count,
+            sample_count=sample_count,
+            command=command,
+            target_labels=target_labels,
+        ),
+        clock=clock,
+    )
+    return console, clock, track(reporter)

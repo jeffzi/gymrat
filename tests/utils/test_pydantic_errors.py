@@ -1,26 +1,17 @@
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import Field
 from pydantic_core import ErrorDetails
 
-from gymrat.adapters.payload_entry import first_problem
 from gymrat.config import MAX_SAFE_INTEGER
 from gymrat.utils import (
     NON_BLANK_PATTERN,
     describe_key,
     drop_prefix_errors,
-    expected_got,
     phrase_for_error,
 )
-
-
-def _validation_error(annotation: Any, value: object) -> ValidationError:
-    try:
-        TypeAdapter(annotation).validate_python(value)
-    except ValidationError as error:
-        return error
-    pytest.fail(f"{value!r} unexpectedly validated against {annotation!r}")
+from tests._validation import validation_error
 
 
 @pytest.mark.parametrize(
@@ -39,7 +30,7 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
 def test_phrase_for_error_when_constraint_fails_does_insert_the_bound(
     annotation: object, value: object, bound: str
 ):
-    error = _validation_error(annotation, value).errors()[0]
+    error = validation_error(annotation, value).errors()[0]
 
     phrase = phrase_for_error(error)
 
@@ -72,7 +63,7 @@ def test_phrase_for_error_when_constraint_fails_does_insert_the_bound(
 def test_phrase_for_error_when_validation_fails_does_phrase_expected_shape(
     annotation: object, value: object, expected: str
 ):
-    error = _validation_error(annotation, value).errors()[0]
+    error = validation_error(annotation, value).errors()[0]
 
     phrase = phrase_for_error(error)
 
@@ -132,36 +123,3 @@ def test_describe_key_when_parts_vary_does_quote_only_parts_misread_bare(
     loc: tuple[str | int, ...], expected: str
 ):
     assert describe_key(loc) == expected
-
-
-# ---------------------------------------------------------------------------
-# first_problem
-# ---------------------------------------------------------------------------
-
-
-class _Task(BaseModel):
-    name: str
-
-
-@pytest.mark.parametrize(
-    ("value", "prefix", "expected"),
-    [
-        pytest.param({}, (), " with missing name", id="missing-key"),
-        pytest.param(
-            {"name": 1},
-            (),
-            f" with invalid name: {expected_got('a string', 1)}",
-            id="invalid-key",
-        ),
-        pytest.param(None, (), f": {expected_got('an object', None)}", id="invalid-root"),
-        pytest.param({}, ("result",), " with missing result.name", id="prefixed"),
-    ],
-)
-def test_first_problem_when_validation_fails_does_phrase_the_first_error_as_a_tail(
-    value: object, prefix: tuple[str, ...], expected: str
-):
-    error = _validation_error(_Task, value)
-
-    tail = first_problem(error, prefix)
-
-    assert tail == expected

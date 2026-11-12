@@ -672,8 +672,8 @@ def test_plain_line_when_launch_does_return_the_caps_line(
         ),
     ],
 )
-def test_plain_line_when_event_arrives_does_return_its_line_or_nothing(
-    state: ReporterState, event: SessionEvent, expected: str | None
+def test_plain_line_when_event_arrives_does_return_its_milestone_line(
+    state: ReporterState, event: SessionEvent, expected: str
 ):
     _, line = emit(state, event)
 

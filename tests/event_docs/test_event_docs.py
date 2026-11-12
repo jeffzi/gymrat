@@ -209,7 +209,6 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
     schemas, doc = _render_with_schemas()
 
     msg = doc["components"]["messages"][_wire_type(model)]
-
     description = schemas[channel.schema_index]["$defs"][model.__name__]["description"]
     schema_file, fragment = msg["payload"]["schema"]["$ref"].removeprefix("./").split("#")
     assert msg["title"] == model.__name__
@@ -273,8 +272,8 @@ def test_render_reference_when_called_does_order_sections_per_union_declaration(
 
 
 # ---------------------------------------------------------------------------
-# field tables — iteration as the representative type; columns: name, type,
-# required/optional, description
+# field tables — iteration as the representative type; columns: type,
+# required/optional
 # ---------------------------------------------------------------------------
 
 
@@ -287,7 +286,7 @@ def _field_rows(section: str) -> dict[str, tuple[str, str]]:
     }
 
 
-def test_render_reference_when_called_does_render_each_field_row():
+def test_render_reference_when_field_rendered_does_fill_type_and_status_columns():
     statuses = {"seq": "required", "confirm": "optional"}
     verdict = "IterationMetricVerdict"
     types = {

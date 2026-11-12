@@ -144,16 +144,23 @@ def read_only_log_dir(repo: str) -> Iterator[Path]:
         pytest.param(CONFIG_WITHOUT_HOOKS, CONFIG_SNAPSHOT_WITHOUT_HOOKS, id="no-hooks"),
     ],
 )
-def test_start_session_when_no_session_yet_does_write_header_naming_baseline_and_config(
-    repo: str, repo_head: str, config: ResolvedConfig, snapshot: SessionConfig
+def test_start_session_when_no_session_yet_does_snapshot_the_config(
+    repo: str, config: ResolvedConfig, snapshot: SessionConfig
 ):
-    result = start_session(repo, "main", config)
+    start_session(repo, "main", config)
+
+    assert session_header_of(repo).config == snapshot
+
+
+def test_start_session_when_no_session_yet_does_write_a_lone_header_pinning_the_ref(
+    repo: str, repo_head: str
+):
+    result = start_session(repo, "main", CONFIG)
 
     header = session_header_of(repo)
     assert result == StartResult(session=header, state=fold_session([header]), resumed=False)
     assert log_records(repo) == [header]
     assert header.baseline == BaselineRef(ref="main", sha=repo_head)
-    assert header.config == snapshot
 
 
 def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_header_stamps(

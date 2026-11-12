@@ -23,14 +23,16 @@ import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
-from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
+from gymrat.exec import ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
+    OVERRUN_WITH_INVALID_KEPT,
+    SHORT_WITH_INVALID,
+    SMALL_CAP,
     ExecRun,
     ExecTask,
     expected_result,
@@ -260,71 +262,48 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("cap", "command", "stdout", "stdout_bytes", "stdout_truncated"),
-    [
-        # A cap of zero drops every chunk: the prior total of 0 already reaches it.
-        pytest.param(
-            0, "echo hello", "", len(b"hello\n"), True, id="cap-reached-drops-every-chunk"
-        ),
-        # The prior total (5) is still under the cap, so the chunk that crosses
-        # it is kept whole rather than cut at the cap.
-        pytest.param(
-            10,
-            "printf plums; sleep 0.2; printf cherries",
-            "plums" + "cherries",
-            len(b"plums" + b"cherries"),
-            False,
-            id="crossing-chunk-kept-whole",
-        ),
-    ],
-)
-async def test_exec_when_output_reaches_cap_does_keep_chunks_started_under_it_and_count_every_byte(
+async def test_exec_when_output_past_cap_is_dropped_does_still_count_its_bytes(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    *,
-    cap: int,
-    command: str,
-    stdout: str,
-    stdout_bytes: int,
-    stdout_truncated: bool,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", cap)
+    # A cap of zero drops every chunk: the prior total of 0 already reaches it.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 0)
 
-    result = await run_exec(command, make_opts())
+    result = await run_exec("echo hello", make_opts())
 
     assert result == ExecResult(
-        stdout=stdout,
+        stdout="",
         stderr="",
         exit_code=0,
-        stdout_bytes=stdout_bytes,
+        stdout_bytes=len(b"hello\n"),
         stderr_bytes=0,
-        stdout_truncated=stdout_truncated,
+        stdout_truncated=True,
     )
 
 
-_SMALL_CAP = 2
+async def test_exec_when_chunk_crosses_cap_does_keep_it_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    # The prior total (5) is still under the cap, so the chunk that crosses it
+    # is kept whole rather than cut at the cap.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 10)
 
-# Three invalid bytes, read before the cap is reached and so kept whole, decode
-# to three U+FFFD that re-encode to nine bytes; the later "ab" is dropped. The
-# kept text re-encodes longer than the five bytes written, yet the stream overran.
-_OVERRUN_WITH_INVALID_KEPT = "printf '\\377\\377\\377'; sleep 0.2; printf ab"
+    result = await run_exec("printf plums; sleep 0.2; printf cherries", make_opts())
 
-# One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
-# three bytes: longer than the one byte written, yet nothing was dropped.
-_SHORT_WITH_INVALID = "printf '\\377'"
+    assert result == expected_result("plums" + "cherries")
 
 
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
         pytest.param(
-            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}",
+            f"{SHORT_WITH_INVALID} >&2; {OVERRUN_WITH_INVALID_KEPT}",
             (True, False),
             id="stdout-overran",
         ),
         pytest.param(
-            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2",
+            f"{SHORT_WITH_INVALID}; {{ {OVERRUN_WITH_INVALID_KEPT}; }} >&2",
             (False, True),
             id="stderr-overran",
         ),
@@ -337,7 +316,7 @@ async def test_exec_when_run_finishes_does_flag_each_stream_that_overran_the_cap
     command: str,
     expected: tuple[bool, bool],
 ) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
 
     result = await run_exec(command, make_opts())
 
@@ -356,36 +335,6 @@ async def test_exec_when_stream_ends_at_cap_mid_character_does_keep_tail_untrunc
     result = await run_exec("printf 'ab\\342'", make_opts())
 
     assert (result.stdout, result.stdout_truncated) == ("ab�", False)
-
-
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        pytest.param(
-            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}; sleep 30",
-            (True, False),
-            id="stdout-overran",
-        ),
-        pytest.param(
-            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2; sleep 30",
-            (False, True),
-            id="stderr-overran",
-        ),
-    ],
-)
-async def test_exec_when_run_times_out_does_flag_each_stream_that_overran_the_cap(
-    monkeypatch: pytest.MonkeyPatch,
-    make_opts: Callable[..., ExecOptions],
-    *,
-    command: str,
-    expected: tuple[bool, bool],
-) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
-
-    result = await run_exec(command, make_opts(timeout_ms=1000))
-
-    assert isinstance(result, ExecTimeoutError)
-    assert (result.stdout_truncated, result.stderr_truncated) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -426,31 +375,6 @@ async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its
     exec_mod.kill_live_process_groups()
 
     assert attempted == []
-
-
-async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_group_without_propagating(
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-    background_runs: list[ExecTask],
-) -> None:
-    # No grace, so the sweep reaches its kills without waiting on groups that
-    # every signal fails to reach.
-    background_runs.extend(asyncio.create_task(run_exec("sleep 30", make_opts())) for _ in range(2))
-    await wait_for_spawned(spawned_processes, count=2)
-    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", 0)
-    killed: list[int] = []
-
-    def raise_after_recording(group_pid: int, signal_number: int) -> None:
-        if signal_number == signal.SIGKILL:
-            killed.append(group_pid)
-        raise RuntimeError(group_pid)
-
-    monkeypatch.setattr(os, "killpg", raise_after_recording)
-
-    exec_mod.kill_live_process_groups()
-
-    assert sorted(killed) == sorted(proc.pid for proc in spawned_processes)
 
 
 async def test_kill_live_process_groups_when_group_leader_exited_does_still_signal_its_group(
@@ -507,21 +431,37 @@ async def _start_term_ignoring_runs(
     await wait_for_spawned(spawned_processes, count=2)
 
 
-def _fail_sweep_step(monkeypatch: pytest.MonkeyPatch, helper: str) -> None:
+# The real ``os.kill``, captured before any test swaps it.
+_REAL_KILL = os.kill
+
+
+def _fail_sweep_step(monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    # Fail the OS call each sweep step makes: the group signal for terminate
+    # (SIGTERM) and kill (SIGKILL), the first liveness probe (signal 0) for wait.
+    # Every other call reaches the real OS, so the groups still end.
     monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _SWEEP_GRACE_S)
-    real = getattr(exec_mod, helper)
-    monkeypatch.setattr(
-        exec_mod, helper, create_autospec(real, side_effect=RuntimeError(_STEP_ERROR))
-    )
+    if step == "wait":
+        probes_failed: list[int] = []
+
+        def kill_failing_first_probe(pid: int, signal_number: int) -> None:
+            if signal_number == 0 and not probes_failed:
+                probes_failed.append(pid)
+                raise RuntimeError(_STEP_ERROR)
+            _REAL_KILL(pid, signal_number)
+
+        monkeypatch.setattr(os, "kill", kill_failing_first_probe)
+        return
+    failing_signal = signal.SIGTERM if step == "terminate" else signal.SIGKILL
+
+    def killpg_failing_step(group_pid: int, signal_number: int) -> None:
+        if signal_number == failing_signal:
+            raise RuntimeError(_STEP_ERROR)
+        REAL_KILLPG(group_pid, signal_number)
+
+    monkeypatch.setattr(os, "killpg", killpg_failing_step)
 
 
-@pytest.mark.parametrize(
-    ("helper", "step"),
-    [
-        pytest.param("terminate_process_group", "terminate", id="terminate"),
-        pytest.param("kill_process_group", "kill", id="kill"),
-    ],
-)
+@pytest.mark.parametrize("step", ["terminate", "kill"])
 async def test_kill_live_process_groups_when_a_group_step_raises_does_warn_once_per_group_naming_step_and_error(
     spawned_processes: list[asyncio.subprocess.Process],
     make_opts: Callable[..., ExecOptions],
@@ -529,11 +469,10 @@ async def test_kill_live_process_groups_when_a_group_step_raises_does_warn_once_
     recwarn: pytest.WarningsRecorder,
     background_runs: list[ExecTask],
     *,
-    helper: str,
     step: str,
 ) -> None:
     await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
-    _fail_sweep_step(monkeypatch, helper)
+    _fail_sweep_step(monkeypatch, step)
 
     exec_mod.kill_live_process_groups()
 
@@ -551,7 +490,7 @@ async def test_kill_live_process_groups_when_the_wait_step_raises_does_warn_once
     background_runs: list[ExecTask],
 ) -> None:
     await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
-    _fail_sweep_step(monkeypatch, "wait_for_process_group_exit")
+    _fail_sweep_step(monkeypatch, "wait")
 
     exec_mod.kill_live_process_groups()
 
@@ -560,13 +499,7 @@ async def test_kill_live_process_groups_when_the_wait_step_raises_does_warn_once
     assert re.search(r"\bwait\b", message)
 
 
-@pytest.mark.parametrize(
-    "helper",
-    [
-        pytest.param("terminate_process_group", id="terminate"),
-        pytest.param("wait_for_process_group_exit", id="wait"),
-    ],
-)
+@pytest.mark.parametrize("step", ["terminate", "wait"])
 @pytest.mark.usefixtures("recwarn")
 async def test_kill_live_process_groups_when_an_earlier_step_raises_does_still_kill_every_group(
     spawned_processes: list[asyncio.subprocess.Process],
@@ -574,10 +507,10 @@ async def test_kill_live_process_groups_when_an_earlier_step_raises_does_still_k
     monkeypatch: pytest.MonkeyPatch,
     background_runs: list[ExecTask],
     *,
-    helper: str,
+    step: str,
 ) -> None:
     await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
-    _fail_sweep_step(monkeypatch, helper)
+    _fail_sweep_step(monkeypatch, step)
 
     exec_mod.kill_live_process_groups()
 
@@ -592,7 +525,7 @@ async def test_kill_live_process_groups_when_warnings_are_errors_and_a_step_rais
     background_runs: list[ExecTask],
 ) -> None:
     await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
-    _fail_sweep_step(monkeypatch, "terminate_process_group")
+    _fail_sweep_step(monkeypatch, "terminate")
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")

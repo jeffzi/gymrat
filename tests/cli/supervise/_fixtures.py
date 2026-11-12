@@ -475,31 +475,6 @@ def launched(kit: ReporterKit) -> ReporterKit:
     return kit
 
 
-def reporter_with_nested_read() -> ReporterKit:
-    """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
-
-    The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
-    stands at 5000 ms.
-
-    Returns:
-        The reporter together with the clock that drives it.
-    """
-    kit = make_reporter()
-    fire_launch_and_bash_start(kit.reporter.observer)
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event(
-            "Read",
-            "nested-read-1",
-            2000,
-            parent_tool_use_id="bash-1",
-            input_summary="src/config.ts",
-        )
-    )
-    kit.clock.now = 5000
-    return kit
-
-
 def reporter_showing_session(
     state: SessionState, *, best: BestIteration | None = None, max_iterations: int | None = None
 ) -> ReporterKit:

@@ -31,19 +31,11 @@ from tests._config import resolved_config
 from tests._exec_fixtures import (
     CAPPED_STDERR_BYTES,
     CAPPED_STDOUT_BYTES,
+    SAMPLING_EXEC,
     capped_result,
     expected_result,
     install_exec,
 )
-
-
-def make_success(stdout: str = "METRIC x=1") -> ExecResult:
-    """Build a zero-exit result carrying ``stdout`` on the standard stream."""
-    return expected_result(stdout)
-
-
-#: The ``exec`` the sampling module calls, which every test here replaces.
-SAMPLING_EXEC = "gymrat.sampling.exec"
 
 
 def two_in_place_targets() -> list[TargetContext]:
@@ -81,7 +73,7 @@ def lettered_in_place_targets(count: int) -> list[TargetContext]:
 
 def numbered_sample(call: int) -> ExecResult:
     """Answer a bench run with ``METRIC x=<call>``, so each sample names the run it came from."""
-    return make_success(f"METRIC x={call}")
+    return expected_result(f"METRIC x={call}")
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +84,7 @@ def numbered_sample(call: int) -> ExecResult:
 async def test_collect_samples_when_prepare_given_does_run_it_once_per_target_before_benching_under_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success("METRIC x=1"))
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     options = SamplingOptions(bench="run", prepare="prep", samples=2, timeout_seconds=2.5)
 
     await collect_samples(metric_lines_adapter, two_in_place_targets(), options, asyncio.Event())
@@ -185,7 +177,7 @@ async def test_collect_samples_when_three_or_more_targets_does_run_each_target_a
 async def test_collect_samples_when_count_cannot_balance_the_targets_does_refuse_before_any_command_runs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     options = SamplingOptions(bench="run", prepare="prep", samples=3, timeout_seconds=1.0)
 
     with pytest.raises(GymratError):
@@ -199,7 +191,7 @@ async def test_collect_samples_when_count_cannot_balance_the_targets_does_refuse
 async def test_collect_samples_when_progress_given_does_emit_every_event_stamped_from_the_clock(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     events: list[ProgressEvent] = []
     clock_ms = 0.0
 
@@ -264,15 +256,6 @@ _RUN_ONLY = SamplingOptions(bench="run", prepare=None, samples=1, timeout_second
 _FAILED_HEAD = ("x", "1", "/work", "run", "1")
 
 
-def _failed(
-    stdout: str,
-    stderr: str,
-    stdout_bytes: int,
-    stderr_bytes: int,
-) -> ExecResult:
-    return ExecResult(stdout, stderr, 1, stdout_bytes, stderr_bytes)
-
-
 def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
     position = 0
     for part in parts:
@@ -314,7 +297,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             id="prepare-fails-on-a-ref",
         ),
         pytest.param(
-            _failed("std", "err", 3, 3),
+            expected_result("std", "err", exit_code=1),
             _IN_PLACE_X,
             _RUN_ONLY,
             (*_FAILED_HEAD, "err", "std"),
@@ -323,7 +306,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             id="both-labelled-stderr-first",
         ),
         pytest.param(
-            _failed("", "", 0, 0),
+            expected_result(exit_code=1),
             _IN_PLACE_X,
             _RUN_ONLY,
             _FAILED_HEAD,
@@ -345,15 +328,6 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             8,
             False,
             id="failed-bench-over-the-cap-keeps-the-failure",
-        ),
-        pytest.param(
-            capped_result(),
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}"),
-            4,
-            True,
-            id="bench-stdout-overran-the-cap-in-a-dir",
         ),
     ],
 )
@@ -377,6 +351,22 @@ async def test_collect_samples_when_command_fails_does_raise_error_naming_what_f
     assert _holds_in_order(message, inserted)
     assert len(message.splitlines()) == line_count
     assert (hint is not None) is has_hint
+
+
+async def test_collect_samples_when_bench_stdout_overran_the_cap_does_raise_naming_the_bytes_written(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, capped_result())
+
+    with pytest.raises(CommandError) as caught:
+        await collect_samples(metric_lines_adapter, [_IN_PLACE_NEW], _BENCH_ONLY, asyncio.Event())
+
+    message = str(caught.value)
+    assert _holds_in_order(
+        message, ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}")
+    )
+    assert len(message.splitlines()) == 4
+    assert caught.value.hint is not None
 
 
 @pytest.mark.parametrize(

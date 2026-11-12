@@ -49,6 +49,7 @@ from tests.loop._settle import (
     confirmed_regression,
     edit_experiment,
     exact_regression,
+    keep_an_edit,
     settling_record_of,
     start_with,
     undefined_delta,
@@ -343,10 +344,7 @@ async def _measured_without_an_edit(repo: str, monkeypatch: pytest.MonkeyPatch) 
 
 async def _measured_nothing_new_after_a_keep(repo: str, monkeypatch: pytest.MonkeyPatch) -> int:
     """Keep an edit, then measure iteration 2 with nothing new on top; return its seq."""
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
+    await keep_an_edit(repo, monkeypatch)
     append_records(repo, iteration_record(seq=2))
     return 2
 

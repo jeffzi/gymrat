@@ -698,7 +698,7 @@ async def test_supervise_hooks_factory_when_a_rule_denies_the_call_does_answer_d
     output = await callback(hook_input, "tool-1", _CONTEXT)
 
     decision, reason = _decision(output)
-    assert (decision, bool(reason)) == ("deny", True)
+    assert (decision, _verdict(cast("str", reason), str(root / "x.py"))) == ("deny", "outside")
 
 
 async def test_supervise_hooks_factory_when_the_rules_allow_the_call_does_answer_empty(

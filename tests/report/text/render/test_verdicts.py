@@ -278,7 +278,6 @@ def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exc
     )
 
     lines = [line.strip() for line in highlights if line.strip().startswith(("candidate", "⚑"))]
-
     assert lines[:2] == ["candidate-a", "candidate-b"]
     [flag] = lines[2:]
     assert flag.startswith("⚑ time")
@@ -357,7 +356,6 @@ def test_footer_lines_when_verbose_does_name_the_band_cause_per_metric(
 ):
     lines = _band_lines_for(metrics)
 
-    assert len(lines) == len(expected)
     assert [
         (cause, line) for cause, line in zip(expected, lines, strict=True) if cause not in line
     ] == []
@@ -389,7 +387,6 @@ def test_footer_lines_when_not_verbose_does_suggest_samples_only_below_the_floor
 ):
     lines = footer_lines(metrics, verbose=False, command="compare", samples=samples, target_count=2)
 
-    assert len(lines) == len(expected)
     assert [
         (hint, render_plain(line))
         for hint, line in zip(expected, lines, strict=True)
@@ -475,9 +472,9 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
     report = render_report(_mixed_method_result(), ReportOptions(verbose=True))
 
     permutation_line = line_starting_with(report, "verdicts:")
-
+    band_line = line_starting_with(report, "noise band")
     assert "n=10" in permutation_line
-    line_starting_with(report, "noise band")
+    assert "n=4" in band_line
 
 
 # ---------------------------------------------------------------------------

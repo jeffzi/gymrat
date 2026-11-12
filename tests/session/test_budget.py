@@ -111,7 +111,16 @@ def test_arm_budget_when_armed_does_write_a_budget_due_its_minutes_from_now(
     assert Budget.model_validate_json(_budget_file(root).read_text()) == budget
 
 
-def test_arm_budget_when_released_does_remove_the_file_and_uninstall_the_hook(
+def test_arm_budget_when_released_does_remove_the_file(root: str, monkeypatch: pytest.MonkeyPatch):
+    track_cleanups(monkeypatch, "gymrat.session.budget")
+    _budget, release = arm_budget(root, 30, warn=lambda _message: None)
+
+    release()
+
+    assert not _budget_file(root).exists()
+
+
+def test_arm_budget_when_released_does_uninstall_the_termination_hook(
     root: str, monkeypatch: pytest.MonkeyPatch
 ):
     registry = track_cleanups(monkeypatch, "gymrat.session.budget")
@@ -120,7 +129,6 @@ def test_arm_budget_when_released_does_remove_the_file_and_uninstall_the_hook(
     release()
 
     assert registry.uninstall_counts() == [1]
-    assert not _budget_file(root).exists()
 
 
 def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(

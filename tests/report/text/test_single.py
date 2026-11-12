@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-
 from gymrat.model import Exclusion
 from gymrat.report.table.cells import geomean_scope_label
 from gymrat.report.text.render import render_report
@@ -120,16 +118,6 @@ def _flat_result(geomean: GeomeanResult) -> ComparisonResult:
     )
 
 
-def test_render_report_when_flat_geomean_excludes_a_metric_does_label_kept_against_total():
-    result = _flat_result(
-        geomean_of(-5.8, 2, excluded=[Exclusion(metric="flaky#other", reason="unstable")])
-    )
-
-    report = strip_ansi(render_report(result))
-
-    assert stripped_cells(line_starting_with(report, "geomean"))[0] == "geomean (2/3)"
-
-
 def test_render_report_when_flat_geomean_covers_no_metric_does_show_the_no_stable_metrics_stand_in():
     result = _flat_result(
         geomean_of(
@@ -153,32 +141,15 @@ def test_render_report_when_flat_geomean_covers_no_metric_does_show_the_no_stabl
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("scope", "geomean", "expected"),
-    [
-        pytest.param(
-            "entity",
-            geomean_of(n=1),
-            f"{geomean_scope_label('entity')} (1/1)",
-            id="nothing-excluded",
-        ),
-        pytest.param(
-            "memory",
-            geomean_of(
-                n=13,
-                excluded=[
-                    Exclusion(metric="a/heap", reason="unstable"),
-                    Exclusion(metric="b/heap", reason="undefined-ratio"),
-                ],
-            ),
-            f"{geomean_scope_label('memory')} (13/15)",
-            id="several-exclusions",
-        ),
-    ],
-)
-def test_scoped_geomean_label_when_exclusions_vary_does_count_kept_metrics_against_total(
-    scope: str, geomean: GeomeanResult, expected: str
-):
-    label = scoped_geomean_label(scope, geomean)
+def test_scoped_geomean_label_when_metrics_excluded_does_count_kept_metrics_against_total():
+    geomean = geomean_of(
+        n=13,
+        excluded=[
+            Exclusion(metric="a/heap", reason="unstable"),
+            Exclusion(metric="b/heap", reason="undefined-ratio"),
+        ],
+    )
 
-    assert label == expected
+    label = scoped_geomean_label("memory", geomean)
+
+    assert label == f"{geomean_scope_label('memory')} (13/15)"

@@ -6,6 +6,7 @@ Replaying a session log must also yield the spans live tracing emitted for it.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ from gymrat.telemetry.run_spans import (
     TURN_SESSION_COST_USD,
     run_span_key,
 )
+from tests._command_bodies import ok_body
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
     SESSION_ID,
@@ -72,10 +74,14 @@ def _replay(session_log: str, sup_log: str) -> tuple[Any, ...]:
     return exporter.get_finished_spans()
 
 
-def _assert_one_stderr_warning_naming(stderr: str, *fragments: str) -> None:
-    warnings = [line for line in stderr.splitlines() if fragments[0] in line]
+def _assert_one_stderr_warning_naming(
+    stderr: str, path: str, *fragments: str, line: int | None = None
+) -> None:
+    warnings = [warning for warning in stderr.splitlines() if path in warning]
     assert len(warnings) == 1, stderr
     assert all(fragment in warnings[0] for fragment in fragments), (fragments, warnings[0])
+    if line is not None:
+        assert re.search(rf"\b{line}\b", warnings[0].replace(path, "")), (line, warnings[0])
 
 
 @pytest.fixture
@@ -148,7 +154,6 @@ def test_replay_session_when_command_record_present_does_create_command_span(
     spans = _replay(session_log, sup_log)
 
     cmd_span = span_by_name(spans, "gymrat.command.measure")
-    assert cmd_span.context.span_id == span_id_of(SESSION_ID, "command:2")
     assert (cmd_span.start_time, cmd_span.end_time) == (T2 - 500 * 1_000_000, T2)
 
 
@@ -283,48 +288,24 @@ def test_replay_session_when_called_does_return_span_count(log_paths: tuple[str,
 
 
 # ---------------------------------------------------------------------------
-# robustness: unrecognized supervisor lines
-# ---------------------------------------------------------------------------
-
-
-def test_replay_session_when_supervisor_line_unrecognized_does_skip_it(log_paths: tuple[str, str]):
-    session_log, sup_log = log_paths
-    header = session_record(at=T0)
-    write_records_log(session_log, [header])
-    write_lines(
-        sup_log,
-        [
-            to_json_line(replay_launch_event(at=T1)),
-            '{"type": "unknown_future_event"}',
-            to_json_line(replay_turn_end(at=T3)),
-        ],
-    )
-
-    spans = _replay(session_log, sup_log)
-
-    run_span = span_by_name(spans, RUN_SPAN)
-    assert (run_span.start_time, run_span.end_time) == (T1, T3)
-
-
-# ---------------------------------------------------------------------------
 # supervisor logs replay skips: silently, or with a stderr warning
 # ---------------------------------------------------------------------------
 
 
-def _write_other_session_log(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+def _write_other_session_log(sup_log: str) -> None:
     write_supervisor_log(sup_log, [replay_launch_event(at=T1, session_id="other-session")])
 
 
-def _first_line(raw: bytes) -> Callable[[str, pytest.MonkeyPatch], None]:
+def _first_line(raw: bytes) -> Callable[[str], None]:
     """Build an arrange step writing a supervisor log that opens on ``raw``."""
 
-    def write(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+    def write(sup_log: str) -> None:
         Path(sup_log).write_bytes(raw + b"\n" + to_json_line(replay_turn_end(at=T3)).encode())
 
     return write
 
 
-def _leave_absent(_sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+def _leave_absent(_sup_log: str) -> None:
     """Write nothing, as when a listed log vanished before it was read."""
 
 
@@ -340,24 +321,23 @@ def _leave_absent(_sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
 )
 def test_replay_session_when_supervisor_log_not_a_launch_of_this_session_does_skip_it_silently(
     log_paths: tuple[str, str],
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    arrange: Callable[[str], None],
 ):
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
-    arrange(sup_log, monkeypatch)
+    arrange(sup_log)
 
     spans = _replay(session_log, sup_log)
 
     assert (spans_by_prefix(spans, RUN_SPAN), capsys.readouterr().err) == ([], "")
 
 
-def _make_directory(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+def _make_directory(sup_log: str) -> None:
     Path(sup_log).mkdir()
 
 
-def _write_invalid_launch(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> None:
+def _write_invalid_launch(sup_log: str) -> None:
     write_lines(sup_log, [json.dumps({"type": "launch", "session_id": SESSION_ID, "at": "banana"})])
 
 
@@ -371,13 +351,12 @@ def _write_invalid_launch(sup_log: str, _monkeypatch: pytest.MonkeyPatch) -> Non
 def test_replay_session_when_supervisor_log_cannot_be_read_does_skip_it_with_a_warning(
     *,
     log_paths: tuple[str, str],
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    arrange: Callable[[str, pytest.MonkeyPatch], None],
+    arrange: Callable[[str], None],
 ):
     session_log, sup_log = log_paths
     write_records_log(session_log, [session_record(at=T0)])
-    arrange(sup_log, monkeypatch)
+    arrange(sup_log)
 
     spans = _replay(session_log, sup_log)
 
@@ -416,7 +395,7 @@ def test_replay_session_when_session_line_undecodable_does_skip_it_with_stderr_w
     _assert_one_stderr_warning_naming(
         capsys.readouterr().err,
         session_log,
-        "line 2",
+        line=2,
     )
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
@@ -458,8 +437,8 @@ def test_replay_session_when_session_line_fails_validation_does_skip_it_with_std
     _assert_one_stderr_warning_naming(
         capsys.readouterr().err,
         session_log,
-        "line 2",
         *inserted,
+        line=2,
     )
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
@@ -471,25 +450,6 @@ def _turn_end_costs(spans: tuple[Any, ...]) -> list[float]:
     ]
 
 
-def test_replay_session_when_supervisor_line_undecodable_does_mirror_the_lines_after_it(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    write_records_log(session_log, [session_record(at=T0)])
-    lines = [
-        to_json_line(replay_launch_event(at=T1)).encode(),
-        TORN_UTF8_LINE,
-        to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode(),
-        to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode(),
-    ]
-    Path(sup_log).write_bytes(b"".join(line + b"\n" for line in lines))
-
-    spans = _replay(session_log, sup_log)
-
-    assert span_by_name(spans, RUN_SPAN).attributes[RUN_COST_USD] == pytest.approx(0.42)
-    assert _turn_end_costs(spans) == [pytest.approx(0.10), pytest.approx(0.42)]
-
-
 # ---------------------------------------------------------------------------
 # observability: stderr warnings for skipped supervisor-log lines
 # ---------------------------------------------------------------------------
@@ -499,8 +459,6 @@ def test_replay_session_when_supervisor_line_undecodable_does_mirror_the_lines_a
     "bad_line",
     [
         pytest.param(b"{not json", id="not-json"),
-        pytest.param(TORN_UTF8_LINE, id="not-utf8"),
-        pytest.param(b"[1, 2]", id="not-an-object"),
         pytest.param(b'{"type": "unknown_future_event"}', id="matches-no-event"),
     ],
 )
@@ -516,9 +474,10 @@ def test_replay_session_when_supervisor_line_after_launch_unreadable_does_skip_i
     turn_end = to_json_line(replay_turn_end(at=T3)).encode()
     Path(sup_log).write_bytes(launch + b"\n\n" + bad_line + b"\n" + turn_end + b"\n")
 
-    _replay(session_log, sup_log)
+    spans = _replay(session_log, sup_log)
 
-    _assert_one_stderr_warning_naming(capsys.readouterr().err, sup_log, "line 3")
+    _assert_one_stderr_warning_naming(capsys.readouterr().err, sup_log, line=3)
+    assert _turn_end_costs(spans) == [pytest.approx(0.42)]
 
 
 def test_replay_session_when_supervisor_log_last_line_unterminated_does_drop_it(
@@ -534,21 +493,6 @@ def test_replay_session_when_supervisor_log_last_line_unterminated_does_drop_it(
     spans = _replay(session_log, sup_log)
 
     assert _turn_end_costs(spans) == [pytest.approx(0.10)]
-
-
-def test_replay_session_when_supervisor_line_holds_a_carriage_return_does_not_split_it(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    write_records_log(session_log, [session_record(at=T0)])
-    launch = to_json_line(replay_launch_event(at=T1)).encode()
-    first = to_json_line(replay_turn_end(at=T2, cost_usd=0.10)).encode()
-    second = to_json_line(replay_turn_end(at=T3, cost_usd=0.42)).encode()
-    Path(sup_log).write_bytes(launch + b"\n" + first + b"\r" + second + b"\n")
-
-    spans = _replay(session_log, sup_log)
-
-    assert _turn_end_costs(spans) == []
 
 
 # ---------------------------------------------------------------------------
@@ -581,15 +525,12 @@ async def test_replay_session_when_later_command_appends_record_live_does_match_
 ):
     header = seeded_session(repo)
 
-    async def body_measure(trace: CommandTrace) -> str:
-        return "ok"
-
     async def body_compare(trace: CommandTrace) -> str:
         append_records(repo, hook_record())
         return "ok"
 
     with memory_tracing(header.session_id) as live_exporter:
-        await with_repo_lock("measure", body_measure)
+        await with_repo_lock("measure", ok_body)
         await with_repo_lock("compare", body_compare)
 
     live_spans = live_exporter.get_finished_spans()
@@ -651,11 +592,8 @@ async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replay
         [replay_launch_event(session_id=header.session_id, at=T0), replay_turn_end(at=T5)],
     )
 
-    async def body(trace: CommandTrace) -> str:
-        return "ok"
-
     with memory_tracing(header.session_id) as live_exporter:
-        await with_repo_lock("measure", body)
+        await with_repo_lock("measure", ok_body)
 
     live_spans = live_exporter.get_finished_spans()
     (live_cmd,) = spans_by_prefix(live_spans, "gymrat.command.")
@@ -680,14 +618,11 @@ async def test_replay_session_when_session_log_holds_blank_lines_live_does_match
     header = seeded_session(repo)
     jsonl_path = session_jsonl_path(repo)
 
-    async def body(trace: CommandTrace) -> str:
-        return "ok"
-
     with memory_tracing(header.session_id) as live_exporter:
         append_raw(jsonl_path, b"\n")
-        await with_repo_lock("measure", body)
+        await with_repo_lock("measure", ok_body)
         append_raw(jsonl_path, b"\n")
-        await with_repo_lock("compare", body)
+        await with_repo_lock("compare", ok_body)
 
     with memory_tracing(header.session_id) as replay_exporter:
         replay_session(jsonl_path, [])

@@ -302,95 +302,71 @@ def test_build_bench_section_when_bench_unresolved_does_skip_or_fail_the_bench_c
     assert [(check.name, check.status) for check in section.checks] == checks
 
 
-@pytest.mark.parametrize(
-    ("bench", "adapter", "on_path", "expected"),
-    [
-        pytest.param(
-            "node bench.js", "banana", None, [("adapter", "fail", "")], id="adapter-unknown"
-        ),
-        pytest.param(
-            "npx tsx bench.ts",
-            "metric-lines",
-            "/usr/bin/npx",
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "npx tsx bench.ts"),
-                ("executable", "ok", "npx"),
-            ],
-            id="executable-found",
-        ),
-        pytest.param(
-            "node bench.js",
-            "metric-lines",
-            None,
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "node bench.js"),
-                ("executable", "warn", "node"),
-            ],
-            id="executable-missing",
-        ),
-        pytest.param(
-            "VAR=1 make test",
-            "metric-lines",
-            "/usr/bin/x",
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "VAR=1 make test"),
-                ("executable", "ok", "make"),
-            ],
-            id="env-var-prefix",
-        ),
-        pytest.param(
-            "cd src && make bench",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "cd src && make bench")],
-            id="shell-operator-cd",
-        ),
-        pytest.param(
-            "~/bin/bench.sh",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "~/bin/bench.sh")],
-            id="home-shorthand",
-        ),
-        pytest.param(
-            "$HOME/bin/bench.sh --fast",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "$HOME/bin/bench.sh --fast")],
-            id="variable-expansion",
-        ),
-        pytest.param(
-            "`pwd`/bench.sh",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "`pwd`/bench.sh")],
-            id="command-substitution",
-        ),
-    ],
-)
-def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(
-    bench: str,
-    adapter: str,
-    on_path: str | None,
-    expected: list[tuple[str, str, str]],
-    monkeypatch: pytest.MonkeyPatch,
-):
+def _stub_which(monkeypatch: pytest.MonkeyPatch, on_path: str | None) -> None:
+    """Make ``shutil.which`` answer ``on_path`` for every executable."""
+
     def which(_cmd: str) -> str | None:
         return on_path
 
     monkeypatch.setattr("shutil.which", create_autospec(shutil.which, side_effect=which))
 
-    section = build_bench_section(bench=bench, adapter=adapter, base_dir=".")
 
-    assert [(check.name, check.status) for check in section.checks] == [
-        (name, status) for name, status, _ in expected
+def _names_and_statuses(section: CheckSection) -> list[tuple[str, str]]:
+    return [(check.name, check.status) for check in section.checks]
+
+
+def test_build_bench_section_when_adapter_unknown_does_fail_only_the_adapter_check():
+    section = build_bench_section(bench="node bench.js", adapter="banana", base_dir=".")
+
+    assert _names_and_statuses(section) == [("adapter", "fail")]
+
+
+@pytest.mark.parametrize(
+    ("bench", "on_path", "executable", "status"),
+    [
+        pytest.param("npx tsx bench.ts", "/usr/bin/npx", "npx", "ok", id="executable-found"),
+        pytest.param("node bench.js", None, "node", "warn", id="executable-missing"),
+        pytest.param("VAR=1 make test", "/usr/bin/x", "make", "ok", id="env-var-prefix"),
+    ],
+)
+def test_build_bench_section_when_bench_starts_with_an_executable_does_check_it_on_path(
+    bench: str,
+    on_path: str | None,
+    executable: str,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _stub_which(monkeypatch, on_path)
+
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
+
+    assert _names_and_statuses(section) == [
+        ("adapter", "ok"),
+        ("bench", "ok"),
+        ("executable", status),
     ]
-    assert all(
-        part in check.detail for check, (_, _, part) in zip(section.checks, expected, strict=True)
-    )
+    assert bench in _find(section, "bench").detail
+    assert executable in _find(section, "executable").detail
+
+
+@pytest.mark.parametrize(
+    "bench",
+    [
+        pytest.param("cd src && make bench", id="shell-operator-cd"),
+        pytest.param("~/bin/bench.sh", id="home-shorthand"),
+        pytest.param("$HOME/bin/bench.sh --fast", id="variable-expansion"),
+        pytest.param("`pwd`/bench.sh", id="command-substitution"),
+    ],
+)
+def test_build_bench_section_when_bench_needs_the_shell_does_skip_the_executable_check(
+    bench: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_which(monkeypatch, "/usr/bin/x")
+
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
+
+    assert _names_and_statuses(section) == [("adapter", "ok"), ("bench", "ok")]
+    assert bench in _find(section, "bench").detail
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +374,9 @@ def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(
 # ---------------------------------------------------------------------------
 
 
-def test_detect_git_environment_when_git_missing_does_report_unavailable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.setenv("PATH", str(tmp_path))
-
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_detect_git_environment_when_git_missing_does_report_unavailable(tmp_path: Path):
     result = detect_git_environment(str(tmp_path))
 
     assert result == GitEnvironment(git_available=False, inside_git_repo=False)
@@ -441,23 +415,13 @@ def _check(report: DoctorReport, title: str, name: str) -> Check:
     return _find(section, name)
 
 
-@pytest.mark.parametrize(
-    ("toml", "bench_checks"),
-    [
-        pytest.param("samples = 0\n", [("bench", "ok")], id="invalid-value"),
-        pytest.param(None, [("adapter", "ok"), ("bench", "fail")], id="no-file"),
-    ],
-)
-def test_build_doctor_report_when_config_file_invalid_or_absent_does_set_the_bench_checks(
-    tmp_path: Path, toml: str | None, bench_checks: list[tuple[str, str]]
-):
-    if toml is not None:
-        write_raw(tmp_path, toml)
+def test_build_doctor_report_when_config_file_invalid_does_skip_the_bench_check(tmp_path: Path):
+    write_raw(tmp_path, "samples = 0\n")
 
     report = build_doctor_report(CliFlags(), str(tmp_path))
 
     bench = next(section for section in report.sections if section.title == "Bench")
-    assert [(check.name, check.status) for check in bench.checks] == bench_checks
+    assert [(check.name, check.status) for check in bench.checks] == [("bench", "ok")]
 
 
 def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_section(

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from gymrat.cli.supervise.frame import build_best_text
 from gymrat.cli.supervise.reducer import loop_plain_text
 from gymrat.cli.supervise.summary import build_summary
 from gymrat.cli.supervise.text import NO_SESSION_TEXT
@@ -83,10 +84,12 @@ def _session_result() -> ReadSessionResult:
 
 def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
     summary = _summary(session_result=_session_result())
+    best = build_best_text(_session_result())
+    assert best is not None
 
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "✓ completed · 1m 0s · $0.05\n"
-        "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
+        f"  best    {best.plain}\n"
         f"  loop    {loop_plain_text(_session_result(), None)}\n"
         f"{_LOG_ROW}"
     )

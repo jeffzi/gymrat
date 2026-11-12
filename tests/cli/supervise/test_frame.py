@@ -104,18 +104,18 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
 
 
 @pytest.mark.parametrize(
-    ("delta_pct", "direction", "expected_style"),
+    ("delta_pct", "expected_style"),
     [
-        pytest.param(-6.8, "lower", _META_DONE, id="lower-better-negative-delta-green"),
-        pytest.param(3.5, "lower", _META_REGRESSED, id="lower-better-positive-delta-red"),
+        pytest.param(-6.8, _META_DONE, id="lower-better-negative-delta-green"),
+        pytest.param(3.5, _META_REGRESSED, id="lower-better-positive-delta-red"),
     ],
 )
-def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_and_a_regression_red(
-    delta_pct: float, direction: Literal["lower", "higher"], expected_style: str
+def test_best_delta_when_rendered_with_color_does_style_it_by_whether_it_improved(
+    delta_pct: float, expected_style: str
 ) -> None:
     kit = reporter_showing_session(
         session_state(iteration_count=1, keep_count=1),
-        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
+        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction="lower"),
     )
 
     style = _segment_style(kit.reporter, "%")

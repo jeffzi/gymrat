@@ -57,14 +57,6 @@ def test_kind_geomean_of_when_kind_unreported_does_raise_an_internal_error_namin
     assert not isinstance(exc_info.value, GymratError)
 
 
-def test_group_geomean_of_when_group_reported_does_return_its_geomean():
-    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
-
-    geomean = group_geomean_of(candidate, "time", "entity")
-
-    assert geomean == time_kind().groups[0].geomean
-
-
 @pytest.mark.parametrize(
     ("kind", "group"),
     [

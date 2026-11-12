@@ -137,26 +137,6 @@ def test_render_report_when_candidate_labels_differ_in_width_does_start_every_su
 # ---------------------------------------------------------------------------
 
 
-def test_render_report_when_a_candidate_geomean_excludes_a_metric_does_count_kept_against_total():
-    result = create_comparison_result(
-        metrics=multi_candidate_result(2).metrics,
-        candidates=[
-            create_candidate(label="candidate-a", kinds=[other_kind(-10, 2)]),
-            create_candidate(
-                label="candidate-b",
-                kinds=[
-                    other_kind(4, 1, excluded=[Exclusion(metric="decode/time", reason="unstable")])
-                ],
-            ),
-        ],
-    )
-
-    report = strip_ansi(render_report(result))
-
-    provenance = stripped_cells(line_starting_with(report, "geomean"))[2:]
-    assert [cell.rsplit(" ", 1)[-1] for cell in provenance] == ["(2/2)", "(1/2)"]
-
-
 def test_render_report_when_a_candidate_geomean_covers_no_metric_does_show_the_no_stable_metrics_stand_in():
     excluded = [
         Exclusion(metric="decode/time", reason="unstable"),

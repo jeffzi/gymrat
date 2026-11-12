@@ -58,7 +58,7 @@ def test_compose_kickoff_when_no_runbook_configured_does_raise():
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
 
-def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cause(
+def test_compose_kickoff_when_runbook_path_missing_does_raise_naming_path_with_cause(
     tmp_path: Path,
 ):
     missing = str(tmp_path / "absent-runbook.md")
@@ -76,7 +76,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_runbook_configured_does_append_its_content_and_path(
+def test_compose_kickoff_when_runbook_configured_does_append_the_runbook_section(
     tmp_path: Path,
 ):
     runbook = _write_runbook(tmp_path)

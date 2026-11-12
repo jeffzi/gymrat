@@ -17,18 +17,16 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
-from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import KeepRecord
 from tests._git import commit_all, head_of, status_of
 from tests.loop._settle import (
     assert_settling_record,
-    checks_config,
-    checks_pass,
     commit_and_keep,
     commit_experiment_directly,
     edit_experiment,
     gating_blocked_history,
+    keep_an_edit,
     settling_record_of,
     start_with,
 )
@@ -89,10 +87,7 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
 async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, gating_blocked_history())
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
+    await keep_an_edit(repo, monkeypatch, gating_blocked_history())
 
     result = discard_session(repo)
 
@@ -112,10 +107,7 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
 async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    keep_result = await keep_session(repo, checks_config())
+    keep_result = await keep_an_edit(repo, monkeypatch)
     kept_commit = keep_result.record.commit
     worktree = experiment_worktree_dir(repo)
     append_records(repo, iteration_record(seq=2))

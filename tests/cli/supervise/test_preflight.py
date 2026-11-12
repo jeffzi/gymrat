@@ -61,24 +61,18 @@ def start_open_session(repo: str) -> None:
     start_with(repo, config=resolved_config())
 
 
-def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[None]:
+def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the baseline measurement path so no real bench runs.
 
     Args:
         monkeypatch: The fixture that installs the stand-in measurement.
-
-    Returns:
-        A list that gains one entry per measurement call.
     """
-    calls: list[None] = []
 
     async def fake_measure(target: object, run_options: object) -> Any:
         del target, run_options
-        calls.append(None)
         return None, baseline_record(duration_ms=5000)
 
     monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
-    return calls
 
 
 def seed_session_with_baseline(repo: str, *, baseline_duration_ms: float) -> None:
@@ -291,12 +285,14 @@ def test_preflight_when_no_baseline_record_does_record_a_measured_baseline(
 def test_preflight_when_baseline_already_recorded_does_not_measure(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    measure_calls = install_baseline_seam(monkeypatch)
+    install_baseline_seam(monkeypatch)
     seed_session_with_baseline(repo, baseline_duration_ms=5000)
 
     _run_preflight(repo)
 
-    assert len(measure_calls) == 0
+    assert records_of_type(repo, BaselineRecord) == [
+        baseline_record(label=".gymrat/worktrees/baseline", duration_ms=5000)
+    ]
 
 
 # ---------------------------------------------------------------------------

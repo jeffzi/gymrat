@@ -17,10 +17,12 @@ Real-subprocess tests are POSIX-only: process groups, session leaders, and
 import asyncio
 import contextlib
 import dataclasses
+import gc
 import os
 import shlex
 import sys
 import threading
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -31,6 +33,9 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
+    OVERRUN_WITH_INVALID_KEPT,
+    SHORT_WITH_INVALID,
+    SMALL_CAP,
     Teardown,
     cancel_and_settle,
     cancel_task,
@@ -49,6 +54,7 @@ from tests._process_helpers import (
     wait_until_dead,
     wait_until_dead_blocking,
 )
+from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 
 # How long asyncio's child reaper is held back once it starts waiting on a
 # shell. It outlasts exec's teardown of an exited shell, so the shell is still
@@ -311,18 +317,47 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
 # through one of them.
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param(
+            f"{SHORT_WITH_INVALID} >&2; {OVERRUN_WITH_INVALID_KEPT}; sleep 30",
+            ExecTimeoutError(
+                stdout="\N{REPLACEMENT CHARACTER}" * 3,
+                stderr="\N{REPLACEMENT CHARACTER}",
+                timeout_ms=1000,
+                stdout_bytes=5,
+                stderr_bytes=1,
+                stdout_truncated=True,
+            ),
+            id="stdout-overran",
+        ),
+        pytest.param(
+            f"{SHORT_WITH_INVALID}; {{ {OVERRUN_WITH_INVALID_KEPT}; }} >&2; sleep 30",
+            ExecTimeoutError(
+                stdout="\N{REPLACEMENT CHARACTER}",
+                stderr="\N{REPLACEMENT CHARACTER}" * 3,
+                timeout_ms=1000,
+                stdout_bytes=1,
+                stderr_bytes=5,
+                stderr_truncated=True,
+            ),
+            id="stderr-overran",
+        ),
+    ],
+)
 async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
+    monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
+    *,
+    command: str,
+    expected: ExecTimeoutError,
 ) -> None:
-    result = await run_shell("echo 'line 1'; sleep 10", make_opts(timeout_ms=1500))
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
 
-    assert result == ExecTimeoutError(
-        stdout="line 1\n",
-        stderr="",
-        timeout_ms=1500,
-        stdout_bytes=len(b"line 1\n"),
-        stderr_bytes=0,
-    )
+    result = await run_shell(command, make_opts(timeout_ms=1000))
+
+    assert result == expected
 
 
 async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
@@ -336,6 +371,32 @@ async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
 
     assert spawned_processes == []
     assert result == expected_result("", "", 1)
+
+
+async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
+    tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    records = install_task_leak_recorder()
+    abort = asyncio.Event()
+    task = asyncio.create_task(
+        run_exec("echo ready > ready.flag; sleep 30", make_opts(abort=abort))
+    )
+    await wait_for_file(tmp_path / "ready.flag")
+
+    abort.set()
+    await asyncio.wait_for(task, 10)
+    await asyncio.wait_for(asyncio.gather(*(proc.wait() for proc in spawned_processes)), 10)
+    # A forgotten task sits in a reference cycle with the future it waits on, so
+    # only a collection finalizes it. The same collection finalizes the reaped
+    # child's transport, whose ResourceWarning is not what this test is about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
+
+    assert task_leak_messages(records) == []
+    assert spawned_processes  # the abort ran through a real spawned child
 
 
 async def test_exec_when_torn_down_with_a_descendant_holding_the_pipes_does_close_them(

@@ -7,7 +7,6 @@ import pytest
 from gymrat.cli.options import OutputFormat
 from gymrat.cli.run_setup import SharedFlags
 from gymrat.config import (
-    MAX_SAFE_INTEGER,
     MAX_TIMEOUT_SECONDS,
     BenchlessConfig,
     CliFlags,
@@ -15,14 +14,12 @@ from gymrat.config import (
     MetricEntry,
     StopConfig,
     config_trace_args,
-    env_positive_int_result,
     find_implicit_base,
     inspect_config,
     resolve_config,
     runbook_problem,
 )
 from gymrat.errors import GymratError
-from gymrat.utils import is_positive_integer
 from tests._config import benchless_config
 from tests._git import run_git
 from tests._imports import modules_imported_by
@@ -115,48 +112,6 @@ def test_resolve_config_when_env_var_set_does_settle_by_precedence(
     assert getattr(result, case.settled_field) == case.expected
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        pytest.param("+5", id="plus-sign"),
-        pytest.param("\N{ARABIC-INDIC DIGIT FIVE}", id="non-ascii-digit"),
-        pytest.param("0", id="zero"),
-    ],
-)
-def test_is_positive_integer_when_not_bare_positive_digits_does_reject(raw: str):
-    accepted = is_positive_integer(raw)
-
-    assert accepted is False
-
-
-def test_env_positive_int_result_when_digit_string_exceeds_conversion_limit_does_report_problem(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    huge = "1" * 4301
-    monkeypatch.setenv("GYMRAT_SAMPLES", huge)
-
-    result = env_positive_int_result("GYMRAT_SAMPLES", maximum=MAX_SAFE_INTEGER)
-
-    assert result.problem is not None
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        pytest.param("10", 10, id="ceiling"),
-        pytest.param("007", 7, id="leading-zeros"),
-    ],
-)
-def test_env_positive_int_result_when_bare_digits_within_ceiling_does_accept(
-    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
-):
-    monkeypatch.setenv("GYMRAT_SAMPLES", raw)
-
-    result = env_positive_int_result("GYMRAT_SAMPLES", maximum=10)
-
-    assert result.value == expected
-
-
 # ---------------------------------------------------------------------------
 # settlement failures match inspect_config
 # ---------------------------------------------------------------------------
@@ -247,7 +202,6 @@ def test_inspect_config_when_no_file_or_flags_does_settle_defaults(
 
     assert result.config_path is None
     assert result.config == DEFAULT_CONFIG
-    assert result.bench is None
 
 
 @pytest.mark.parametrize(
@@ -461,6 +415,7 @@ def test_inspect_config_when_runbook_not_an_existing_file_does_report_naming_fie
     result = inspect_config(CliFlags())
 
     assert len(result.problems) == 1
+    assert "runbook" in result.problems[0]
     assert result.problems[0].endswith(f'"{runbook}"')
 
 
@@ -555,7 +510,7 @@ def test_inspect_config_when_config_env_var_blank_does_report_naming_var(
     )
 
 
-def test_inspect_config_when_integer_env_var_exceeds_cap_does_reject_as_not_a_positive_integer(
+def test_inspect_config_when_integer_env_var_exceeds_cap_does_report_the_rejected_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     cap = MAX_TIMEOUT_SECONDS

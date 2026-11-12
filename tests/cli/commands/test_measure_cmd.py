@@ -22,9 +22,12 @@ from tests.cli._runner import (
     runner,
 )
 from tests.cli._session import (
+    close_session_with_one_keep,
     open_session,
+    write_bench_config,
 )
 from tests.loop._probe import install_measure
+from tests.loop._settle import CHECKS
 from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     SESSION_ID,
@@ -73,6 +76,18 @@ def test_measure_when_record_and_open_session_does_record_the_run_as_a_baseline(
 
     assert result.exit_code == 0
     assert len(records_of_type(record_repo, BaselineRecord)) == 1
+
+
+def test_measure_when_record_and_text_format_does_print_note_on_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    record_repo: str,
+):
+    open_session(record_repo)
+    install_measure(monkeypatch, create_measurement_result(label="build"))
+
+    result = runner.invoke(app, ["measure", "build=main", "--bench", "sh bench.sh", "--record"])
+
+    assert result.exit_code == 0
     assert SESSION_ID in result.stdout
 
 
@@ -106,22 +121,28 @@ def test_measure_when_no_record_flag_does_leave_open_session_untouched(
     assert non_command == [session_record()]
 
 
+def test_measure_when_record_and_session_finalized_does_refuse_as_finalized(repo: str):
+    close_session_with_one_keep(repo)
+    write_bench_config(repo, checks=CHECKS)
+
+    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
+
+    assert result.exit_code == 2
+    assert last_command_record(repo).reason == "finalized"
+
+
 # ---------------------------------------------------------------------------
 # command trace — args and exit recording
 # ---------------------------------------------------------------------------
 
 
-_BENCH_TRACE = {"bench": "sh bench.sh"}
-"""The config override every traced measure below is invoked with."""
-
-
 @pytest.mark.parametrize(
     ("argv", "traced"),
     [
-        pytest.param(["main"], {**_BENCH_TRACE, "target": "main"}, id="bare-ref"),
+        pytest.param(["main"], {"target": "main"}, id="bare-ref"),
         pytest.param(
             ["build=main", "--record"],
-            {**_BENCH_TRACE, "target": "build", "record": True},
+            {"target": "build", "record": True},
             id="recorded",
         ),
     ],
@@ -135,7 +156,7 @@ def test_measure_when_success_does_record_trace_with_the_resolved_target_and_onl
     open_session(repo)
     stub_measure(monkeypatch)
 
-    result = runner.invoke(app, ["measure", *argv, "--bench", "sh bench.sh"])
+    result = runner.invoke(app, ["measure", *argv])
 
     assert result.exit_code == 0
     assert last_command_record(repo).args == traced

@@ -35,6 +35,7 @@ from gymrat.session.store import read_records
 from gymrat.supervisor.events import (
     FollowUpEvent,
     SessionEvent,
+    ToolEndEvent,
     UsageUpdateEvent,
 )
 from gymrat.supervisor.supervise import detect_end_condition
@@ -65,7 +66,6 @@ from tests.supervisor._fixtures import (
     collecting_observer,
     create_mock_driver,
     driver_calls,
-    event_log_markers,
     follow_up_reasons,
     follow_ups_with_action,
     run_supervised,
@@ -147,8 +147,12 @@ def _tool_end(tool_use_id: str = "t1", tool_name: str = "Bash") -> EmitStep:
     return EmitStep(emit=tool_end_event(tool_name, tool_use_id))
 
 
-def _ended_markers(markers: list[str]) -> list[str]:
-    return [marker for marker in markers if marker.startswith("follow_up:ended:")]
+def _tool_end_index(events: list[SessionEvent], tool_use_id: str) -> int:
+    return next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, ToolEndEvent) and event.tool_use_id == tool_use_id
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +163,7 @@ def _ended_markers(markers: list[str]) -> list[str]:
 async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after_that_tool_end(
     root: str,
 ):
+    probe = collecting_observer()
     driver = create_mock_driver([
         append_step(root, iteration_record(seq=1)),
         _tool_end(),
@@ -166,16 +171,18 @@ async def test_supervise_when_condition_lands_before_tool_end_does_end_run_after
     ])
 
     result = await run_supervised(
-        root, driver, config=benchless_config(stop=StopConfig(max_iterations=1))
+        root,
+        driver,
+        config=benchless_config(stop=StopConfig(max_iterations=1)),
+        observer=probe.observer,
     )
 
-    markers = event_log_markers(root)
-    ended = _ended_markers(markers)
+    [ended] = follow_ups_with_action(probe.events, "ended")
     assert result.ended_by == "stop-condition"
     assert result.end_reason == _MAX_ITERATIONS_REASON
     assert result.outcome.reason == "interrupted"
-    assert ended == [f"follow_up:ended:{_MAX_ITERATIONS_REASON}"]
-    assert markers.index(ended[0]) > markers.index("tool_end:t1")
+    assert ended.reason == _MAX_ITERATIONS_REASON
+    assert probe.events.index(ended) > _tool_end_index(probe.events, "t1")
 
 
 async def test_supervise_when_nothing_new_ends_run_at_tool_end_does_complete_as_session(
@@ -272,6 +279,10 @@ async def test_supervise_when_two_tool_ends_find_the_log_unreadable_does_end_onc
     assert driver_calls(inner.sessions[0]) == ["end"]
 
 
+# ---------------------------------------------------------------------------
+# reading the log at launch
+# ---------------------------------------------------------------------------
+
 _DISCARD_STREAK = tuple(discard_record(seq=seq) for seq in range(1, CONSECUTIVE_DISCARD_LIMIT + 1))
 
 
@@ -362,6 +373,7 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
     root: str,
 ):
     lock = LockSwitch(held=True)
+    probe = collecting_observer()
     driver = create_mock_driver([
         append_step(root, _FAILED_HOOK),
         _tool_end("t1"),
@@ -370,12 +382,11 @@ async def test_supervise_when_lock_held_at_detection_does_end_at_first_tool_end_
         blocked_step(),
     ])
 
-    await run_supervised(root, driver, is_lock_held=lock.is_held)
+    await run_supervised(root, driver, observer=probe.observer, is_lock_held=lock.is_held)
 
-    markers = event_log_markers(root)
-    ended = _ended_markers(markers)
-    assert ended == [f"follow_up:ended:{_FAILED_HOOK_REASON}"]
-    assert markers.index(ended[0]) > markers.index("tool_end:t2")
+    [ended] = follow_ups_with_action(probe.events, "ended")
+    assert ended.reason == _FAILED_HOOK_REASON
+    assert probe.events.index(ended) > _tool_end_index(probe.events, "t2")
 
 
 async def test_supervise_when_end_pending_and_lock_held_at_agent_turn_end_does_wait_then_end(

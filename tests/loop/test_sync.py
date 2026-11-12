@@ -120,7 +120,7 @@ def test_sync_to_experiment_when_working_tree_clean_does_not_read_the_experiment
 # ---------------------------------------------------------------------------
 
 
-def test_sync_result_report_when_nothing_synced_does_say_nothing_to_sync():
+def test_sync_result_report_when_nothing_synced_does_not_render_a_count():
     result = SyncResult(files=())
 
     report = result.report

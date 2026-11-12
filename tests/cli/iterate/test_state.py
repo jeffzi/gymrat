@@ -174,10 +174,10 @@ def test_advance_when_two_worktrees_prepared_does_sum_their_elapsed_times():
         _state(),
         PrepareStarted(label="baseline", at_ms=0),
         PrepareFinished(label="baseline", at_ms=3000),
-        PrepareStarted(label="experiment", at_ms=3000),
+        PrepareStarted(label="experiment", at_ms=4000),
     )
 
-    result = advance(state, PrepareFinished(label="experiment", at_ms=5000))
+    result = advance(state, PrepareFinished(label="experiment", at_ms=6000))
 
     assert result.nodes.prepare.elapsed_ms == 5000
 

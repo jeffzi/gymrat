@@ -26,12 +26,7 @@ from typing import override
 import pytest
 from pydantic import TypeAdapter
 
-from gymrat.adapters.payload_entry import (
-    describe_error,
-    is_finite_or_warn,
-    named_subject,
-    record_metric,
-)
+from gymrat.config import MAX_SAFE_INTEGER
 from gymrat.utils import (
     LINE_TERMINATORS,
     NonFiniteNumberError,
@@ -52,12 +47,14 @@ from gymrat.utils import (
     fraction_of_median,
     is_balanced,
     is_broken_pipe,
+    is_positive_integer,
     is_tty,
     limit_output,
     loads_strict_json,
     medians_by_name,
     os_error_reason,
     otlp_endpoint,
+    parse_bounded_positive_int,
     pluralize,
     point_stream_at_devnull,
     stderr_text_of,
@@ -513,7 +510,7 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         pytest.param(_fail_replace, id="rename-fails"),
     ],
 )
-def test_write_text_atomic_when_write_fails_does_leave_target_and_directory_untouched(
+def test_write_text_atomic_when_write_fails_does_leave_the_directory_as_it_was(
     target: Path,
     monkeypatch: pytest.MonkeyPatch,
     break_write: Callable[[Path, pytest.MonkeyPatch], str],
@@ -543,7 +540,7 @@ def test_create_text_atomic_when_target_absent_does_write_utf8_text_without_left
     assert _entries(tmp_path) == ["state.json"]
 
 
-def test_create_text_atomic_when_target_exists_does_raise_leaving_it_and_directory_untouched(
+def test_create_text_atomic_when_target_exists_does_raise_leaving_the_directory_as_it_was(
     target: Path,
 ):
     with pytest.raises(FileExistsError):
@@ -551,17 +548,6 @@ def test_create_text_atomic_when_target_exists_does_raise_leaving_it_and_directo
 
     assert target.read_text(encoding="utf-8") == OLD_TEXT
     assert _entries(target.parent) == ["state.json"]
-
-
-@needs_posix_file_modes
-def test_create_text_atomic_when_target_absent_does_create_it_with_the_umask_mode(
-    tmp_path: Path, umask: int
-):
-    path = tmp_path / "state.json"
-
-    create_text_atomic(path, NEW_TEXT)
-
-    assert stat.S_IMODE(path.stat().st_mode) == 0o666 & ~umask
 
 
 def test_create_text_atomic_when_write_fails_does_leave_directory_untouched(
@@ -597,7 +583,7 @@ def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> 
         pytest.param(6, 600.0, 5, None, id="completed-past-total"),
     ],
 )
-def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
+def test_sampling_eta_eta_ms_when_given_state_does_project_the_average_over_remaining_passes_or_none(
     completed: int, total_time_ms: float, total: int, expected: float | None
 ) -> None:
     eta = SamplingEta(completed=completed, total_time_ms=total_time_ms, total=total)
@@ -613,13 +599,13 @@ def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        (59_999, "59s"),
-        (60_000, "1m 0s"),
-        (3_900_000, "1h 05m"),
+        pytest.param(59_999, "59s", id="floors-below-a-minute"),
+        pytest.param(60_000, "1m 0s", id="keeps-zero-seconds"),
+        pytest.param(3_900_000, "1h 05m", id="pads-minutes-in-hour-tier"),
         pytest.param(-1, "0s", id="negative-renders-zero"),
     ],
 )
-def test_format_duration_when_given_milliseconds_does_render_expected_duration(
+def test_format_duration_when_given_milliseconds_does_floor_to_two_tiers_keeping_a_zero_remainder(
     ms: float, expected: str
 ) -> None:
     assert format_duration(ms) == expected
@@ -638,7 +624,7 @@ def test_format_duration_when_given_milliseconds_does_render_expected_duration(
         pytest.param(4_065_000, "1:07:45", id="hour-tier"),
     ],
 )
-def test_format_clock_when_given_milliseconds_does_render_expected_clock(
+def test_format_clock_when_given_milliseconds_does_show_the_hour_tier_only_when_nonzero(
     ms: float, expected: str
 ) -> None:
     assert format_clock(ms) == expected
@@ -668,6 +654,11 @@ _HUNDRED_A_LINE = "a" * 100 + "\n"
             "\n" + "a" * 9000,
             "\n" + "a" * (LIMIT_BYTES - 1),
             id="only-newline-at-byte-zero-cuts-at-a-char",
+        ),
+        pytest.param(
+            "\N{EURO SIGN}" * 3000,
+            "\N{EURO SIGN}" * (LIMIT_BYTES // 3),
+            id="cut-inside-a-multi-byte-char-drops-it",
         ),
     ],
 )
@@ -901,48 +892,6 @@ def test_collapse_whitespace_when_text_has_whitespace_runs_does_join_words_with_
 
 
 # ---------------------------------------------------------------------------
-# describe_error
-# ---------------------------------------------------------------------------
-
-
-def test_describe_error_when_string_holds_a_line_terminator_does_escape_only_the_terminator():
-    described = describe_error('naïve "x"\nboom')
-
-    assert described == r'naïve "x"\nboom'
-
-
-def test_describe_error_when_value_is_not_a_string_does_render_it_as_json():
-    described = describe_error({"code": 7})
-
-    assert described == '{"code": 7}'
-
-
-# ---------------------------------------------------------------------------
-# record_metric
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metrics", "warned"),
-    [
-        pytest.param({"total_ms": 1.0}, True, id="name-already-recorded"),
-        pytest.param({"alloc_bytes": 1.0}, False, id="name-new"),
-    ],
-)
-def test_record_metric_when_storing_a_reading_does_keep_it_warning_only_on_a_collision(
-    metrics: dict[str, float], warned: bool
-):
-    warnings: list[str] = []
-
-    record_metric(metrics, "total_ms", 2.0, warnings.append, "rename the runs")
-
-    assert metrics["total_ms"] == 2.0
-    assert [("total_ms" in w, "rename the runs" in w) for w in warnings] == (
-        [(True, True)] if warned else []
-    )
-
-
-# ---------------------------------------------------------------------------
 # Number
 # ---------------------------------------------------------------------------
 
@@ -954,46 +903,43 @@ def test_number_when_validating_an_integer_does_keep_it_an_integer():
 
 
 # ---------------------------------------------------------------------------
-# named_subject
+# is_positive_integer
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("entry", "expected"),
+    "raw",
     [
-        pytest.param({"alias": "line\u2028break"}, 'benchmark "line\\u2028break"', id="string"),
-        pytest.param({"alias": 3}, "benchmark", id="not-a-string"),
-        pytest.param(None, "benchmark", id="not-an-object"),
+        pytest.param("+5", id="plus-sign"),
+        pytest.param("\N{ARABIC-INDIC DIGIT FIVE}", id="non-ascii-digit"),
+        pytest.param("0", id="zero"),
     ],
 )
-def test_named_subject_when_entry_varies_does_name_it_only_by_a_string_field(
-    entry: object, expected: str
-):
-    assert named_subject("benchmark", entry, "alias") == expected
+def test_is_positive_integer_when_not_bare_positive_digits_does_reject(raw: str):
+    accepted = is_positive_integer(raw)
+
+    assert accepted is False
 
 
 # ---------------------------------------------------------------------------
-# is_finite_or_warn
+# parse_bounded_positive_int
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("value", "finite"),
+    ("raw", "maximum", "expected"),
     [
-        pytest.param(1.5, True, id="finite"),
-        pytest.param(math.inf, False, id="infinity"),
-        pytest.param(10**400, False, id="integer-overflows-float"),
+        pytest.param("1" * 4301, MAX_SAFE_INTEGER, None, id="past-int-conversion-limit"),
+        pytest.param("10", 10, 10, id="ceiling"),
+        pytest.param("007", 10, 7, id="leading-zeros"),
     ],
 )
-def test_is_finite_or_warn_when_checking_a_reading_does_warn_only_when_not_finite(
-    value: float, finite: bool
+def test_parse_bounded_positive_int_when_digits_given_does_return_the_value_within_the_ceiling(
+    raw: str, maximum: int, expected: int | None
 ):
-    warnings: list[str] = []
+    parsed = parse_bounded_positive_int(raw, maximum)
 
-    result = is_finite_or_warn(value, warnings.append, "run", "stats.p50")
-
-    assert result is finite
-    assert ["stats.p50" in w for w in warnings] == ([] if finite else [True])
+    assert parsed == expected
 
 
 # ---------------------------------------------------------------------------

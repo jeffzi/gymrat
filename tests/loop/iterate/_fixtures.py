@@ -97,7 +97,7 @@ def improved_rounds() -> list[dict[str, float]]:
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def iterate_session_header(root: str, *, experiment: str | None = None) -> SessionRecord:
+def iterate_session_header(root: str) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
@@ -106,8 +106,6 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
 
     Args:
         root: The repository the worktrees sit under.
-        experiment: The experiment worktree to name instead of
-            ``<root>/side-experiment``; None keeps the side path.
 
     Returns:
         The session header naming the side worktrees.
@@ -115,7 +113,7 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
     return session_record(
         session_id=SESSION_ID,
         worktrees=Worktrees(
-            experiment=str(Path(root) / "side-experiment") if experiment is None else experiment,
+            experiment=str(Path(root) / "side-experiment"),
             baseline=str(Path(root) / "side-baseline"),
         ),
     )

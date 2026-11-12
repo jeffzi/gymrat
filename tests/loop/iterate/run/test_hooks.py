@@ -24,7 +24,7 @@ from tests.session.records._fixtures import SESSION_ID, iteration_record
 @pytest.fixture
 def hooks(tmp_path: Path) -> HookScripts:
     """A ``HookScripts`` builder scoped to a fresh scratch directory."""
-    return HookScripts.for_root(str(tmp_path))
+    return HookScripts(str(tmp_path))
 
 
 # ---------------------------------------------------------------------------

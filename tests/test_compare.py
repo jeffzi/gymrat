@@ -100,17 +100,17 @@ async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_si
     assert result.metrics["y"].candidates[0].median == 3.5
 
 
-async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(
+async def test_compare_when_round_unpaired_on_either_side_does_median_each_side_over_paired_rounds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    baseline = [{"x": 1.0}, {"x": 2.0}, {"x": 100.0}, {"x": 200.0}]
-    candidate = [{"x": 10.0}, {"x": 20.0}, {"y": 1.0}, {"y": 1.0}]
+    baseline = [{"x": 1.0}, {"x": 2.0}, {"x": 100.0}, {"y": 1.0}]
+    candidate = [{"x": 10.0}, {"x": 20.0}, {"y": 1.0}, {"x": 500.0}]
     install_pipeline(monkeypatch, tmp_path, {"base": baseline, "cand": candidate})
 
     result = await compare(_options(samples=4))
 
-    # Rounds 2 and 3 report no candidate ``x``, so they are dropped from the
-    # displayed baseline median; over all four rounds it would be 51.0.
+    # Round 2 has no candidate ``x`` and round 3 no baseline ``x``, so both are
+    # dropped from each side's displayed median.
     assert result.metrics["x"].baseline_median == 1.5
     assert result.metrics["x"].candidates[0].median == 15.0
 

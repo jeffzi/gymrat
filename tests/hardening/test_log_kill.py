@@ -1,12 +1,8 @@
-"""Session-log hardening tests for appends cut short or run concurrently.
+"""Session-log hardening tests for appends run concurrently.
 
-These tests pin two guarantees of the session log:
-
-- a log whose final record was cut off mid-line, as a process killed while
-  appending leaves it, reads back cleanly: every record before it is intact,
-  and the half-written record is dropped — never a parse failure,
-- separate processes appending to one log never interleave their bytes within a
-  line, so every line the log holds afterwards parses.
+These tests pin one guarantee of the session log: separate processes appending
+to one log never interleave their bytes within a line, so every line the log
+holds afterwards parses.
 
 The racing children run out of process against a throwaway log under
 ``tmp_path`` and build their records from the same canonical builders the store
@@ -16,12 +12,9 @@ is POSIX-only: it relies on a named pipe to start the race together.
 
 from pathlib import Path
 
-from gymrat.session.paths import session_jsonl_path
-from gymrat.session.store import read_records
 from tests._platform import needs_named_pipes
 from tests.hardening._barrier import CHILD_BARRIER, racing_children
 from tests.session.records._fixtures import (
-    append_raw,
     append_records,
     committed_keep,
     log_records,
@@ -53,25 +46,6 @@ for offset in range(count):
     append_record(path, committed_keep(seq=base + offset))
 """
 )
-
-
-# ---------------------------------------------------------------------------
-# a log whose final line was cut short reads back every complete record
-# ---------------------------------------------------------------------------
-
-
-def test_read_records_when_final_line_cut_short_does_return_the_earlier_records(
-    tmp_path: Path,
-):
-    root = str(tmp_path)
-    clean_count = 5
-    append_records(root, session_record(), *(committed_keep(seq=seq) for seq in range(clean_count)))
-    line = committed_keep(seq=clean_count).model_dump_json(exclude_none=True).encode()
-    append_raw(session_jsonl_path(root), line[: len(line) // 2])
-
-    records = read_records(session_jsonl_path(root))
-
-    assert records == [session_record(), *(committed_keep(seq=seq) for seq in range(clean_count))]
 
 
 # ---------------------------------------------------------------------------

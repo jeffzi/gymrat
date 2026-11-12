@@ -1,4 +1,4 @@
-"""Tests for record-to-attribute mapping and the command span a record starts."""
+"""Tests for the attributes of a command span and the span a command record starts."""
 
 from __future__ import annotations
 
@@ -8,15 +8,7 @@ import pytest
 from opentelemetry.context import Context
 from opentelemetry.trace import StatusCode
 
-from gymrat.session.records import (
-    ITERATION_DELTA_PCT,
-    ITERATION_OUTCOME,
-    ITERATION_SEQ,
-    CommandRecord,
-    IterationPrimary,
-    SessionLogRecord,
-    record_event,
-)
+from gymrat.session.records import ITERATION_SEQ, CommandRecord
 from gymrat.telemetry.command_span import (
     COMMAND_DURATION_MS,
     COMMAND_EXIT_CODE,
@@ -26,13 +18,7 @@ from gymrat.telemetry.command_span import (
     start_command_span,
 )
 from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_KEY
-from tests.session.records._fixtures import (
-    SESSION_ID,
-    baseline_record,
-    command_record,
-    committed_keep,
-    iteration_record,
-)
+from tests.session.records._fixtures import SESSION_ID, command_record
 from tests.telemetry._fixtures import memory_tracing, span_by_name
 
 # ---------------------------------------------------------------------------
@@ -144,61 +130,3 @@ def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_gi
     span = _start_and_end_command_span(record)
 
     assert [link.context.span_id for link in span.links] == expected_links
-
-
-# ---------------------------------------------------------------------------
-# record_event
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        pytest.param(
-            iteration_record(
-                seq=3, outcome="improved", primary=IterationPrimary(kind="geomean", delta_pct=-7.2)
-            ),
-            (
-                "gymrat.iteration",
-                {
-                    ITERATION_SEQ: 3,
-                    ITERATION_OUTCOME: "improved",
-                    ITERATION_DELTA_PCT: -7.2,
-                },
-            ),
-            id="iteration",
-        ),
-        pytest.param(
-            iteration_record(primary=IterationPrimary(kind="geomean", delta_pct=None)),
-            (
-                "gymrat.iteration",
-                {ITERATION_SEQ: 1, ITERATION_OUTCOME: "improved"},
-            ),
-            id="iteration-without-delta",
-        ),
-        pytest.param(
-            committed_keep(1),
-            (
-                "gymrat.keep",
-                {
-                    ITERATION_SEQ: 1,
-                    "gymrat.keep.status": "committed",
-                    "gymrat.keep.commit": "b" * 40,
-                    "gymrat.keep.message": "cache the regex",
-                },
-            ),
-            id="committed-keep",
-        ),
-        pytest.param(
-            baseline_record(label="initial"),
-            ("gymrat.baseline", {"gymrat.baseline.label": "initial"}),
-            id="baseline-has-no-seq",
-        ),
-    ],
-)
-def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
-    record: SessionLogRecord, expected: tuple[str, dict[str, object]]
-):
-    result = record_event(record)
-
-    assert result == expected

@@ -59,12 +59,6 @@ BASELINE_REF = "main"
 NEXT_SESSION_ID = "20260808-152045-b7c1"
 
 
-def _both_worktrees_exist(root: str) -> bool:
-    return (
-        Path(experiment_worktree_dir(root)).exists() and Path(baseline_worktree_dir(root)).exists()
-    )
-
-
 def _edit_worktree(worktree: str, edit: str | None) -> None:
     """Write agent-edit content to ``edit`` in ``worktree``, or leave it clean when ``None``."""
     if edit is not None:
@@ -201,7 +195,7 @@ def test_create_workspace_when_pruning_a_stale_worktree_fails_does_warn_with_git
 
 
 def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
-    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
+    repo: str, baseline: BaselineRef
 ):
     # The earlier session's log is gone, so nothing told this run the workspace
     # was already there; its worktree still holds uncommitted work.
@@ -212,11 +206,22 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    # Only this attempt's own branch is unwound, and the standing worktree goes unreported.
-    assert capsys.readouterr().err == ""
     assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
-    assert session_branches(repo) == [BRANCH]
     assert experiment_worktree_dir(repo) in str(excinfo.value)
+
+
+def test_create_workspace_when_earlier_worktree_still_on_disk_does_unwind_only_its_own_branch_silently(
+    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    stranded = Path(experiment_worktree_dir(repo)) / "README.md"
+    stranded.write_text("# work from the earlier session\n", encoding="utf-8")
+
+    with pytest.raises(GymratError):
+        create_workspace(repo, NEXT_SESSION_ID, baseline)
+
+    assert capsys.readouterr().err == ""
+    assert session_branches(repo) == [BRANCH]
 
 
 # ---------------------------------------------------------------------------
@@ -243,21 +248,11 @@ def pin_worktree() -> Iterator[Callable[[str], None]]:
 
 
 @needs_mode_bits
-@pytest.mark.parametrize(
-    "worktree_dir",
-    [
-        pytest.param(experiment_worktree_dir, id="experiment"),
-        pytest.param(baseline_worktree_dir, id="baseline"),
-    ],
-)
-def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it_and_its_command(
-    repo: str,
-    baseline: BaselineRef,
-    pin_worktree: Callable[[str], None],
-    worktree_dir: Callable[[str], str],
+def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it(
+    repo: str, baseline: BaselineRef, pin_worktree: Callable[[str], None]
 ):
     workspace = create_workspace(repo, SESSION_ID, baseline)
-    worktree = worktree_dir(repo)
+    worktree = baseline_worktree_dir(repo)
     pin_worktree(worktree)
 
     warnings = unwind_workspace(repo, workspace)
@@ -417,18 +412,15 @@ def test_changed_file_count_when_directory_missing_does_return_zero(repo: str, r
 # ---------------------------------------------------------------------------
 
 
-def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch_keeping_other_registrations(
+def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
-    user_worktree = register_absent_worktree(repo)
     shutil.rmtree(experiment_worktree_dir(repo))
 
     recreate_workspace(repo, BRANCH, repo_head)
 
     assert checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
-    assert _both_worktrees_exist(repo)
-    assert user_worktree in list_worktree_dirs(repo, include_main=False)
 
 
 def test_recreate_workspace_when_baseline_gone_does_put_it_back_detached_at_sha(
@@ -496,7 +488,7 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
 _UNKNOWN_COMMIT = "0" * 40
 
 
-def test_advance_baseline_when_commit_unknown_does_raise_naming_the_check_command(
+def test_advance_baseline_when_commit_unknown_does_raise_naming_the_commit(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)

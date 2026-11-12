@@ -1,14 +1,11 @@
-"""Command-level tests for stop and the guards session commands share.
+"""Command-level tests for stop and for session commands writing to a closed stdout.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
 suite is order-independent and safe under ``pytest-xdist`` / ``pytest-randomly``.
 
-The shared session guards are pinned at their owner, tests/session/test_store.py;
-here each is driven once, through the one command that reaches it differently:
-``measure --record`` (the only conditional caller of the finalized guard) and
-``iterate`` (whose refusal must land before it numbers the iteration). The
-closed-stdout table also covers ``supervise``.
+The closed-stdout table drives ``measure --record`` and ``supervise`` with the
+stdout reader gone.
 """
 
 from collections.abc import Callable
@@ -16,7 +13,6 @@ from collections.abc import Callable
 import pytest
 
 from gymrat.cli.app import app
-from gymrat.session.records import CommandRecord
 from tests.cli._command_stubs import (
     force_render_mode,
     stub_measure,
@@ -27,18 +23,9 @@ from tests.cli._runner import (
     runner,
 )
 from tests.cli._session import (
-    close_session_with_one_keep,
-    open_hooked_iterate_session,
     open_session,
-    write_bench_config,
 )
 from tests.cli.commands.supervise._seams import install_seams
-from tests.loop._settle import CHECKS
-from tests.loop.iterate._fixtures import install_improved_samples
-from tests.session.records._fixtures import (
-    last_command_record,
-    records_of_type,
-)
 
 # ---------------------------------------------------------------------------
 # the stop command
@@ -52,19 +39,8 @@ def test_stop_command_when_message_blank_does_exit_two(stop_repo: str):
 
 
 # ---------------------------------------------------------------------------
-# guards every session command shares
+# a closed stdout reader
 # ---------------------------------------------------------------------------
-
-
-def test_measure_record_when_session_finalized_does_refuse_as_finalized(repo: str):
-    close_session_with_one_keep(repo)
-    write_bench_config(repo, checks=CHECKS)
-
-    result = runner.invoke(app, ["measure", "main", "--bench", "sh bench.sh", "--record"])
-
-    assert result.exit_code == 2
-    cmd = last_command_record(repo)
-    assert (cmd.name, cmd.exit_code, cmd.reason) == ("measure", 2, "finalized")
 
 
 def _open_and_stub_measure(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,18 +81,3 @@ def test_command_when_stdout_reader_closed_does_exit_without_stderr(
     result = FailingStdoutRunner(closed_stdout_error()).invoke(app, argv)
 
     assert (result.exit_code, result.stderr) == (0, "")
-
-
-def test_iterate_when_supervised_run_live_does_refuse_as_supervised_use_tool(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    open_hooked_iterate_session(repo, monkeypatch)
-    install_improved_samples(monkeypatch, repo)
-
-    result = runner.invoke(app, ["iterate"])
-
-    assert (result.exit_code, result.stdout) == (2, "")
-    commands = records_of_type(repo, CommandRecord)
-    assert [(cmd.name, cmd.exit_code, cmd.reason, cmd.origin, cmd.seq) for cmd in commands] == [
-        ("iterate", 2, "supervised-use-tool", "cli", None)
-    ]

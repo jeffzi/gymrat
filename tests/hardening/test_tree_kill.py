@@ -494,7 +494,7 @@ async def test_exec_argv_when_torn_down_does_settle_within_the_bound_with_the_ch
 
 
 @needs_posix_signals
-def test_supervisor_when_signalled_mid_bench_does_leave_no_bench_alive(
+def test_run_with_signal_abort_when_signalled_mid_bench_does_leave_no_bench_alive(
     tmp_path: Path,
     scripts: dict[str, Path],
     reap_beats: list[Path],

@@ -1,9 +1,8 @@
 """Shared probe test doubles: the recorded baseline, the canned measurement, and the engine stand-in.
 
-The ``measure_baseline`` engine tests and the CLI session command tests replace
-the same boundary — the measurement engine that shells out to the consumer's
-bench script — and the probe engine tests read the same recorded baseline, so
-the pieces live here once.
+The CLI command tests replace the measurement engine that shells out to the
+consumer's bench script, and the probe engine tests read the same recorded
+baseline, so the pieces live here once.
 """
 
 from __future__ import annotations

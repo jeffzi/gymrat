@@ -31,6 +31,7 @@ from gymrat.session.store import (
     ReadSessionResult,
     RequiredSession,
     append_record,
+    complete_lines,
     fold_session,
     latest_baseline,
     read_live_session,
@@ -234,6 +235,17 @@ def test_recover_torn_tail_when_log_missing_does_leave_no_file_behind(fresh_root
 
 
 # ---------------------------------------------------------------------------
+# complete_lines
+# ---------------------------------------------------------------------------
+
+
+def test_complete_lines_when_line_holds_a_carriage_return_does_not_split_it():
+    lines = complete_lines(b"a\rb\n")
+
+    assert lines == [b"a\rb"]
+
+
+# ---------------------------------------------------------------------------
 # read_records
 # ---------------------------------------------------------------------------
 
@@ -419,27 +431,8 @@ def test_read_session_header_when_line_holds_only_non_ascii_whitespace_does_rais
 # ---------------------------------------------------------------------------
 
 
-def _unusable_first_line(root: str) -> None:
-    """Write a session log whose first line is not JSON."""
-    _jsonl_holding_bytes(root, b"{not json\n")
-
-
-def _unreadable_log(root: str) -> None:
-    """Put a directory where the session log belongs, so opening it fails."""
-    Path(session_jsonl_path(root)).mkdir(parents=True)
-
-
-@pytest.mark.parametrize(
-    "make_log",
-    [
-        pytest.param(_unusable_first_line, id="first-line-unusable"),
-        pytest.param(_unreadable_log, id="log-unreadable"),
-    ],
-)
-def test_session_header_when_log_unusable_does_return_none(
-    fresh_root: str, make_log: Callable[[str], None]
-):
-    make_log(fresh_root)
+def test_session_header_when_first_line_unusable_does_return_none(fresh_root: str):
+    _jsonl_holding_bytes(fresh_root, b"{not json\n")
 
     header = session_header(fresh_root)
 

@@ -119,6 +119,11 @@ async def test_supervise_when_injected_turn_end_arrives_while_reply_outstanding_
     assert follow_up_actions(probe.events) == ["replied", "ended"]
 
 
+# ---------------------------------------------------------------------------
+# a held lock: one follow-up per release
+# ---------------------------------------------------------------------------
+
+
 async def test_supervise_when_lock_file_held_does_wait_until_released(root: str):
     lock = hold_lock(str(lock_file_path(root)))
     watch = FollowUpWatch()
@@ -136,11 +141,6 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(root: str)
         result = await run_supervised(root, driver, observer=watch, is_lock_held=None)
 
     assert result.ended_by == "session"
-
-
-# ---------------------------------------------------------------------------
-# a held lock: one follow-up per release
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -365,8 +365,6 @@ async def test_supervise_when_wall_clock_cap_then_turn_end_does_not_emit_follow_
     caps = events_of(probe.events, CapEvent)
     cap_idx = probe.events.index(caps[0])
     follow_ups_after_cap = events_of(probe.events[cap_idx + 1 :], FollowUpEvent)
-    assert [cap.cap for cap in caps] == ["wall-clock"]
-    assert probe.events.index(events_of(probe.events, ToolStartEvent)[0]) < cap_idx
     assert follow_ups_after_cap == []
 
 

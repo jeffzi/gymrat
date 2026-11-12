@@ -94,7 +94,6 @@ class Seams:
     doctor_gate: Mock = field(
         default_factory=lambda: create_autospec(doctor_gate, name="doctor_gate")
     )
-    preflight_calls: list[dict[str, object]] = field(default_factory=list)
     supervise_calls: list[dict[str, Any]] = field(default_factory=list)
     reporter_calls: list[dict[str, object]] = field(default_factory=list)
     compose_calls: list[object] = field(default_factory=list)
@@ -147,17 +146,8 @@ def _patch_supervise(
     )
 
 
-def _install_fake_preflight(
-    monkeypatch: pytest.MonkeyPatch, seams: Seams, *, branch: str | None
-) -> None:
+def _install_fake_preflight(monkeypatch: pytest.MonkeyPatch, *, branch: str | None) -> None:
     def fake_preflight(*, root: str, config: object, flags: PreflightFlags) -> StartResult:
-        seams.preflight_calls.append({
-            "root": root,
-            "baseline_ref": flags.baseline_ref,
-            "max_minutes": flags.max_minutes,
-            "force": flags.force,
-            "allow_dirty": flags.allow_dirty,
-        })
         return make_start_result(root, branch)
 
     monkeypatch.setattr(
@@ -256,7 +246,7 @@ def install_seams(
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
     stub_config(monkeypatch, "supervise", resolved)
-    _install_fake_preflight(monkeypatch, seams, branch=branch)
+    _install_fake_preflight(monkeypatch, branch=branch)
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.compose_kickoff",
         create_autospec(compose_kickoff, side_effect=fake_compose),

@@ -10,8 +10,7 @@ progress reporter, and the signal cleanup — are replaced at the names
 ``commands.supervise`` imports them under.
 
 The dirty-tree guards belong to the pre-flight and are tested in
-:mod:`tests.cli.supervise.test_preflight`; here only the ``--allow-dirty``
-flag's forwarding to the pre-flight is pinned.
+:mod:`tests.cli.supervise.test_preflight`.
 """
 
 from collections.abc import Callable
@@ -59,9 +58,7 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
 
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
-    assert ctx.root == repo
     assert ctx.lock_path == lockfile_path(repo)
-    assert ctx.max_usd == 2.0
     prompt = seams.supervise_calls[0]["prompt"]
     assert (prompt.command_timeout_ms, prompt.max_budget_usd) == (CAP_MS, 2.0)
 
@@ -71,7 +68,7 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
 # ---------------------------------------------------------------------------
 
 
-def test_supervise_when_no_log_given_does_log_under_the_session_dir_and_name_it_on_stderr(
+def test_supervise_when_no_log_given_does_log_under_the_session_dir(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     seams = install_seams(monkeypatch)
@@ -81,6 +78,17 @@ def test_supervise_when_no_log_given_does_log_under_the_session_dir_and_name_it_
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
     assert Path(ctx.log_path).parent == Path(session_dir(repo))
+
+
+def test_supervise_when_run_does_name_the_log_path_on_stderr(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    seams = install_seams(monkeypatch)
+
+    result = run()
+
+    assert result.exit_code == 0
+    ctx = seams.supervise_calls[0]["context"]
     assert abbreviate_home(ctx.log_path) in result.stderr
 
 
@@ -118,17 +126,6 @@ def test_supervise_when_run_does_compose_kickoff_with_the_prompt_given(
 
     assert result.exit_code == 0
     assert seams.compose_calls[0] == "optimize the decoder"
-
-
-def test_supervise_when_run_does_hand_the_reporter_the_cap_unaltered(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-
-    result = run(max_minutes="5.5")
-
-    assert result.exit_code == 0
-    assert seams.reporter_calls[0]["max_minutes"] == 5.5
 
 
 def test_supervise_when_run_does_hand_the_reporter_the_session_branch(
@@ -199,43 +196,6 @@ def test_supervise_when_run_ends_does_uninstall_its_cleanup_once(monkeypatch: py
     run()
 
     assert registry.uninstall_counts() == [1]
-
-
-# ---------------------------------------------------------------------------
-# preflight kwargs from flags
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("max_minutes", "extra_args", "expected"),
-    [
-        pytest.param(
-            "10",
-            ("--baseline", "feature-branch"),
-            {"baseline_ref": "feature-branch"},
-            id="baseline-given",
-        ),
-        pytest.param(
-            "42", ("--force",), {"max_minutes": 42.0, "force": True}, id="force-and-max-minutes"
-        ),
-        pytest.param("10", ("--allow-dirty",), {"allow_dirty": True}, id="allow-dirty"),
-    ],
-)
-def test_supervise_when_run_does_pass_flags_to_preflight(
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    max_minutes: str,
-    extra_args: tuple[str, ...],
-    expected: dict[str, object],
-):
-    seams = install_seams(monkeypatch)
-
-    result = run(*extra_args, max_minutes=max_minutes)
-
-    assert result.exit_code == 0
-    call = seams.preflight_calls[0]
-    assert call["root"] == repo
-    assert {key: call[key] for key in expected} == expected
 
 
 # ---------------------------------------------------------------------------

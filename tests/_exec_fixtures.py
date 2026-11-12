@@ -64,6 +64,23 @@ def capped_result(*, exit_code: int = 0) -> ExecResult:
     )
 
 
+#: The ``exec`` the sampling module calls, which tests of sampling and its callers replace.
+SAMPLING_EXEC = "gymrat.sampling.exec"
+
+
+#: An output cap small enough that a few bytes overrun it.
+SMALL_CAP = 2
+
+#: Three invalid bytes, read before the cap is reached and so kept whole, decode
+#: to three U+FFFD that re-encode to nine bytes; the later "ab" is dropped. The
+#: kept text re-encodes longer than the five bytes written, yet the stream overran.
+OVERRUN_WITH_INVALID_KEPT = "printf '\\377\\377\\377'; sleep 0.2; printf ab"
+
+#: One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
+#: three bytes: longer than the one byte written, yet nothing was dropped.
+SHORT_WITH_INVALID = "printf '\\377'"
+
+
 async def wait_for_spawned(
     processes: list[asyncio.subprocess.Process], *, count: int = 1, spawner: str = "exec"
 ) -> asyncio.subprocess.Process:

@@ -28,6 +28,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from gymrat.cli.supervise.frame import format_eta
 from gymrat.cli.supervise.progress import IDLE_WARN_MS
 from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.session.progress_file import ProgressSnapshot
@@ -51,7 +52,6 @@ from tests.cli.supervise._fixtures import (
     read_result,
     render_frame,
     reporter_showing_session,
-    reporter_with_nested_read,
     row_content,
     session_state_three_iterations,
     turn_end_event,
@@ -163,7 +163,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
     frame = render_frame(kit.reporter)
 
     time_row = _summary_rows(frame)[0]
-    assert time_row.endswith(" 2h 00m  cap in 0s")
+    assert time_row == "time   " + "━" * 71 + " 2h 00m  cap in 0s"
 
 
 # ---------------------------------------------------------------------------
@@ -302,14 +302,6 @@ def test_finished_tool_when_start_never_seen_does_show_placeholders():
 # ---------------------------------------------------------------------------
 # liveness — nested subagent lines
 # ---------------------------------------------------------------------------
-
-
-def test_nested_tool_when_in_flight_does_render_an_arrow_line_under_parent():
-    kit = reporter_with_nested_read()
-
-    rows = _rows_below_loop(render_frame(kit.reporter))
-
-    assert rows == ["00:00:01  Bash   ...  3s", "↳ Read src/config.ts  3s"]
 
 
 @pytest.mark.parametrize(
@@ -480,7 +472,7 @@ def test_liveness_when_model_phase_reported_does_show_the_phase_with_its_elapsed
 @pytest.mark.parametrize(
     ("passes_completed", "expected_row"),
     [
-        pytest.param(7, "passes 7/10 · 31m 0s · ~11m 15s left", id="passes-left"),
+        pytest.param(7, f"passes 7/10 · 31m 0s · {format_eta(3 * 225_000)}", id="passes-left"),
         pytest.param(10, "passes 10/10 · 31m 0s", id="no-pass-left"),
     ],
 )
@@ -528,7 +520,7 @@ def test_liveness_when_mcp_iterate_tool_in_flight_does_show_the_sidecar_passes()
 
     assert _rows_below_loop(frame) == [
         "00:00:02  mcp__gymrat__iterate  gymrat iterate  10m 0s",
-        "passes 4/8 · 10m 0s · ~8m left",
+        f"passes 4/8 · 10m 0s · {format_eta(4 * 120_000)}",
     ]
 
 
@@ -689,4 +681,4 @@ def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_el
 
     frame = render_frame(kit.reporter)
 
-    assert _rows_below_loop(frame) == ["waiting for gymrat (PID 4242)  3s"]
+    assert _rows_below_loop(frame) == [f"{exit_phase_text(_WAITING_LOCK)}  3s"]

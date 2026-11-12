@@ -13,7 +13,7 @@ import gc
 import json
 import math
 import sys
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import override
 
 import pytest
@@ -37,6 +37,7 @@ from gymrat.supervisor.claude import create_claude_driver, usable_cost
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
+    SessionEvent,
     SessionObserver,
     TextDeltaEvent,
     ToolEndEvent,
@@ -45,7 +46,6 @@ from gymrat.supervisor.events import (
 )
 from gymrat.supervisor.tool_names import MCP_SERVER
 from tests._clock import install_monotonic_clock
-from tests._rich import Clock
 from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 from tests.supervisor._fixtures import (
     SDK_SESSION_ID,
@@ -229,7 +229,7 @@ async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent():
     ]
 
 
-async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_duration_unknown():
+async def test_start_when_tool_result_has_no_matching_start_does_report_no_start_details():
     orphan = tool_results(ToolResultBlock(tool_use_id="tu_orphan", content="result"))
 
     events = await run_with_messages([orphan])
@@ -240,38 +240,24 @@ async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_
     ]
 
 
-class _ClockedClient(FiniteClient):
-    """A finite client that sets the fake monotonic clock before yielding each message."""
-
-    def __init__(self, steps: Sequence[tuple[float, object]], monotonic: Clock[float]) -> None:
-        super().__init__([message for _, message in steps])
-        self._steps = steps
-        self._monotonic = monotonic
-
-    @override
-    async def receive_messages(self) -> AsyncIterator[object]:
-        for monotonic_ms, message in self._steps:
-            self._monotonic.now = monotonic_ms
-            await asyncio.sleep(0)
-            yield message
-
-
 async def test_start_when_tool_result_matches_start_does_report_monotonic_duration(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monotonic = install_monotonic_clock(monkeypatch)
-    client = _ClockedClient(
-        [
-            (1_000.0, assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"}))),
-            (1_250.0, tool_results(ToolResultBlock(tool_use_id="tu_1", content="done"))),
-        ],
-        monotonic,
-    )
-    probe = collecting_observer()
+    client = FiniteClient([
+        assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"})),
+        tool_results(ToolResultBlock(tool_use_id="tu_1", content="done")),
+    ])
+    events: list[SessionEvent] = []
 
-    await run_outcome(client, probe.observer)
+    def advance_on_tool_start(event: SessionEvent) -> None:
+        events.append(event)
+        if isinstance(event, ToolStartEvent):
+            monotonic.tick(250)
 
-    ends = events_of(probe.events, ToolEndEvent)
+    await run_outcome(client, advance_on_tool_start)
+
+    ends = events_of(events, ToolEndEvent)
     assert [end.duration_ms for end in ends] == [250]
 
 
@@ -355,7 +341,7 @@ async def test_start_when_tool_use_block_does_emit_tool_start():
         ),
     ],
 )
-async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
+async def test_start_when_tool_result_matches_start_does_emit_matching_tool_end_for_either_block_kind(
     messages: list[object],
     expected: tuple[str | None, str, str, str],
 ):
@@ -554,7 +540,7 @@ def _never_abort(_abort: asyncio.Event) -> SessionObserver:
         ),
     ],
 )
-async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics(
+async def test_start_when_session_settles_does_not_leak_task_diagnostics(
     make_client: Callable[[], FakeClient],
     observer_for: Callable[[asyncio.Event], SessionObserver],
     reason: str,

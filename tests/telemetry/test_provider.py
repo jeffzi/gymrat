@@ -279,7 +279,7 @@ def test_format_traceparent_when_span_context_invalid_does_raise_value_error():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_traceparent_when_valid_does_return_remote_span_context():
+def test_parse_traceparent_when_valid_does_return_a_span_context():
     result = parse_traceparent("00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01")
 
     assert isinstance(result, SpanContext)

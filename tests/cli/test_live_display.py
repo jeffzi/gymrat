@@ -37,7 +37,6 @@ from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
     console_output,
-    cursor_hidden,
     kept_line_terminal,
     screen_lines,
     sealed_console,
@@ -291,7 +290,7 @@ def _signal_mid_paint(
 @pytest.mark.parametrize(
     "row_count", [pytest.param(1, id="one-row"), pytest.param(4, id="four-rows")]
 )
-def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_cursor_shown(
+def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
@@ -302,8 +301,7 @@ def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_curs
 
     raise_signal(TERMINATION_SIGNAL)
 
-    out = console_output(console)
-    assert (screen_lines(out), cursor_hidden(out)) == ([KEPT_LINE], False)
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
 def _live_whose_first_paint_raises() -> ErasableLive:
