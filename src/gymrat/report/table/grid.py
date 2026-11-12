@@ -1,4 +1,4 @@
-"""The shared machinery both text tables draw through.
+"""The shared machinery the text report tables draw through: comparison, measurement and probe.
 
 The layout half sorts a run's metrics into kinds, and the groups within them.
 It sorts through :func:`~gymrat.metric_sections.section_metrics`, the sorter the

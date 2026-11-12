@@ -78,10 +78,11 @@ def discard_session(root: str, expected_session_id: str | None = None) -> Discar
         The discard result with the rendered report and timestamp.
 
     Raises:
-        GymratError: When no session has been started, when neither a measured
-            iteration nor a worktree that has changed since the last kept
-            position gives something to throw away, or when git refuses to
-            revert the worktree.
+        GymratError: When no session has been started, when the open session
+            is not ``expected_session_id``, when neither a measured iteration
+            nor a worktree that has changed since the last kept position gives
+            something to throw away, or when git refuses to revert the
+            worktree.
     """
     required = require_open_session(root, "settling an edit")
     session, state, jsonl_path = required.session, required.state, required.jsonl_path

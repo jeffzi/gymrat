@@ -136,12 +136,6 @@ def _validate_finalize(
 def finalize_session(root: str, options: FinalizeOptions | None = None) -> FinalizeResult:
     """Collapse a session's kept commits into one commit on the pinned baseline and close it.
 
-    The squash is built with plumbing — ``commit-tree`` against the session
-    branch's tree — so nothing is ever checked out: the user's own working copy
-    stays on whatever branch it was on, which a ``merge --squash`` could not
-    promise. The session branch is left in place too, so the per-iteration history
-    that earned the squash stays readable.
-
     Holding the repository lock across the call is the caller's job: the record
     and the worktree removal it explains must not be separable by another run.
 
@@ -157,9 +151,11 @@ def finalize_session(root: str, options: FinalizeOptions | None = None) -> Final
     Raises:
         GymratError: When no open session exists, when the session kept nothing,
             when an iteration is still unsettled, when the experiment worktree
-            carries uncommitted work, when the caller's branch name would read as
-            a git flag, when the target branch already exists, or when git refuses
-            to build the squash commit.
+            carries uncommitted work or commits that were neither kept nor
+            discarded, when git cannot read the experiment worktree's HEAD, when
+            the caller's branch name would read as a git flag, when the target
+            branch already exists, or when git refuses to build the squash commit
+            or to point the target branch at it.
     """
     opts = options if options is not None else FinalizeOptions()
     required = require_open_session(root, "closing the session")
@@ -252,7 +248,8 @@ def _generated_message(records: list[SessionLogRecord]) -> str:
     dropping its line and leaving the subject claiming more than the body shows.
 
     Args:
-        records: The kept session-log records being collapsed into one commit.
+        records: The session's log records; only its committed keeps are
+            collapsed into the commit.
 
     Returns:
         The multi-line commit message with a subject and per-keep body lines.

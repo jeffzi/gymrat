@@ -587,8 +587,6 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
         # before it had one -- so the shared failure code stands in for it.
         exit_code=FAILURE_EXIT_CODE if isinstance(result, ExecTimeoutError) else result.exit_code,
         duration_ms=duration_ms,
-        # What the command wrote, not what was relayed: a figure above the relay
-        # limit is how a reader of the log learns the report was cut.
         stdout_bytes=result.stdout_bytes,
         stderr_bytes=result.stderr_bytes,
         timed_out=timed_out,
