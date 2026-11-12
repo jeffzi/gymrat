@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pytest
 from rich.cells import cell_len
 
+from gymrat.model import Exclusion
 from gymrat.report.style import VERDICT_STYLES
 from gymrat.report.text.render import render_report
 from gymrat.report.types import ReportOptions
@@ -30,6 +31,7 @@ from tests.report._comparisons import (
     create_comparison_result,
     multi_candidate_result,
     n_way_metric,
+    other_kind,
 )
 
 if TYPE_CHECKING:
@@ -128,3 +130,46 @@ def test_render_report_when_candidate_labels_differ_in_width_does_start_every_su
 
     summaries = [line_starting_with(report, label) for label in labels]
     assert [cell_len(line[: line.index("✓")]) for line in summaries] == [summary_column] * 2
+
+
+# ---------------------------------------------------------------------------
+# geomean row
+# ---------------------------------------------------------------------------
+
+
+def test_render_report_when_a_candidate_geomean_excludes_a_metric_does_count_kept_against_total():
+    result = create_comparison_result(
+        metrics=multi_candidate_result(2).metrics,
+        candidates=[
+            create_candidate(label="candidate-a", kinds=[other_kind(-10, 2)]),
+            create_candidate(
+                label="candidate-b",
+                kinds=[
+                    other_kind(4, 1, excluded=[Exclusion(metric="decode/time", reason="unstable")])
+                ],
+            ),
+        ],
+    )
+
+    report = strip_ansi(render_report(result))
+
+    provenance = stripped_cells(line_starting_with(report, "geomean"))[2:]
+    assert [cell.rsplit(" ", 1)[-1] for cell in provenance] == ["(2/2)", "(1/2)"]
+
+
+def test_render_report_when_a_candidate_geomean_covers_no_metric_does_show_the_no_stable_metrics_stand_in():
+    excluded = [
+        Exclusion(metric="decode/time", reason="unstable"),
+        Exclusion(metric="encode/time", reason="unstable"),
+    ]
+    result = create_comparison_result(
+        metrics=multi_candidate_result(2).metrics,
+        candidates=[
+            create_candidate(label="candidate-a", kinds=[other_kind(-10, 2)]),
+            create_candidate(label="candidate-b", kinds=[other_kind(0, 0, excluded=excluded)]),
+        ],
+    )
+
+    report = strip_ansi(render_report(result))
+
+    assert "no stable metrics" in stripped_cells(line_starting_with(report, "geomean"))[-1]

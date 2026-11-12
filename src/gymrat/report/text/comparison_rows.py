@@ -36,10 +36,9 @@ if TYPE_CHECKING:
     from gymrat.verdict import KindAggregate
 
 
-# The aggregate stated where a candidate reported none. Every section is drawn from
-# the same metadata the aggregates were computed from, so this stands in for
-# nothing the renderers can produce — and if one ever does, the row says it
-# aggregated nothing rather than inventing a figure.
+# The aggregate a flat table closes on when the candidate reported no kind at all:
+# a run with no metrics, so the row says it aggregated nothing rather than
+# inventing a figure.
 NO_AGGREGATE: GeomeanResult = GeomeanResult(value=math.nan, n=0, band=0, excluded=())
 
 
@@ -49,13 +48,33 @@ def _kind_aggregate_of(candidate: CandidateComparison, kind: str) -> KindAggrega
 
 
 def kind_geomean_of(candidate: CandidateComparison, kind: str) -> GeomeanResult:
-    """The geomean over every metric of ``kind``, gating or not."""
+    """The geomean over every metric of ``kind``, gating or not.
+
+    Sections are drawn from the same metadata the aggregates were computed from,
+    so a kind the candidate did not report is a bug, not a state to render.
+
+    Args:
+        candidate: The candidate whose geomean to read.
+        kind: The metric kind whose geomean to read.
+
+    Returns:
+        The kind's geomean.
+
+    Raises:
+        LookupError: The candidate reported no aggregate for ``kind``.
+    """
     aggregate = _kind_aggregate_of(candidate, kind)
-    return NO_AGGREGATE if aggregate is None else aggregate.geomean
+    if aggregate is None:
+        msg = f"candidate {candidate.label!r} reported no aggregate for kind {kind!r}"
+        raise LookupError(msg)
+    return aggregate.geomean
 
 
 def group_geomean_of(candidate: CandidateComparison, kind: str, group: str) -> GeomeanResult:
     """The geomean over one group of ``kind``'s metrics.
+
+    Sections are drawn from the same metadata the aggregates were computed from,
+    so a group the candidate did not report is a bug, not a state to render.
 
     Args:
         candidate: The candidate whose geomean to read.
@@ -63,32 +82,42 @@ def group_geomean_of(candidate: CandidateComparison, kind: str, group: str) -> G
         group: The group whose geomean to read.
 
     Returns:
-        The group's geomean, or :data:`NO_AGGREGATE` when the candidate
-        reported no aggregate for that kind or group.
+        The group's geomean.
+
+    Raises:
+        LookupError: The candidate reported no aggregate for ``kind`` or for
+            ``group`` within it.
     """
     aggregate = _kind_aggregate_of(candidate, kind)
-    if aggregate is None:
-        return NO_AGGREGATE
-    return next((entry.geomean for entry in aggregate.groups if entry.group == group), NO_AGGREGATE)
+    groups = () if aggregate is None else aggregate.groups
+    for entry in groups:
+        if entry.group == group:
+            return entry.geomean
+    msg = (
+        f"candidate {candidate.label!r} reported no aggregate for group {group!r} of kind {kind!r}"
+    )
+    raise LookupError(msg)
 
 
 def flat_geomean_of(candidate: CandidateComparison) -> GeomeanResult:
-    """The geomean a flat table closes on: the single kind's gating metrics.
+    """The geomean a flat table closes on: the single kind's gating metrics, or all of them.
 
     A run reporting one kind has no section to name, so its geomean row states
-    what the run is judged on without saying which kind that was.
+    what the run is judged on without saying which kind that was. A kind with no
+    gating metric is judged on nothing, so the row closes on every metric of the
+    kind, as a non-gating section of a sectioned table does.
 
     Args:
         candidate: The candidate whose geomean to read.
 
     Returns:
-        The gated geomean of the single kind, or :data:`NO_AGGREGATE` when
-        none is available.
+        The single kind's gated geomean, its whole geomean when it gates
+        nothing, or :data:`NO_AGGREGATE` when the candidate reported no kind.
     """
     if not candidate.kinds:
         return NO_AGGREGATE
-    gated = candidate.kinds[0].gated_geomean
-    return NO_AGGREGATE if gated is None else gated
+    aggregate = candidate.kinds[0]
+    return aggregate.geomean if aggregate.gated_geomean is None else aggregate.gated_geomean
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +280,8 @@ def comparison_aggregate_rows[Cell](
 
     A group reads its group geomean and a kind its kind geomean, each vetoed by
     every row it covers. The flat table closes on the gated geomean, so only the
-    gating rows decide its color.
+    gating rows decide its color; when no row gates, it closes on the kind
+    geomean and every row decides.
 
     Args:
         candidates: The candidates, in column order.
@@ -278,5 +308,7 @@ def comparison_aggregate_rows[Cell](
         kind=lambda kind, rows: line(
             kind, resolve(lambda candidate: kind_geomean_of(candidate, kind), rows)
         ),
-        flat=lambda rows: line(None, resolve(flat_geomean_of, [row for row in rows if row.gating])),
+        flat=lambda rows: line(
+            None, resolve(flat_geomean_of, [row for row in rows if row.gating] or rows)
+        ),
     )

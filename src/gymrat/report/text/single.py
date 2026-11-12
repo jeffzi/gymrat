@@ -27,12 +27,12 @@ from gymrat.report.table.cells import (
     VERDICT_COLUMN_MIN,
     VerdictParts,
     aggregate_label_cell,
+    geomean_count,
     geomean_parts,
     geomean_scope_label,
     geomean_value_style,
     group_metric_cell,
     header_metric_cell,
-    stable_metric_count,
     variant_name_cell,
     verdict_cell,
     verdict_widths,
@@ -83,39 +83,33 @@ class _AggregateCell:
     band_style: str | None
 
 
-def geomean_label(n: int) -> str:
-    """The geomean row's label, carrying the count of metrics behind the figure.
+def geomean_label(geomean: GeomeanResult) -> str:
+    """The flat geomean row's label, carrying the count of metrics behind the figure.
 
     A table with one candidate names the count here, which frees its cells of
     everything but the aggregate itself.
 
     Args:
-        n: The count of metrics behind the aggregate figure.
+        geomean: The aggregate the row closes on.
 
     Returns:
         The label with the metric count, or the bare :data:`GEOMEAN_LABEL` when
-        ``n`` is zero.
+        no metric stands behind the figure.
     """
-    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({stable_metric_count(n)})"
-
-
-def geomean_provenance(geomean: GeomeanResult) -> str:
-    """The provenance suffix behind a scope's figure.
-
-    Args:
-        geomean: The scope's aggregate result.
-
-    Returns:
-        ``"(n)"`` when every scope metric stands behind the figure, or
-        ``"(n/m)"`` when exclusions reduced the count.
-    """
-    total = geomean.n + len(geomean.excluded)
-    return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
+    return GEOMEAN_LABEL if geomean.n == 0 else f"{GEOMEAN_LABEL} {geomean_count(geomean)}"
 
 
 def scoped_geomean_label(scope: str, geomean: GeomeanResult) -> str:
-    """A sectioned table's aggregate label with the provenance behind its figure."""
-    return f"{geomean_scope_label(scope)} {geomean_provenance(geomean)}"
+    """A sectioned table's aggregate label with the count behind its figure.
+
+    Args:
+        scope: The group or kind the aggregate covers.
+        geomean: The scope's aggregate.
+
+    Returns:
+        ``<scope label> (n/total)``, the count as :func:`geomean_count` phrases it.
+    """
+    return f"{geomean_scope_label(scope)} {geomean_count(geomean)}"
 
 
 def _geomean_cell(
@@ -226,7 +220,7 @@ def _aggregate_rows(
     def line(scope: str | None, aggregates: list[ScopeAggregate]) -> AggregateLine[_AggregateCell]:
         (aggregate,) = aggregates
         geomean = aggregate.geomean
-        label = geomean_label(geomean.n) if scope is None else scoped_geomean_label(scope, geomean)
+        label = geomean_label(geomean) if scope is None else scoped_geomean_label(scope, geomean)
         return AggregateLine(label=label, cell=_geomean_cell(geomean, aggregate.outcomes))
 
     return comparison_aggregate_rows([candidate], line)

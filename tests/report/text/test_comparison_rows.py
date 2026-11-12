@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.errors import GymratError
 from gymrat.report.table.grid import AggregateLine
 from gymrat.report.text.comparison_rows import (
-    NO_AGGREGATE,
     ComparisonRow,
     ScopeAggregate,
     comparison_aggregate_rows,
@@ -22,6 +22,7 @@ from tests.report._comparisons import (
     NWayCandidate,
     create_candidate,
     gating_kind,
+    informational_kind,
     memory_kind,
     n_way_kind_metric,
     time_kind,
@@ -31,7 +32,7 @@ from tests.report._verdicts import geomean_of, permutation_verdict
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.model import GeomeanResult, PermutationVerdict
+    from gymrat.model import PermutationVerdict
     from gymrat.report.table.grid import AggregateRows
 
 # ---------------------------------------------------------------------------
@@ -39,39 +40,48 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def test_kind_geomean_of_when_kind_reported_does_return_its_geomean():
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    geomean = kind_geomean_of(candidate, "memory")
+
+    assert geomean == memory_kind().geomean
+
+
+def test_kind_geomean_of_when_kind_unreported_does_raise_an_internal_error_naming_it():
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    with pytest.raises(Exception, match="cpu") as exc_info:
+        kind_geomean_of(candidate, "cpu")
+
+    assert not isinstance(exc_info.value, GymratError)
+
+
+def test_group_geomean_of_when_group_reported_does_return_its_geomean():
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    geomean = group_geomean_of(candidate, "time", "entity")
+
+    assert geomean == time_kind().groups[0].geomean
+
+
 @pytest.mark.parametrize(
-    ("kind", "expected"),
+    ("kind", "group"),
     [
-        pytest.param("memory", memory_kind().geomean, id="reported-kind"),
-        pytest.param("cpu", NO_AGGREGATE, id="unreported-kind"),
+        pytest.param("time", "render", id="unreported-group"),
+        pytest.param("cpu", "entity", id="unreported-kind"),
     ],
 )
-def test_kind_geomean_of_when_looking_up_a_kind_does_return_its_geomean_or_no_aggregate(
-    kind: str, expected: GeomeanResult
+def test_group_geomean_of_when_group_unreported_does_raise_an_internal_error_naming_kind_and_group(
+    kind: str, group: str
 ):
     candidate = create_candidate(kinds=[time_kind(), memory_kind()])
 
-    geomean = kind_geomean_of(candidate, kind)
+    with pytest.raises(Exception, match=group) as exc_info:
+        group_geomean_of(candidate, kind, group)
 
-    assert geomean == expected
-
-
-@pytest.mark.parametrize(
-    ("kind", "group", "expected"),
-    [
-        pytest.param("time", "entity", time_kind().groups[0].geomean, id="reported-group"),
-        pytest.param("time", "render", NO_AGGREGATE, id="unreported-group"),
-        pytest.param("cpu", "entity", NO_AGGREGATE, id="unreported-kind"),
-    ],
-)
-def test_group_geomean_of_when_looking_up_a_group_does_return_its_geomean_or_no_aggregate(
-    kind: str, group: str, expected: GeomeanResult
-):
-    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
-
-    geomean = group_geomean_of(candidate, kind, group)
-
-    assert geomean == expected
+    assert kind in str(exc_info.value)
+    assert not isinstance(exc_info.value, GymratError)
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +120,26 @@ def test_shown_verdict_when_verdict_carries_a_detectable_change_does_state_it_on
 
 type _Recorded = tuple[str | None, list[ScopeAggregate]]
 
+# Each kind's gated geomean differs from its whole-kind geomean, so a scope that
+# read the wrong one would show.
 _CANDIDATES = (
     create_candidate(
         label="candidate-a",
-        kinds=[gating_kind("time", geomean_of(-9, 2), {"entity": geomean_of(-8, 1)})],
+        kinds=[
+            replace(
+                gating_kind("time", geomean_of(-9, 2), {"entity": geomean_of(-8, 1)}),
+                gated_geomean=geomean_of(-7, 1),
+            )
+        ],
     ),
     create_candidate(
         label="candidate-b",
-        kinds=[gating_kind("time", geomean_of(-12, 2), {"entity": geomean_of(-11, 1)})],
+        kinds=[
+            replace(
+                gating_kind("time", geomean_of(-12, 2), {"entity": geomean_of(-11, 1)}),
+                gated_geomean=geomean_of(-10, 1),
+            )
+        ],
     ),
 )
 
@@ -199,8 +221,8 @@ def _flat_line(
             (
                 None,
                 [
-                    ScopeAggregate(geomean_of(-9, 2), ["within-noise"]),
-                    ScopeAggregate(geomean_of(-12, 2), ["improved"]),
+                    ScopeAggregate(geomean_of(-7, 1), ["within-noise"]),
+                    ScopeAggregate(geomean_of(-10, 1), ["improved"]),
                 ],
             ),
             id="flat-reads-the-gated-geomean-over-gating-rows-only",
@@ -218,3 +240,46 @@ def test_comparison_aggregate_rows_when_a_scope_closes_does_pair_each_candidate_
     line = build_line(rows, _rows())
 
     assert line.cell == expected
+
+
+_INFORMATIONAL_CANDIDATES = (
+    create_candidate(label="candidate-a", kinds=[informational_kind("time", geomean_of(-5, 2))]),
+    create_candidate(label="candidate-b", kinds=[informational_kind("time", geomean_of(4, 2))]),
+)
+
+
+def _informational_rows() -> list[ComparisonRow]:
+    build = comparison_row_builder(len(_INFORMATIONAL_CANDIDATES), 10, with_band=True)
+    warmup = n_way_kind_metric(
+        kind="time",
+        short_name="warmup",
+        gating=False,
+        candidates=[
+            NWayCandidate(verdict="no-signal", delta=-1, median=99),
+            NWayCandidate(verdict="improved", delta=-6, median=94),
+        ],
+    )
+    encode = n_way_kind_metric(
+        kind="time",
+        short_name="encode",
+        gating=False,
+        candidates=[
+            NWayCandidate(verdict="improved", delta=-9, median=91),
+            NWayCandidate(verdict="regressed", delta=14, median=114),
+        ],
+    )
+    return [build("warmup#time", None, warmup), build("encode#time", None, encode)]
+
+
+def test_comparison_aggregate_rows_when_flat_kind_gates_nothing_does_close_on_its_kind_geomean_over_every_row():
+    rows = comparison_aggregate_rows(_INFORMATIONAL_CANDIDATES, _record)
+
+    line = rows.flat(_informational_rows())
+
+    assert line.cell == (
+        None,
+        [
+            ScopeAggregate(geomean_of(-5, 2), ["within-noise", "improved"]),
+            ScopeAggregate(geomean_of(4, 2), ["improved", "regressed"]),
+        ],
+    )

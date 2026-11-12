@@ -29,6 +29,8 @@ from tests.report._comparisons import (
     create_comparison_result,
     gating_kind,
     kind_metric,
+    mixed_methods_result,
+    other_kind,
 )
 from tests.report._verdicts import geomean_of
 
@@ -89,12 +91,61 @@ def test_render_report_when_sectioned_names_carry_brackets_does_print_them_liter
         "[underline]time",
         "[bold]entity",
         "spawn",
-        "geomean · [bold]entity (1)",
-        "geomean · [underline]time (1)",
+        "geomean · [bold]entity (1/1)",
+        "geomean · [underline]time (1/1)",
         "[strike]memory",
         "[italic]encode",
-        "geomean · [strike]memory (1)",
+        "geomean · [strike]memory (1/1)",
     ]
+
+
+# ---------------------------------------------------------------------------
+# flat geomean row
+# ---------------------------------------------------------------------------
+
+
+def _flat_result(geomean: GeomeanResult) -> ComparisonResult:
+    """The three ``other`` metrics of a mixed-methods run, closed on ``geomean``."""
+    return create_comparison_result(
+        metrics=mixed_methods_result(n=10).metrics,
+        candidates=[
+            create_candidate(
+                kinds=[
+                    other_kind(
+                        geomean.value, geomean.n, band=geomean.band, excluded=geomean.excluded
+                    )
+                ]
+            )
+        ],
+    )
+
+
+def test_render_report_when_flat_geomean_excludes_a_metric_does_label_kept_against_total():
+    result = _flat_result(
+        geomean_of(-5.8, 2, excluded=[Exclusion(metric="flaky#other", reason="unstable")])
+    )
+
+    report = strip_ansi(render_report(result))
+
+    assert stripped_cells(line_starting_with(report, "geomean"))[0] == "geomean (2/3)"
+
+
+def test_render_report_when_flat_geomean_covers_no_metric_does_show_the_no_stable_metrics_stand_in():
+    result = _flat_result(
+        geomean_of(
+            0,
+            0,
+            excluded=[
+                Exclusion(metric="latency#other", reason="unstable"),
+                Exclusion(metric="heap#other", reason="unstable"),
+                Exclusion(metric="flaky#other", reason="unstable"),
+            ],
+        )
+    )
+
+    report = strip_ansi(render_report(result))
+
+    assert "no stable metrics" in stripped_cells(line_starting_with(report, "geomean"))[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +157,10 @@ def test_render_report_when_sectioned_names_carry_brackets_does_print_them_liter
     ("scope", "geomean", "expected"),
     [
         pytest.param(
-            "entity", geomean_of(n=1), f"{geomean_scope_label('entity')} (1)", id="nothing-excluded"
+            "entity",
+            geomean_of(n=1),
+            f"{geomean_scope_label('entity')} (1/1)",
+            id="nothing-excluded",
         ),
         pytest.param(
             "memory",

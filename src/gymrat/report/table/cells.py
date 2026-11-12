@@ -24,7 +24,6 @@ from gymrat.report.style import (
     SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
 )
-from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -78,7 +77,8 @@ class GeomeanParts:
 
     Attributes:
         delta: The signed percentage the geomean moved.
-        provenance: How many stable metrics stand behind the figure.
+        provenance: How many metrics stand behind the figure, against the
+            scope's total, as :func:`geomean_count` phrases it.
         band: The propagated band's figure, without the ``±`` a column pins in
             front of it, and empty where the metrics left it nothing to state.
     """
@@ -105,14 +105,24 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
         return None
     return GeomeanParts(
         delta=format_percent_delta(geomean.value),
-        provenance=stable_metric_count(geomean.n),
+        provenance=geomean_count(geomean),
         band=format_noise_band_value(geomean.band) if geomean.band > 0 else "",
     )
 
 
-def stable_metric_count(n: int) -> str:
-    """How many stable metrics stand behind a geomean figure, as the tables phrase it."""
-    return pluralize(n, "stable metric")
+def geomean_count(geomean: GeomeanResult) -> str:
+    """The metrics behind a geomean figure against its scope's total, as ``(n/total)``.
+
+    The total counts the excluded metrics too, and the form holds when nothing
+    was excluded, so every geomean row reads its count the same way.
+
+    Args:
+        geomean: The aggregate whose count to state.
+
+    Returns:
+        ``(n/total)``, ``n`` the metrics behind the figure.
+    """
+    return f"({geomean.n}/{geomean.n + len(geomean.excluded)})"
 
 
 def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:

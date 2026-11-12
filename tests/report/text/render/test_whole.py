@@ -75,7 +75,7 @@ def _one_kind_result() -> ComparisonResult:
 
 
 def _non_gating_result() -> ComparisonResult:
-    """One ``time`` kind that gates nothing, so its geomean has no stable metrics."""
+    """One ``time`` kind that gates nothing, so its geomean covers every metric of the kind."""
     return create_comparison_result(
         metrics={
             "warmup#time": kind_metric(
@@ -294,9 +294,9 @@ def _two_candidate_result() -> ComparisonResult:
         pytest.param(_two_candidate_result, id="flat-two-candidates-plain"),
         pytest.param(two_kind_result, id="sectioned-single-candidate-plain"),
         pytest.param(grouped_comparison, id="sectioned-multi-candidate-plain"),
-        pytest.param(_non_gating_result, id="flat-no-stable-metrics-plain"),
+        pytest.param(_non_gating_result, id="flat-informational-plain"),
         pytest.param(
-            _non_gating_two_candidate_result, id="flat-two-candidates-no-stable-metrics-plain"
+            _non_gating_two_candidate_result, id="flat-two-candidates-informational-plain"
         ),
         pytest.param(partial(mixed_methods_result, n=10), id="flat-mixed-methods-plain"),
     ],

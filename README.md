@@ -38,11 +38,11 @@ side, and prints a verdict per metric plus a geometric-mean (geomean) summary:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 12 paired samples · adapter: metric-lines
-metric                    │ main         │ perf/faster-decode │ vs main
-──────────────────────────┼──────────────┼────────────────────┼────────────────
-decode#time               │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
-──────────────────────────┼──────────────┼────────────────────┼────────────────
-geomean (1 stable metric) │              │                    │    -8.3%  ±0.6%
+metric           │ main         │ perf/faster-decode │ vs main
+─────────────────┼──────────────┼────────────────────┼────────────────
+decode#time      │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
+─────────────────┼──────────────┼────────────────────┼────────────────
+geomean (1/1)    │              │                    │    -8.3%  ±0.6%
 
 ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive
 
