@@ -25,6 +25,7 @@ import contextlib
 import os
 import signal as _signal_module
 import sys
+import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -177,18 +178,32 @@ def _kill_live_process_groups_now() -> None:
 def _sweep_live_process_groups(grace_s: float) -> None:
     # Iterate a snapshot: a run settling on another task may deregister its PID
     # mid-sweep. The process-group calls already tolerate an already-dead tree and
-    # warn on other failures; each suppress(Exception) guard keeps any other
-    # unexpected exception (for example a warning escalated to an error by a
-    # warnings filter) from escaping into the signal-path cleanup that calls this.
+    # warn on other failures; _run_sweep_step reports any other exception and
+    # moves on, so one failing step never skips the steps and groups after it.
     leaders = list(_live_process_groups)
     for pid in leaders:
-        with contextlib.suppress(Exception):
-            terminate_process_group(pid)
-    with contextlib.suppress(Exception):
-        wait_for_process_group_exit(leaders, grace_s)
+        _run_sweep_step("terminate", pid, lambda pid=pid: terminate_process_group(pid))
+    _run_sweep_step("wait", None, lambda: wait_for_process_group_exit(leaders, grace_s))
     for pid in leaders:
-        with contextlib.suppress(Exception):
-            kill_process_group(pid)
+        _run_sweep_step("kill", pid, lambda pid=pid: kill_process_group(pid))
+
+
+def _run_sweep_step(step: str, pid: int | None, action: Callable[[], object]) -> None:
+    # The sweep runs inside the signal-path cleanup, which records warnings and
+    # writes them out itself, so the failure is reported as a warning rather than
+    # written to stderr here. The outer suppress keeps a warnings filter set to
+    # "error" (which turns the report into an exception) from escaping into
+    # that cleanup.
+    with contextlib.suppress(Exception):
+        try:
+            action()
+        except Exception as error:  # noqa: BLE001 -- reported as a warning; the sweep must never raise
+            target = "for the process groups to exit" if pid is None else f"process group {pid}"
+            warnings.warn(
+                f"termination sweep could not {step} {target}: {error}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +501,14 @@ async def _feed_stdin(proc: asyncio.subprocess.Process, data: str | None) -> Non
             stdin.close()
 
 
+def _stdin_error(stdin_task: asyncio.Task[None]) -> BaseException | None:
+    # Read only a write that has already finished: a descendant can hold stdin
+    # open without reading it, so awaiting the write could outlast the run.
+    if not stdin_task.done() or stdin_task.cancelled():
+        return None
+    return stdin_task.exception()
+
+
 async def _await_normal(
     proc: asyncio.subprocess.Process,
     stdout_task: asyncio.Task[None],
@@ -727,6 +750,10 @@ async def _settle(
             # failure code rather than leaking a negative or missing value.
             returncode = proc.returncode
             if returncode is None or returncode < 0:
+                returncode = FAILURE_EXIT_CODE
+            stdin_error = _stdin_error(stdin_task)
+            if stdin_error is not None:
+                stderr_buf.append_failure(str(stdin_error))
                 returncode = FAILURE_EXIT_CODE
             return _build_result(stdout_buf, stderr_buf, returncode)
 

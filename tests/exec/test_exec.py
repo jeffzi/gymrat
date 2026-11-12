@@ -14,12 +14,16 @@ The win32 ``taskkill`` fallback is tested in ``tests/test_process_group.py``.
 
 import asyncio
 import contextlib
+import errno
 import os
+import re
 import signal
 import sys
+import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -37,6 +41,7 @@ from tests._exec_fixtures import (
 )
 from tests._process_helpers import (
     REAL_KILLPG,
+    killpg_warnings,
     wait_for_pid_file,
     wait_until_dead,
 )
@@ -130,6 +135,48 @@ async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
     result = await run(args, make_opts(stdin=stdin))
 
     assert result == expected_result(expected_stdout, "", 0)
+
+
+def _fail_stdin_writes(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    # A run's stdin is the only stream writer it holds, so every write to it fails.
+    def refuse(_writer: asyncio.StreamWriter, _data: object) -> None:
+        raise error
+
+    monkeypatch.setattr(asyncio.StreamWriter, "write", refuse)
+
+
+async def test_exec_when_stdin_write_fails_does_settle_failed_with_the_error_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    error = OSError(errno.EIO, "Input/output error")
+    _fail_stdin_writes(monkeypatch, error)
+
+    result = await asyncio.wait_for(run_exec("true", make_opts(stdin="payload\n")), 5)
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 1
+    assert result.stderr.removesuffix("\n") == str(error)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), id="broken-pipe"),
+        pytest.param(ConnectionResetError("Connection reset"), id="reset"),
+    ],
+)
+async def test_exec_when_stdin_closed_by_the_child_does_settle_normally(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    *,
+    error: OSError,
+) -> None:
+    _fail_stdin_writes(monkeypatch, error)
+
+    result = await asyncio.wait_for(run_exec("true", make_opts(stdin="payload\n")), 5)
+
+    assert result == expected_result("", "", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -434,3 +481,119 @@ async def test_kill_live_process_groups_when_group_leader_exited_does_still_sign
     exec_mod.kill_live_process_groups()
 
     assert set(attempted) == {leader.pid}
+
+
+# ---------------------------------------------------------------------------
+# a sweep step that raises
+# ---------------------------------------------------------------------------
+
+# A group that ignores the stop request, so only the kill step ends it.
+_TERM_IGNORING_COMMAND = "trap '' TERM; sleep 30"
+
+# Long enough that a sweep holding a wait step runs it, short enough to sit out.
+_SWEEP_GRACE_S = 0.2
+
+_STEP_ERROR = "sweep step exploded"
+
+
+async def _start_term_ignoring_runs(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    background_runs: list[ExecTask],
+) -> None:
+    background_runs.extend(
+        asyncio.create_task(run_exec(_TERM_IGNORING_COMMAND, make_opts())) for _ in range(2)
+    )
+    await wait_for_spawned(spawned_processes, count=2)
+
+
+def _fail_sweep_step(monkeypatch: pytest.MonkeyPatch, helper: str) -> None:
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _SWEEP_GRACE_S)
+    real = getattr(exec_mod, helper)
+    monkeypatch.setattr(
+        exec_mod, helper, create_autospec(real, side_effect=RuntimeError(_STEP_ERROR))
+    )
+
+
+@pytest.mark.parametrize(
+    ("helper", "step"),
+    [
+        pytest.param("terminate_process_group", "terminate", id="terminate"),
+        pytest.param("kill_process_group", "kill", id="kill"),
+    ],
+)
+async def test_kill_live_process_groups_when_a_group_step_raises_does_warn_once_per_group_naming_step_and_error(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    background_runs: list[ExecTask],
+    *,
+    helper: str,
+    step: str,
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, helper)
+
+    exec_mod.kill_live_process_groups()
+
+    for proc in spawned_processes:
+        [message] = killpg_warnings(recwarn, proc.pid)
+        assert re.search(rf"\b{step}\b", message)
+        assert _STEP_ERROR in message
+
+
+async def test_kill_live_process_groups_when_the_wait_step_raises_does_warn_once_naming_step_and_error(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    background_runs: list[ExecTask],
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, "wait_for_process_group_exit")
+
+    exec_mod.kill_live_process_groups()
+
+    messages = [str(w.message) for w in recwarn if issubclass(w.category, RuntimeWarning)]
+    [message] = [m for m in messages if _STEP_ERROR in m]
+    assert re.search(r"\bwait\b", message)
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        pytest.param("terminate_process_group", id="terminate"),
+        pytest.param("wait_for_process_group_exit", id="wait"),
+    ],
+)
+@pytest.mark.usefixtures("recwarn")
+async def test_kill_live_process_groups_when_an_earlier_step_raises_does_still_kill_every_group(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    background_runs: list[ExecTask],
+    *,
+    helper: str,
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, helper)
+
+    exec_mod.kill_live_process_groups()
+
+    for proc in spawned_processes:
+        await wait_until_dead(proc.pid, timeout_s=3.0)
+
+
+async def test_kill_live_process_groups_when_warnings_are_errors_and_a_step_raises_does_not_raise(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    background_runs: list[ExecTask],
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, "terminate_process_group")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        exec_mod.kill_live_process_groups()
