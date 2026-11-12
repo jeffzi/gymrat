@@ -1,1 +1,1 @@
-"""Table subpackage: structured line types and rendering for the text report tables."""
+"""Table subpackage: line types and rendering for the comparison, measurement and probe tables."""
