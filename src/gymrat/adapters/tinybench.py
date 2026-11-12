@@ -9,7 +9,7 @@ task logs cannot shadow it.
 """
 
 import json
-from typing import Annotated, Final
+from typing import Annotated
 
 from pydantic import BaseModel, Strict, ValidationError
 
@@ -21,7 +21,7 @@ from gymrat.adapters.json_payload import (
     warn_skip,
 )
 from gymrat.adapters.payload_entry import (
-    describe_error,
+    error_tail,
     first_problem,
     is_finite_or_warn,
     named_subject,
@@ -32,13 +32,6 @@ from gymrat.utils import NS_PER_MS, Number, WarnSink
 _KEY = "tinybench"
 
 _COLLISION_ADVICE = "give the tasks distinct names"
-
-_EMPTY_ERRORS: Final[tuple[object, ...]] = (None, "", {})
-"""Error values that carry no detail.
-
-``JSON.stringify`` writes an ``Error`` as ``{}``, so an errored task reads as
-``{}`` unless the bench script put something readable in its place.
-"""
 
 
 class _Task(BaseModel):
@@ -92,9 +85,8 @@ def _completed_p50_ns(quoted_name: str, result: dict[str, object], warn: WarnSin
         warn_skip(warn, subject, tail)
         return None
     if state == "errored":
-        error = result.get("error")
-        detail = "" if error in _EMPTY_ERRORS else f" ({describe_error(error)})"
-        warn_skip(warn, "task", f" with an error: {quoted_name}{detail}")
+        tail = f" with an error: {quoted_name}{error_tail(result.get('error'))}"
+        warn_skip(warn, "task", tail)
         return None
     if state != "completed":
         tail = f" with state {json.dumps(state)} (only a completed task yields a metric)"

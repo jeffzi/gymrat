@@ -5,6 +5,7 @@ line it cannot read and reduces repeated names to their median, so a run with
 several samples yields one value per name.
 """
 
+import json
 import re
 
 from gymrat.adapters.contract import AdapterError, defaults_from_suffixes
@@ -101,7 +102,7 @@ def _follows_grammar(metric_name: str, warn: WarnSink) -> bool:
         )
         raise AdapterError(msg) from exc
     except MetricNameError as exc:
-        warn(f'Skipping METRIC line with {exc.flaw} in its metric name: "{metric_name}"')
+        warn(f"Skipping METRIC line with {exc.flaw} in its metric name: {json.dumps(metric_name)}")
         return False
     return True
 

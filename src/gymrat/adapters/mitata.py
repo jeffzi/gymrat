@@ -21,7 +21,7 @@ from gymrat.adapters.json_payload import (
     warn_skip,
 )
 from gymrat.adapters.payload_entry import (
-    describe_error,
+    error_tail,
     first_problem,
     is_finite_or_warn,
     named_subject,
@@ -152,8 +152,7 @@ def _extract_run_metrics(
     # An errored run carries no usable stats, so the error is the one problem
     # worth reporting — checked before the shape, which it would otherwise fail.
     if isinstance(run, dict) and run.get("error") is not None:
-        error = describe_error(run["error"])
-        warn_skip(warn, "run", f" with an error: {quoted_alias} ({error})")
+        warn_skip(warn, "run", f" with an error: {quoted_alias}{error_tail(run['error'])}")
         return
 
     subject = f"run of {quoted_alias}"

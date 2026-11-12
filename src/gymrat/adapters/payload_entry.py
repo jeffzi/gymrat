@@ -8,6 +8,7 @@ helpers, so both harnesses phrase a skipped entry the same way.
 import json
 import math
 import re
+from typing import Final
 
 from pydantic import ValidationError
 
@@ -71,6 +72,27 @@ def describe_error(error: object) -> str:
     if isinstance(error, str):
         return LINE_TERMINATORS.sub(_escape_line_terminator, error)
     return json.dumps(error)
+
+
+_EMPTY_ERRORS: Final[tuple[object, ...]] = (None, "", {})
+"""Error values that carry no detail.
+
+``JSON.stringify`` writes an ``Error`` as ``{}``, so an errored entry reads as
+``{}`` unless the bench script put something readable in its place.
+"""
+
+
+def error_tail(error: object) -> str:
+    """Phrase a harness's error value as the tail of an errored entry's skip warning.
+
+    Args:
+        error: The error value as parsed from JSON.
+
+    Returns:
+        The rendered error in parentheses, after a space, or an empty string when
+        the value carries no detail.
+    """
+    return "" if error in _EMPTY_ERRORS else f" ({describe_error(error)})"
 
 
 def _invalid_value_tail(key: str, phrase: str, value: object) -> str:

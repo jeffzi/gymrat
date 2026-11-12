@@ -175,6 +175,24 @@ def test_parse_when_name_has_empty_part_does_skip_line_with_warning():
     assert f'"{name}"' in warnings[0]
 
 
+@pytest.mark.parametrize(
+    ("name", "warned_name"),
+    [
+        pytest.param('a//b"c', '"a//b\\"c"', id="double-quote"),
+        pytest.param("a//b\x07c", '"a//b\\u0007c"', id="control-character"),
+    ],
+)
+def test_parse_when_skipped_name_needs_escaping_does_warn_with_json_escaped_name(
+    name: str, warned_name: str
+):
+    warnings: list[str] = []
+
+    metric_lines_adapter.parse(f"METRIC {name}=42\nMETRIC valid=1", warnings.append)
+
+    assert len(warnings) == 1
+    assert warned_name in warnings[0]
+
+
 # ---------------------------------------------------------------------------
 # repeated metric name → median
 # ---------------------------------------------------------------------------
