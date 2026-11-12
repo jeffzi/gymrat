@@ -9,7 +9,7 @@ tears those down; it holds no session records and reads no JSON.
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Collection
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -24,7 +24,7 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     git_common_dir,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, os_error_reason, warn_to_stderr
+from gymrat.utils import SHORT_SHA_LENGTH, WarnSink, os_error_reason, warn_to_stderr
 
 # create_workspace names every session branch ``<prefix><session_id>``, so
 # changing this renames the branch of every new session.
@@ -77,7 +77,9 @@ class WorkspaceResult:
 # ---------------------------------------------------------------------------
 
 
-def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> WorkspaceResult:
+def create_workspace(
+    root: str, session_id: str, baseline: BaselineRef, *, warn: WarnSink = warn_to_stderr
+) -> WorkspaceResult:
     """Create the branch and both worktrees a session runs in.
 
     The experiment worktree is checked out *on* ``gymrat/<session_id>`` so edits
@@ -90,13 +92,15 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     attempt had already checked out down with it, so a retry starts from the
     state it found instead of tripping over its own leftovers. A worktree
     directory that was already standing survives — see :func:`unwind_workspace`.
-    Each leftover the unwind cannot take back is warned about on stderr; the git
-    step that broke the attempt is still the error raised.
+    Each leftover the unwind cannot take back is warned about; the git step that
+    broke the attempt is still the error raised.
 
     Args:
         root: Repository root to create the branch and worktrees in.
         session_id: Unique session identifier used to name the branch.
         baseline: The ref and commit sha to detach the baseline worktree at.
+        warn: Where a stale worktree entry git would not prune, and each
+            leftover the unwind cannot take back, are reported.
 
     Returns:
         The branch name and worktree paths.
@@ -108,7 +112,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     branch = f"{BRANCH_PREFIX}{session_id}"
 
     ensure_git_exclude(root)
-    _prune_stale_worktrees(root)
+    _prune_stale_worktrees(root, warn)
 
     run_git_step(
         ["branch", branch, baseline.sha],
@@ -129,7 +133,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
         _add_baseline_worktree(root, baseline.sha)
     except GymratError:
         for warning in unwind_workspace(root, workspace, standing):
-            warn_to_stderr(warning)
+            warn(warning)
         raise
 
     return workspace
@@ -173,7 +177,9 @@ def ensure_git_exclude(root: str) -> None:
         handle.write(separator + line + b"\n")
 
 
-def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
+def recreate_workspace(
+    root: str, branch: str, baseline_sha: str, *, warn: WarnSink = warn_to_stderr
+) -> None:
     """Put back whichever of a session's worktrees is no longer on disk.
 
     Resuming has to survive a worktree the user deleted, so this is a no-op when
@@ -185,6 +191,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
         branch: The session's branch name to reattach the experiment
             worktree to.
         baseline_sha: The commit sha to reattach the baseline worktree to.
+        warn: Where a stale worktree entry git would not prune is reported.
 
     Raises:
         GymratError: When git refuses to add a worktree.
@@ -196,7 +203,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
     if not needs_experiment and not needs_baseline:
         return
 
-    _prune_stale_worktrees(root)
+    _prune_stale_worktrees(root, warn)
 
     if needs_experiment:
         _add_experiment_worktree(root, branch)
@@ -221,28 +228,32 @@ def _session_worktrees(root: str) -> tuple[str, str]:
     return experiment_worktree_dir(root), baseline_worktree_dir(root)
 
 
-def _force_remove_worktrees(root: str, should_remove: Callable[[str], bool]) -> None:
-    """Force-remove each session worktree ``should_remove`` selects, best-effort.
-
-    Args:
-        root: The repository root.
-        should_remove: Picks, by directory, the worktrees to remove.
-    """
-    for directory in _session_worktrees(root):
-        if should_remove(directory):
-            try_git(["worktree", "remove", "--force", directory], root)
+# What git answers when asked to remove a path it never registered as a worktree.
+# The prune runs on every new session, so this refusal is the usual case, not a failure.
+_NOT_A_WORKTREE = "is not a working tree"
 
 
-def _prune_stale_worktrees(root: str) -> None:
+def _prune_stale_worktrees(root: str, warn: WarnSink) -> None:
     """Remove the session's own worktree entries whose directories are gone.
 
     Only the session's experiment and baseline paths are touched; a user's
-    temporarily-absent worktree stays registered.
+    temporarily-absent worktree stays registered. Best-effort: an entry git
+    refuses to drop is warned about, and the checkout that follows reports
+    what it blocks.
 
     Args:
         root: The repository root.
+        warn: Where an entry git refuses to drop is reported, with git's error.
     """
-    _force_remove_worktrees(root, lambda directory: not Path(directory).is_dir())
+    for directory in _session_worktrees(root):
+        if Path(directory).is_dir():
+            continue
+        error = try_git(["worktree", "remove", "--force", directory], root)
+        if error is not None and _NOT_A_WORKTREE not in error:
+            warn(
+                f"Could not prune the stale worktree entry at {directory}: {error}\n"
+                "  inspect it with: git worktree list"
+            )
 
 
 def _add_experiment_worktree(root: str, branch: str) -> None:

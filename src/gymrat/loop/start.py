@@ -79,7 +79,9 @@ def start_session(
         root: The repository the session lives in.
         ref: The ref the baseline is pinned to, or ``None`` to pin at ``HEAD``.
         config: The resolved run settings the header snapshots as provenance.
-        warn: Where the warning about an ignored ``ref`` goes.
+        warn: Where every warning the start emits goes: an ignored ``ref``, a
+            stale worktree entry git would not prune, a closed log that could not
+            be put back, and each leftover of a failed start.
 
     Returns:
         The session record, folded state, and whether the session was resumed.
@@ -97,7 +99,7 @@ def start_session(
     baseline_ref = ref if ref is not None else DEFAULT_BASELINE_REF
 
     if session is None:
-        return _create_session(root, jsonl_path, baseline_ref, config)
+        return _create_session(root, jsonl_path, baseline_ref, config, warn)
 
     if state.finalized is not None:
         # Renamed rather than copied: the new log must not exist until the closed
@@ -108,7 +110,7 @@ def start_session(
         archived_path = archived_session_path(root, session.session_id)
         Path(jsonl_path).rename(archived_path)
         try:
-            created = _create_session(root, jsonl_path, baseline_ref, config)
+            created = _create_session(root, jsonl_path, baseline_ref, config, warn)
         except BaseException:
             # Best-effort: the failure being re-raised is what broke the start, and
             # a rename that cannot run must not speak in its place. The closed
@@ -116,7 +118,7 @@ def start_session(
             try:
                 Path(archived_path).rename(jsonl_path)
             except OSError as error:
-                warn_to_stderr(
+                warn(
                     f"Could not put the closed session's log back at {jsonl_path}: {error}\n"
                     f"  its records stay at {archived_path}"
                 )
@@ -127,13 +129,17 @@ def start_session(
     # put back at the header's pinned SHA would have the next iteration measure the
     # whole session's diff instead of the edit in front of it. recreate_workspace
     # already no-ops when both worktrees stand, so no on-disk check is needed here.
-    recreate_workspace(root, session.branch, last_kept_position(state, session.baseline.sha))
+    recreate_workspace(
+        root, session.branch, last_kept_position(state, session.baseline.sha), warn=warn
+    )
     if ref is not None:
         warn(f"warning: --baseline {ref} ignored because the session was resumed")
     return StartResult(session=session, state=state, resumed=True)
 
 
-def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig) -> StartResult:
+def _create_session(
+    root: str, jsonl_path: str, ref: str, config: ResolvedConfig, warn: WarnSink
+) -> StartResult:
     """Pin the baseline, build the workspace, and write the header that opens the log.
 
     The header lands last: a session the log claims exists but whose branch git
@@ -145,21 +151,23 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
         jsonl_path: Path to the session JSONL log file.
         ref: Git ref to pin the baseline to.
         config: Resolved configuration for the session.
+        warn: Where the workspace's warnings, and a log that would not read back
+            after a failed header write, are reported.
 
     Returns:
         The created session record, folded state, and ``resumed=False``.
 
     Raises:
         GymratError: When ``ref`` resolves to a directory or to no commit at all;
-            when git refuses to create the session branch or either worktree; or
-            when the header would not read back. A workspace whose header never
-            reached the log is torn down before the error propagates.
+            or when git refuses to create the session branch or either worktree.
+            A workspace whose header never reached the log is torn down before a
+            failed header write propagates; one the log may still name stays.
     """
     baseline = BaselineRef(ref=ref, sha=_resolve_baseline_sha(ref, root))
     # One clock read mints the id and stamps the header, so the two never disagree.
     at = utils.now_ns()
     session_id = _new_session_id(at)
-    workspace = create_workspace(root, session_id, baseline)
+    workspace = create_workspace(root, session_id, baseline, warn=warn)
 
     try:
         # pyrefly: ignore[missing-argument] -- validate_by_name=True accepts the Python name
@@ -178,21 +186,28 @@ def _create_session(root: str, jsonl_path: str, ref: str, config: ResolvedConfig
         # A header that reached the log before the failure (a sync that failed
         # after the write) names this workspace, and the next start resumes in it.
         # create_workspace only returns once it checked out both worktrees itself,
-        # so nothing the unwind takes back predates this start.
-        if not _header_landed(jsonl_path):
-            for warning in unwind_workspace(root, workspace):
-                warn_to_stderr(warning)
+        # so nothing the unwind takes back predates this start. A log that will not
+        # read back may still hold the header, so its workspace is left standing.
+        try:
+            landed = _header_landed(jsonl_path)
+        except GymratError as error:
+            warn(
+                f"Could not read the session log back after the start failed: {error}"
+                + (f" ({error.hint})" if error.hint else "")
+                + f"\n  the workspace on branch '{workspace.branch}' stays in place"
+            )
+        else:
+            if not landed:
+                for warning in unwind_workspace(root, workspace):
+                    warn(warning)
         raise
 
     return StartResult(session=session, state=fold_session([session]), resumed=False)
 
 
 def _header_landed(jsonl_path: str) -> bool:
-    """Whether the log at ``jsonl_path`` opens a session."""
-    try:
-        return fold_session(read_records(jsonl_path)).session is not None
-    except (GymratError, OSError):
-        return False
+    """Whether the log at ``jsonl_path`` opens a session; a missing log does not."""
+    return fold_session(read_records(jsonl_path)).session is not None
 
 
 def _resolve_baseline_sha(ref: str, root: str) -> str:

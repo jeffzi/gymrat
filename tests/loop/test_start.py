@@ -405,7 +405,7 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_forward_the_unwi
 
 
 @needs_mode_bits
-def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_unwind_its_workspace(
+def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_keep_its_workspace_warning_with_the_read_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     log = Path(session_jsonl_path(repo))
@@ -415,12 +415,17 @@ def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_u
         raise OSError(5, "sync failed")
 
     monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=fail_and_lock_the_log))
+    warnings: list[str] = []
 
     with pytest.raises(OSError, match="sync failed"):
-        start_session(repo, "main", CONFIG)
+        start_session(repo, "main", CONFIG, warn=warnings.append)
 
-    assert session_branches(repo) == []
-    assert list_worktree_dirs(repo, include_main=False) == []
+    assert len(session_branches(repo)) == 1
+    assert sorted(list_worktree_dirs(repo, include_main=False)) == sorted([
+        experiment_worktree_dir(repo),
+        baseline_worktree_dir(repo),
+    ])
+    assert any(str(log) in warning for warning in warnings), warnings
 
 
 def test_start_session_when_header_reached_the_log_before_the_failure_does_keep_its_workspace(

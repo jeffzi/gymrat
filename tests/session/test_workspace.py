@@ -155,6 +155,51 @@ def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_it
     assert absent in list_worktree_dirs(repo, include_main=False)
 
 
+def _no_earlier_workspace(_repo: str) -> None:
+    """Leave the session worktree paths never registered with git."""
+
+
+def _stale_earlier_workspace(repo: str) -> None:
+    """Leave an earlier session's worktree entries registered with their directories gone."""
+    create_workspace(repo, SESSION_ID, BaselineRef(ref=BASELINE_REF, sha=head_of(repo)))
+    shutil.rmtree(experiment_worktree_dir(repo))
+    shutil.rmtree(baseline_worktree_dir(repo))
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_no_earlier_workspace, id="never-registered"),
+        pytest.param(_stale_earlier_workspace, id="stale-entries-pruned"),
+    ],
+)
+def test_create_workspace_when_prune_has_nothing_to_refuse_does_warn_nothing(
+    repo: str, baseline: BaselineRef, arrange: Callable[[str], None]
+):
+    arrange(repo)
+    warnings: list[str] = []
+
+    create_workspace(repo, NEXT_SESSION_ID, baseline, warn=warnings.append)
+
+    assert warnings == []
+
+
+def test_create_workspace_when_pruning_a_stale_worktree_fails_does_warn_with_gits_error(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+    # git refuses a single --force on a locked worktree, and echoes the lock reason.
+    _git(["worktree", "lock", "--reason", "banana", experiment], repo)
+    shutil.rmtree(experiment)
+    warnings: list[str] = []
+
+    with pytest.raises(GymratError):
+        create_workspace(repo, NEXT_SESSION_ID, baseline, warn=warnings.append)
+
+    assert any("banana" in warning for warning in warnings), warnings
+
+
 def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
     repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
 ):
