@@ -174,7 +174,9 @@ def has_standing_gating_regression(iteration: IterationRecord) -> bool:
         iteration: The iteration record to check for a standing gating regression.
 
     Returns:
-        Whether the iteration carries a confirmed or exact gating regression.
+        True when the outcome is ``regressed`` and a gating metric's regression was
+        confirmed by the rerun, is exact, or was never re-measured (absent from the
+        rerun); False otherwise.
     """
     if iteration.outcome != "regressed":
         return False

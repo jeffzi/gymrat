@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, assert_never
 
 from gymrat.cli.milestone_lines import prepare_milestone
+from gymrat.cli.missing_delta import MISSING_DELTA
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -30,7 +31,7 @@ from gymrat.progress_events import (
 )
 from gymrat.report.format import format_percent_delta
 from gymrat.session.budget import SIDES_PER_ITERATE
-from gymrat.utils import MISSING_DELTA, SamplingEta, StyledSegment, format_duration, pluralize
+from gymrat.utils import SamplingEta, StyledSegment, format_duration, pluralize
 
 REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's lines spell out."""
@@ -496,8 +497,9 @@ def format_primary_delta(primary_delta_pct: float | None) -> str:
 
     Returns:
         The report's signed percentage (``"+2.2%"``, an unsigned ``"0.0%"``
-        for a value that rounds to zero), or :data:`MISSING_DELTA` for a
-        missing or non-finite delta.
+        for a value that rounds to zero), or
+        :data:`~gymrat.cli.missing_delta.MISSING_DELTA` for a missing or
+        non-finite delta.
     """
     return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
 

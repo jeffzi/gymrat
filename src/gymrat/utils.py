@@ -63,9 +63,6 @@ regular-expression engine, so an anchored check on a record field could never
 match such a value. Written as escapes so the source stays plain ASCII.
 """
 
-MISSING_DELTA = "—"
-"""What a progress display prints in place of a missing or non-finite delta."""
-
 type WarnSink = Callable[[str], None]
 """Where a caller sends a complaint about output it could not read.
 
@@ -385,6 +382,42 @@ def coerce_integer(value: object) -> object:
     if isinstance(value, float) and value.is_integer():
         return int(value)
     return value
+
+
+def is_positive_integer(raw: str) -> bool:
+    """Whether ``raw`` names a positive integer written as bare ASCII digits.
+
+    ``int`` alone is too lenient: it accepts surrounding whitespace, a sign,
+    ``_`` separators, and non-ASCII digits.
+
+    Args:
+        raw: The text as the user wrote it.
+
+    Returns:
+        ``True`` when ``raw`` is only ASCII digits and not all of them are zero.
+    """
+    return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
+
+
+def parse_bounded_positive_int(raw: str, maximum: int) -> int | None:
+    """Parse a positive integer no larger than ``maximum``.
+
+    Args:
+        raw: The text as the user wrote it.
+        maximum: Largest accepted value.
+
+    Returns:
+        The integer, or ``None`` when ``raw`` fails :func:`is_positive_integer`
+        or names a value above ``maximum``.
+    """
+    if not is_positive_integer(raw):
+        return None
+    # More significant digits than ``maximum`` means above it; comparing lengths
+    # first keeps ``int`` away from a run past the interpreter's conversion limit.
+    digits = raw.lstrip("0")
+    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+        return None
+    return int(digits)
 
 
 # ---------------------------------------------------------------------------
@@ -879,7 +912,7 @@ def read_sidecar[Model: BaseModel](path: Path, model: type[Model]) -> Model | No
     """Read and validate one JSON sidecar file.
 
     A sidecar is advisory state another process may be rewriting or may have
-    left behind, so a file that cannot be used reads as no file at all.
+    left behind, so a file that cannot be used is not an error.
 
     Args:
         path: The sidecar file to read.
@@ -898,8 +931,7 @@ def read_sidecar[Model: BaseModel](path: Path, model: type[Model]) -> Model | No
 def remove_sidecar(path: Path, label: str, warn: WarnSink) -> None:
     """Remove one sidecar file, best-effort.
 
-    A missing file is a silent success, and a removal the OS refuses is warned
-    about, never raised.
+    A missing file is a silent success, and a refused removal is never raised.
 
     Args:
         path: The sidecar file to remove.
@@ -1034,61 +1066,6 @@ def phrase_for_error(error: ErrorDetails) -> str:
     return _TYPE_PHRASES.get(error_type, "a valid value")
 
 
-# Helpers for readers of a harness's JSON payload: validating its numbers, wording a
-# skipped entry, and storing the metrics that survive.
-
-
-def record_metric(
-    metrics: dict[str, float], name: str, value: float, warn: WarnSink, advice: str
-) -> None:
-    """Store ``value`` under ``name``, warning when it displaces an earlier reading.
-
-    A collision means two readings resolved to one metric name, so the report
-    would otherwise silently show only the last one's value.
-
-    Args:
-        metrics: The readings collected so far, updated in place.
-        name: The resolved metric name.
-        value: The reading to store.
-        warn: The sink that receives the collision warning.
-        advice: How the user separates the colliding readings in their harness,
-            closing the warning.
-    """
-    if name in metrics:
-        warn(f"Duplicate metric name: {name} (keeping the last value; {advice})")
-    metrics[name] = value
-
-
-def _escape_line_terminator(match: re.Match[str]) -> str:
-    return json.dumps(match.group())[1:-1]
-
-
-def describe_error(error: object) -> str:
-    r"""Render a harness's error value (mitata's ``run.error``, tinybench's ``result.error``).
-
-    ``error`` is read from parsed JSON, so it can be any JSON value, not just a
-    string — ``str()`` on a plain dict would print an unhelpful Python repr.
-    ``json.dumps`` renders that case usefully instead, and cannot fail since the
-    value round-trips from ``json.loads``.
-
-    A string is written as-is so a plain message reads naturally, except that
-    each character of ``LINE_TERMINATORS`` becomes its JSON escape (``\n``,
-    ``\u000b``, ``\f``, ``\r``, ``\u001c`` to ``\u001e``, ``\u0085``,
-    ``\u2028``, ``\u2029``): the warning must stay on one line.
-    ``json.dumps`` keeps ``ensure_ascii`` on, so a non-string value is already
-    escaped the same way.
-
-    Args:
-        error: The error value as parsed from JSON.
-
-    Returns:
-        A single-line, human-readable rendering of the error value.
-    """
-    if isinstance(error, str):
-        return LINE_TERMINATORS.sub(_escape_line_terminator, error)
-    return json.dumps(error)
-
-
 def _keep_integer(value: object, handler: ValidatorFunctionWrapHandler) -> float:
     number: float = handler(value)
     # Strict float validation widens an int to float; the int is kept so a
@@ -1098,87 +1075,3 @@ def _keep_integer(value: object, handler: ValidatorFunctionWrapHandler) -> float
 
 Number = Annotated[float, Strict(), WrapValidator(_keep_integer)]
 """A JSON number; strict, so ``bool`` is rejected as JavaScript's ``typeof`` would."""
-
-
-def _invalid_value_tail(key: str, phrase: str, value: object) -> str:
-    """Phrase a rejected value as the tail of a skip warning.
-
-    Args:
-        key: The dotted path of the rejected value; empty for the entry itself.
-        phrase: What was expected, such as ``"a number"``.
-        value: The rejected value.
-
-    Returns:
-        The text that follows the skipped entry's name in the warning.
-    """
-    detail = expected_got(phrase, value)
-    return f" with invalid {key}: {detail}" if key else f": {detail}"
-
-
-def first_problem(exc: ValidationError, prefix: tuple[str, ...] = ()) -> str:
-    """Phrase the first problem pydantic found as the tail of a skip warning.
-
-    Args:
-        exc: The validation failure.
-        prefix: The path of the validated value inside the entry (a mitata run,
-            a tinybench task), prepended to each error location.
-
-    Returns:
-        The text that follows the skipped entry's name in the warning.
-    """
-    error = drop_prefix_errors(exc.errors())[0]
-    key = describe_key((*prefix, *error["loc"]))
-    if error["type"] == "missing":
-        return f" with missing {key}"
-    return _invalid_value_tail(key, phrase_for_error(error), error["input"])
-
-
-def warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
-    """Send a "Skipping <subject><tail>" warning.
-
-    Args:
-        warn: The sink that receives the warning.
-        subject: What is being skipped, e.g. ``'run of "my-bench"'``. Any alias or
-            task name it names is JSON-escaped, so a line terminator in it cannot
-            split the warning.
-        tail: The reason, from :func:`first_problem` or written by the caller.
-    """
-    warn(f"Skipping {subject}{tail}")
-
-
-def is_finite_or_warn(value: float, warn: WarnSink, subject: str, key: str) -> bool:
-    """Tell whether ``value`` is finite, sending a skip warning for ``subject`` when not.
-
-    Args:
-        value: The reading to check.
-        warn: The sink that receives the warning.
-        subject: What is being skipped, as for :func:`warn_skip`.
-        key: The dotted path of ``value``, named in the warning.
-
-    Returns:
-        ``False`` when ``value`` is not finite, or is an integer too large to
-        convert to a float, and the entry is to be skipped.
-    """
-    try:
-        finite = math.isfinite(value)
-    except OverflowError:
-        finite = False
-    if finite:
-        return True
-    warn_skip(warn, subject, _invalid_value_tail(key, "a finite number", value))
-    return False
-
-
-def named_subject(kind: str, entry: object, key: str) -> str:
-    """Name a skipped entry by its ``key`` field when that field is a string.
-
-    Args:
-        kind: What the entry is, e.g. ``"benchmark"``.
-        entry: The raw entry as parsed from JSON.
-        key: The field naming the entry, e.g. ``"alias"``.
-
-    Returns:
-        ``kind`` followed by the JSON-escaped name, or ``kind`` alone.
-    """
-    name = entry.get(key) if isinstance(entry, dict) else None
-    return f"{kind} {json.dumps(name)}" if isinstance(name, str) else kind

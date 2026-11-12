@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from functools import partial
 from typing import TYPE_CHECKING, Literal, get_args
 
 from gymrat import utils
@@ -41,7 +40,7 @@ from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
 from gymrat.loop.finalize import finalize_session
 from gymrat.loop.keep import KeepOptions, keep_session
-from gymrat.session.lock import LockContentionError, is_held, read_holder
+from gymrat.session.lock import LockContentionError, read_holder
 from gymrat.session.records import (
     CommandRecord,
     DiscardRecord,
@@ -227,7 +226,7 @@ async def run_exit_sequence(  # noqa: PLR0913 -- one parameter per exit knob
     Returns:
         The steps the sequence took and the failure that ended it, if any.
     """
-    probe = is_lock_held or partial(is_held, context.lock_path)
+    probe = is_lock_held or context.is_lock_held
     bound_ms = (
         context.config.timeout_seconds * MS_PER_SECOND if lock_wait_ms is None else lock_wait_ms
     )

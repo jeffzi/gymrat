@@ -35,15 +35,21 @@ BRANCH_PREFIX = "gymrat/"
 INSPECT_STATUS_HINT = "Inspect what is standing there with: git status"
 
 
-# The session header holds both models below: a key the reader does not know is
-# refused, never dropped, the same as on every other session-log record.
-_HEADER_OBJECT_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+# Every session-log record's model config, the header's sub-objects below
+# included: a key the reader does not know is refused, never dropped.
+RECORD_CONFIG = ConfigDict(
+    strict=True,
+    extra="forbid",
+    frozen=True,
+    validate_by_name=True,
+    serialize_by_alias=True,
+)
 
 
 class BaselineRef(BaseModel):
     """A git ref together with the commit it resolved to when the session started."""
 
-    model_config = _HEADER_OBJECT_CONFIG
+    model_config = RECORD_CONFIG
 
     ref: Annotated[str, Field(description="Git ref name the baseline was taken from.")]
     sha: Annotated[str, Field(description="Commit SHA the ref resolved to at session start.")]
@@ -52,7 +58,7 @@ class BaselineRef(BaseModel):
 class Worktrees(BaseModel):
     """The two worktree directories a session runs in."""
 
-    model_config = _HEADER_OBJECT_CONFIG
+    model_config = RECORD_CONFIG
 
     experiment: Annotated[str, Field(description="Path to the experiment worktree.")]
     baseline: Annotated[str, Field(description="Path to the baseline worktree.")]
@@ -432,9 +438,9 @@ def dirty_file_count(directory: str) -> int:
 
     ``--untracked-files=all`` lists each file inside an untracked directory
     rather than the directory alone, so a new folder of three files counts as
-    three.  A directory that is not there reads as clean: a worktree the user
-    deleted carries no uncommitted work anyone can still act on, and refusing to
-    finalize over a directory that cannot be inspected would strand the session.
+    three.  A worktree the user deleted carries no uncommitted work anyone can
+    still act on, and refusing to finalize over a directory that cannot be
+    inspected would strand the session.
 
     Args:
         directory: The worktree to count dirty entries in.

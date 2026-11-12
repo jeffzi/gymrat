@@ -44,17 +44,12 @@ from gymrat.report.loop import (
     MetricPrimary,
 )
 from gymrat.report.types import candidate_at
-from gymrat.sampling import (
-    CleanupResult,
-    RunOptions,
-    TargetContext,
-    TargetSamples,
-    collect_samples,
-)
+from gymrat.sampling import RunOptions, TargetContext, TargetSamples, collect_samples
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
 from gymrat.utils import finite_or_none
 from gymrat.verdict import compute_geomean, compute_verdicts
+from gymrat.worktree_sweep import CleanupResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

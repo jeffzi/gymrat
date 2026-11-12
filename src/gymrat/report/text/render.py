@@ -32,6 +32,7 @@ from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
+    PLUS_MINUS,
     format_evidence,
     format_pair_count,
     format_percent_delta,
@@ -40,6 +41,7 @@ from gymrat.report.format import (
 )
 from gymrat.report.labels import truncate_labels
 from gymrat.report.style import (
+    SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
@@ -86,7 +88,7 @@ if TYPE_CHECKING:
         MetricComparison,
         MetricComparisons,
     )
-    from gymrat.sampling import WorktreeRemovalFailure
+    from gymrat.worktree_sweep import WorktreeRemovalFailure
 
 GATED_GEOMEAN_LABEL = "gated geomean"
 
@@ -374,22 +376,23 @@ def _gate_trip_lines(
     Returns:
         One markup line per kind whose gated geomean exceeded a threshold.
     """
-    thresholds = [condition.pct for condition in conditions if isinstance(condition, GeomeanFailOn)]
+    thresholds = [condition for condition in conditions if isinstance(condition, GeomeanFailOn)]
     style = VERDICT_STYLES["regressed"]
 
     lines: list[str] = []
     for kind in candidate.kinds:
         geomean = kind.gated_geomean
-        tripped = [pct for pct in thresholds if gated_geomean_trips(geomean, pct)]
+        tripped = [
+            condition for condition in thresholds if gated_geomean_trips(geomean, condition.pct)
+        ]
         if geomean is None or not tripped:
             continue
         delta = format_percent_delta(geomean.value)
-        # `:g` states the threshold as it was written, dropping a trailing `.0`.
         lines.extend(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
-            f"exceeded --fail-on geomean:{pct:g}"
-            for pct in tripped
+            f"exceeded --fail-on {condition}"
+            for condition in tripped
         )
     return lines
 
@@ -414,7 +417,10 @@ def _hidden_regression_lines(
     Returns:
         One markup line per gating metric whose hidden regression tripped the gate.
     """
-    if not any(isinstance(condition, RegressedFailOn) for condition in conditions):
+    regressed = next(
+        (condition for condition in conditions if isinstance(condition, RegressedFailOn)), None
+    )
+    if regressed is None:
         return []
     style = VERDICT_STYLES["regressed"]
     qualify = spans_many_kinds(metrics)
@@ -433,7 +439,7 @@ def _hidden_regression_lines(
         delta = format_percent_delta(verdict.delta)
         lines.append(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {label} regressed {markup(delta, style)} "
-            f"on {pluralize(verdict.n, 'pair')} tripped --fail-on regressed"
+            f"on {pluralize(verdict.n, 'pair')} tripped --fail-on {regressed}"
         )
     return lines
 
@@ -509,7 +515,7 @@ _DROPPED_ROUNDS_HINT = (
     "some rounds were dropped — not all samples produced paired measurements for every metric"
 )
 
-_BAND_METHOD = "noise band ±(half-range × K)"
+_BAND_METHOD = f"noise band {PLUS_MINUS}(half-range × K)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -583,7 +589,7 @@ def _method_lines(data: _FooterData) -> list[str]:
         desc = (
             f"verdicts: sign-flip permutation test on pairs "
             f"({format_pair_count(min(data.permutation))} ≥ {PERMUTATION_MIN_N}) "
-            f"· ~ = no signal at α={PERMUTATION_P_THRESHOLD}"
+            f"{SCOPE_SEPARATOR} ~ = no signal at α={PERMUTATION_P_THRESHOLD}"
         )
         lines.append(markup(desc, "dim"))
     if data.shortage:
@@ -674,7 +680,7 @@ def format_cleanup_failures(
     """Format worktree removal failures and a prune error into indented diagnostic lines.
 
     Each git diagnostic is collapsed onto one line. The lines carry no styling, so
-    a caller outside the report — the sampling layer that logs a dirty cleanup —
+    a caller outside the report — the worktree sweep that logs a dirty cleanup —
     can print them as they are.
 
     Args:
@@ -696,7 +702,7 @@ def format_cleanup_failures(
 
 
 def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> list[str]:
-    """The worktree-cleanup footer as markup, or nothing when the cleanup was clean.
+    """The worktree-cleanup footer as markup.
 
     The lines are plain text escaped for markup rendering: the cleanup footer is
     the same color on or off.
@@ -712,9 +718,8 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
     details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     if not details:
         return []
-    header = (
-        f"{pluralize(cleanup.removed, 'worktree')} removed · {len(cleanup.failures)} left behind"
-    )
+    removed = f"{pluralize(cleanup.removed, 'worktree')} removed"
+    header = f"{removed} {SCOPE_SEPARATOR} {len(cleanup.failures)} left behind"
     return [escape(line) for line in (header, *details)]
 
 
@@ -741,7 +746,7 @@ def render_measure_table(
         The rendered table lines.
     """
     layout = plan_sections(result.metrics, measured_row)
-    skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
+    skeleton = plan_table_skeleton(layout, None, result.config_kinds, lambda row: row.value, label)
     widths = [skeleton.metric_width, skeleton.value_width]
 
     def metric_cells(row: MeasuredRow) -> tuple[Text, Text]:

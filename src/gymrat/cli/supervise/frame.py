@@ -23,7 +23,7 @@ from gymrat.cli.style import (
     STYLE_REGRESSED,
     STYLE_RUNNING,
 )
-from gymrat.cli.supervise.text import exit_phase_text, loop_segments
+from gymrat.cli.supervise.text import UNKNOWN_TOOL_NAME, exit_phase_text, loop_segments
 from gymrat.cli.supervise.types import (
     Capped,
     Composing,
@@ -41,7 +41,6 @@ from gymrat.supervisor.events import ITERATE_SUMMARY
 from gymrat.supervisor.tool_names import ITERATE_TOOL
 from gymrat.utils import (
     MS_PER_SECOND,
-    SECONDS_PER_MINUTE,
     SHORT_SHA_LENGTH,
     abbreviate_home,
     format_cost,
@@ -67,9 +66,8 @@ if TYPE_CHECKING:
 _MIN_TOOL_NAME_WIDTH = 5
 _MAX_TOOL_NAME_WIDTH = 8
 
-# Shown for a finished tool whose start was never seen, so neither its name nor
-# its duration is known.
-_UNKNOWN_TOOL_NAME = "unknown"
+# Shown for a finished tool whose start was never seen, so its duration is not
+# known.
 _UNKNOWN_DURATION = "?"
 
 _LOOP_STYLES: dict[LoopStyle, str | None] = {
@@ -89,10 +87,6 @@ _LOOP_STYLES: dict[LoopStyle, str | None] = {
 # ---------------------------------------------------------------------------
 
 
-# Seconds in an hour, where an ETA switches to an hour tier.
-SECONDS_PER_HOUR = 3600
-
-
 def format_eta(ms: float) -> str:
     """Format a forward time estimate, rounding to whole seconds.
 
@@ -108,9 +102,9 @@ def format_eta(ms: float) -> str:
     total_seconds = max(1, round(ms / MS_PER_SECOND))
     hours, minutes, seconds = hours_minutes_seconds(total_seconds)
 
-    if total_seconds < SECONDS_PER_MINUTE:
+    if hours == 0 and minutes == 0:
         return f"~{seconds}s left"
-    if total_seconds < SECONDS_PER_HOUR:
+    if hours == 0:
         if seconds > 0:
             return f"~{minutes}m {seconds}s left"
         return f"~{minutes}m left"
@@ -275,7 +269,7 @@ def _build_liveness_text(
 
 
 def _shown_tool_name(tool: FinishedTool) -> str:
-    return tool.tool_name if tool.tool_name is not None else _UNKNOWN_TOOL_NAME
+    return tool.tool_name if tool.tool_name is not None else UNKNOWN_TOOL_NAME
 
 
 def _shown_tool_duration(duration_ms: int | None) -> str:
@@ -339,8 +333,7 @@ def _build_nested_activity_line(activity: NestedActivity, now: int) -> Text:
     else:
         match activity.phase:
             case "tool_input":
-                tool = activity.tool_name or "unknown"
-                label = f"preparing {tool}"
+                label = f"preparing {activity.tool_name or UNKNOWN_TOOL_NAME}"
             case "responding":
                 label = "responding"
             case "thinking":

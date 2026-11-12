@@ -22,6 +22,12 @@ from typing import override
 import pytest
 from pydantic import TypeAdapter
 
+from gymrat.adapters.payload_entry import (
+    describe_error,
+    is_finite_or_warn,
+    named_subject,
+    record_metric,
+)
 from gymrat.utils import (
     LINE_TERMINATORS,
     NonFiniteNumberError,
@@ -32,7 +38,6 @@ from gymrat.utils import (
     balancing_cycle,
     collapse_whitespace,
     color_from_env,
-    describe_error,
     expected_got,
     fan_out,
     finite_or_none,
@@ -42,17 +47,14 @@ from gymrat.utils import (
     fraction_of_median,
     is_balanced,
     is_broken_pipe,
-    is_finite_or_warn,
     is_tty,
     limit_output,
     loads_strict_json,
     medians_by_name,
-    named_subject,
     os_error_reason,
     otlp_endpoint,
     pluralize,
     point_stream_at_devnull,
-    record_metric,
     stderr_text_of,
     stream_color_from_env,
     warn_to_stderr,

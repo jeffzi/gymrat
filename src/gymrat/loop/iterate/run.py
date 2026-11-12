@@ -36,9 +36,10 @@ import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from gymrat import utils
+
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
-from gymrat import utils
 from gymrat.exec import (
     FAILURE_EXIT_CODE,
     ExecOptions,
@@ -47,7 +48,6 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.loop.iterate.judge import (
-    EXPERIMENT_INDEX,
     Confirmation,
     IterationContext,
     Judged,
@@ -56,7 +56,6 @@ from gymrat.loop.iterate.judge import (
     build_iteration_comparison,
     confirm_regressions,
     gating_regressions,
-    regresses_gating,
     rerun_answer,
     resolve_primary,
     target_reached,
@@ -86,7 +85,7 @@ from gymrat.report.loop import (
 )
 from gymrat.report.style import render_lines
 from gymrat.report.text.render import render_report
-from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
+from gymrat.report.types import ComparisonResult, ReportOptions
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
@@ -117,7 +116,6 @@ if TYPE_CHECKING:
 
     from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
-    from gymrat.report.types import MetricComparisons
     from gymrat.session.records import SessionLogRecord, SessionRecord
     from gymrat.session.schema import HookStage, Outcome
     from gymrat.utils import WarnSink
@@ -289,16 +287,7 @@ class IterateResult:
 # ---------------------------------------------------------------------------
 
 
-def _has_gating_regression(metrics: MetricComparisons) -> bool:
-    """Whether any metric the run is gated on came back regressed for the experiment."""
-    for metric in metrics.values():
-        experiment = candidate_at(metric, EXPERIMENT_INDEX)
-        if regresses_gating(metric.meta, None if experiment is None else experiment.verdict):
-            return True
-    return False
-
-
-def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
+def _primary_improved(metric_meta: dict[str, ResolvedMetricMeta], primary: LoopPrimary) -> bool:
     """Whether the primary figure moved the way its direction calls an improvement.
 
     A figure whose ratio had no value moved in no direction at all, so it
@@ -306,8 +295,9 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     metric is judged in its own direction.
 
     Args:
-        metrics: The run's metric comparisons, used to look up the primary's
-            direction when it names a metric rather than the geomean.
+        metric_meta: The resolved metadata for each measured metric, by name,
+            used to look up the primary's direction when it names a metric
+            rather than the geomean.
         primary: The one figure the iteration is read on.
 
     Returns:
@@ -318,14 +308,18 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
         return False
     if isinstance(primary, GeomeanPrimary):
         return is_improvement(primary.delta_pct, GEOMEAN_DIRECTION)
-    metric = metrics.get(primary.name)
-    if metric is None:
+    meta = metric_meta.get(primary.name)
+    if meta is None:
         return False
-    return is_improvement(primary.delta_pct, metric.meta.direction)
+    return is_improvement(primary.delta_pct, meta.direction)
 
 
-def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
-    """What an iteration amounted to, read off its metrics and its primary figure.
+def derive_outcome(
+    verdicts: dict[str, MetricVerdict],
+    metric_meta: dict[str, ResolvedMetricMeta],
+    primary: LoopPrimary,
+) -> Outcome:
+    """What an iteration amounted to, read off its verdicts and its primary figure.
 
     A gating regression settles it whatever the primary did: the run is judged on
     every metric it gates, so a headline that improved while a gate broke is still
@@ -336,15 +330,16 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
     never measured, which reports nothing rather than reporting zero.
 
     Args:
-        metrics: The run's per-metric comparisons.
+        verdicts: The experiment's per-metric verdicts, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
         primary: The one figure the iteration is read on.
 
     Returns:
         The iteration's outcome.
     """
-    if _has_gating_regression(metrics):
+    if gating_regressions(verdicts, metric_meta):
         return "regressed"
-    return "improved" if _primary_improved(metrics, primary) else "no-signal"
+    return "improved" if _primary_improved(metric_meta, primary) else "no-signal"
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +349,7 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
 
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     return IterationJudgment(
-        outcome=derive_outcome(judged.result.metrics, judged.primary),
+        outcome=derive_outcome(judged.run.verdicts, judged.run.metric_meta, judged.primary),
         primary=judged.primary,
         confirmation=judged.confirmation,
         reached_target=target_reached(config, judged.primary, judged.result.metrics),
@@ -387,10 +382,7 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
                 f"one iterate needs about {format_duration(estimate.duration_ms)}"
             )
         message = f"{format_duration(remaining)} left; {took} and the cap would cut this one off."
-        raise BudgetExceededError(
-            message,
-            hint="Report what the session measured instead of measuring again.",
-        )
+        raise BudgetExceededError(message)
 
 
 def _guard_ready(

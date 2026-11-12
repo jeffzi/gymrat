@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.model import MetricUnit
-    from gymrat.sampling import CleanupResult
+    from gymrat.worktree_sweep import CleanupResult
 
 
 def measured_metric(

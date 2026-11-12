@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
+from gymrat.cli.missing_delta import MISSING_DELTA
 from gymrat.report.format import format_percent_delta
-from gymrat.utils import MISSING_DELTA, StyledSegment, pluralize
+from gymrat.utils import StyledSegment, pluralize
 
 if TYPE_CHECKING:
     from gymrat.cli.supervise.types import Exiting
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
 
 NO_SESSION_TEXT = "no session yet"
 """Shown in place of the loop summary before any session data has been read."""
+
+UNKNOWN_TOOL_NAME = "unknown"
+"""Shown for a tool whose name the event stream never gave."""
 
 type LoopStyle = Literal["alert", "count", "done", "meta", "pending", "plain", "regressed"]
 """The style role of a loop-summary segment; ``"plain"`` means unstyled."""

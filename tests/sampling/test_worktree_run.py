@@ -18,23 +18,25 @@ from pathlib import Path
 
 import pytest
 
-from gymrat import sampling
+from gymrat import worktree_sweep
 from gymrat.errors import CommandError, GymratError
 from gymrat.loop.stop_condition import LoopStopError
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import (
-    CleanupResult,
     TargetSpec,
     WorktreeInfo,
-    WorktreeRemovalFailure,
-    cleanup_worktrees,
     materialize_worktree,
     plan_worktree,
     resolve_label,
-    run_with_worktrees,
     to_context,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
+from gymrat.worktree_sweep import (
+    CleanupResult,
+    WorktreeRemovalFailure,
+    cleanup_worktrees,
+    run_with_worktrees,
+)
 from tests._git import (
     head_of,
     kill_git_during_worktree_add,
@@ -174,7 +176,7 @@ def _fake_git(
         on_call(call)
         return _git_answer(args, refused=refused, prune_error=prune_error)
 
-    monkeypatch.setattr(sampling, "try_git", _try_git)
+    monkeypatch.setattr(worktree_sweep, "try_git", _try_git)
     return git_calls
 
 
@@ -281,7 +283,7 @@ async def test_run_with_worktrees_when_phase_succeeds_does_build_the_result_from
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    registry = track_cleanups(monkeypatch, "gymrat.sampling")
+    registry = track_cleanups(monkeypatch, "gymrat.worktree_sweep")
     git_calls = _fake_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
     phase_args: dict[str, object] = {}
@@ -302,7 +304,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_rerai
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    registry = track_cleanups(monkeypatch, "gymrat.sampling")
+    registry = track_cleanups(monkeypatch, "gymrat.worktree_sweep")
     git_calls = _fake_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
     original = CommandError("bench command failed", hint="check the target")
@@ -323,7 +325,7 @@ async def test_run_with_worktrees_when_phase_cancelled_does_tear_down_without_sw
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    registry = track_cleanups(monkeypatch, "gymrat.sampling")
+    registry = track_cleanups(monkeypatch, "gymrat.worktree_sweep")
     git_calls = _fake_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
 
@@ -342,7 +344,7 @@ async def test_run_with_worktrees_when_build_result_raises_does_propagate_it_wit
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    track_cleanups(monkeypatch, "gymrat.sampling")
+    track_cleanups(monkeypatch, "gymrat.worktree_sweep")
     sweep = _install_sweep(monkeypatch, tmp_path, _removed_left_and_prune_failed)
     broken = RuntimeError("report failed")
 
@@ -382,7 +384,7 @@ async def test_run_with_worktrees_when_phase_raises_and_cleanup_dirty_does_wrap_
     expected: tuple[type[Exception], str | None, str | None],
 ):
     wrapped_type, hint, reason = expected
-    track_cleanups(monkeypatch, "gymrat.sampling")
+    track_cleanups(monkeypatch, "gymrat.worktree_sweep")
     sweep = _install_sweep(monkeypatch, tmp_path, _removed_left_and_prune_failed)
     details = _cleanup_block(sweep.expected)
 
@@ -425,7 +427,7 @@ async def test_run_with_worktrees_when_terminated_during_the_sweep_does_sweep_ea
     tmp_path: Path,
 ):
     captured: list[Callable[[], None]] = []
-    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install(captured))
+    monkeypatch.setattr(worktree_sweep, "install_termination_cleanup", fake_install(captured))
 
     def terminate() -> None:
         captured[0]()

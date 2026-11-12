@@ -346,10 +346,6 @@ def reset_tracing() -> None:
 
     The singleton is cleared before the shutdown runs, so a provider whose
     shutdown fails cannot leave stale state behind for the next configure.
-
-    Raises:
-        Exception: Whatever the provider's ``shutdown`` raises, propagated after
-            the singleton has been cleared.
     """
     global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603 — module singleton
     provider = _provider

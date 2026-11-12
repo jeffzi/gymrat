@@ -17,9 +17,23 @@ from dataclasses import dataclass
 from gymrat.adapters.contract import AdapterError, defaults_from_suffixes
 from gymrat.metric_name import MetricNameError
 from gymrat.metric_name import parse as parse_metric_name
-from gymrat.utils import LINE_TERMINATORS, WarnSink, warn_skip, warn_to_stderr
+from gymrat.utils import LINE_TERMINATORS, WarnSink, warn_to_stderr
 
 _JSON_DECODER = json.JSONDecoder()
+
+
+def warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
+    """Send a "Skipping <subject><tail>" warning.
+
+    Args:
+        warn: The sink that receives the warning.
+        subject: What is being skipped, e.g. ``'run of "my-bench"'``. Any alias or
+            task name it names is JSON-escaped, so a line terminator in it cannot
+            split the warning.
+        tail: The reason, from :func:`~gymrat.adapters.payload_entry.first_problem`
+            or written by the caller.
+    """
+    warn(f"Skipping {subject}{tail}")
 
 
 def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:

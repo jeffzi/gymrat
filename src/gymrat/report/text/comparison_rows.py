@@ -129,7 +129,7 @@ def shown_verdict(
     if with_band and not unstable and shown != "inconclusive" and verdict.method != "exact":
         band = format_noise_band_value(verdict.noise_pct)
         if shown == "within-noise" and verdict.detectable_pct is not None:
-            detects = f"{verdict.detectable_pct:.1f}%"
+            detects = format_noise_band_value(verdict.detectable_pct)
     return ShownVerdict(
         parts=VerdictParts(
             glyph=GLYPHS[shown],

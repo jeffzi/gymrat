@@ -17,7 +17,8 @@ if TYPE_CHECKING:
     from gymrat.session.store import SessionState
 
 
-_STOP_HINT = "The loop is done. Report what the session measured instead of measuring again."
+_REPORT_INSTEAD_HINT = "Report what the session measured instead of measuring again."
+_STOP_HINT = f"The loop is done. {_REPORT_INSTEAD_HINT}"
 
 
 class LoopStopError(GymratError):
@@ -26,6 +27,14 @@ class LoopStopError(GymratError):
     Separate from a plain :class:`GymratError` because nothing failed: the loop
     ran to the end it was configured for, which the CLI reports as a gate trip
     rather than as a tool failure.
+
+    Args:
+        *args: Passed through to :class:`GymratError`; a lone string message is
+            the common case.
+        hint: Keyword-only. An optional human-facing suggestion for what to do
+            next. ``None`` when no hint applies.
+        reason: Keyword-only. The :data:`~gymrat.session.schema.CommandReason`
+            tag recorded for the refusal, ``"stop-condition"`` by default.
     """
 
     def __init__(
@@ -43,12 +52,21 @@ class BudgetExceededError(LoopStopError):
     Raised when a live budget's remaining time is shorter than the estimated
     iterate duration, so the CLI routes it through the same gate-exit path as
     any other stop condition.
+
+    Args:
+        *args: Passed through to :class:`GymratError`; a lone string message is
+            the common case.
+        hint: Keyword-only. A human-facing suggestion for what to do next,
+            telling the agent to report what the session measured by default.
+            ``None`` when no hint applies.
+        reason: Keyword-only. The :data:`~gymrat.session.schema.CommandReason`
+            tag recorded for the refusal, ``"budget-exceeded"`` by default.
     """
 
     def __init__(
         self,
         *args: object,
-        hint: str | None = None,
+        hint: str | None = _REPORT_INSTEAD_HINT,
         reason: CommandReason | None = "budget-exceeded",
     ) -> None:
         super().__init__(*args, hint=hint, reason=reason)

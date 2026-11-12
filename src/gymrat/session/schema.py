@@ -39,11 +39,20 @@ WithheldReason = Literal[
 - ``unconfirmed`` — a confirmation rerun disowned the regression
 """
 
-Method = Literal["permutation", "band", "exact"]
+PermutationMethod = Literal["permutation"]
+"""The sign-flip permutation test, the default method."""
+
+BandMethod = Literal["band"]
+"""The noise-band fallback method."""
+
+ExactMethod = Literal["exact"]
+"""The exact-comparison fallback method."""
+
+Method = Literal[PermutationMethod, BandMethod, ExactMethod]
 """The statistical test that produced a metric's verdict.
 
-Identical to the model's own method union: the sign-flip permutation test is the default, with
-the band and exact fallbacks.
+The in-memory verdict models reuse each member: the sign-flip permutation test is the default,
+with the band and exact fallbacks.
 """
 
 PrimaryKind = Literal["geomean", "metric"]

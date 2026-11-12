@@ -56,6 +56,7 @@ from gymrat.utils import (
     expected_got,
     first_set,
     os_error_reason,
+    parse_bounded_positive_int,
     phrase_for_error,
 )
 
@@ -116,45 +117,6 @@ def env_string_result(env_var: str) -> EnvResult[str]:
     return EnvResult(value=raw)
 
 
-def is_positive_integer(raw: str) -> bool:
-    """Whether ``raw`` names a positive integer.
-
-    Every source of a positive-integer setting -- the ``--samples`` and
-    ``--timeout`` flags and their ``GYMRAT_*`` env vars -- applies this one rule,
-    so the same input is accepted or rejected no matter which one it arrives
-    through. ``int`` alone is too lenient: it accepts surrounding whitespace, a
-    sign, ``_`` separators, and non-ASCII digits.
-
-    Args:
-        raw: The text as the user wrote it.
-
-    Returns:
-        ``True`` when ``raw`` is only ASCII digits and not all of them are zero.
-    """
-    return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
-
-
-def parse_bounded_positive_int(raw: str, maximum: int) -> int | None:
-    """Parse a positive integer no larger than ``maximum``.
-
-    Args:
-        raw: The text as the user wrote it.
-        maximum: Largest accepted value.
-
-    Returns:
-        The integer, or ``None`` when ``raw`` fails :func:`is_positive_integer`
-        or names a value above ``maximum``.
-    """
-    if not is_positive_integer(raw):
-        return None
-    # More significant digits than ``maximum`` means above it; comparing lengths
-    # first keeps ``int`` away from a run past the interpreter's conversion limit.
-    digits = raw.lstrip("0")
-    if len(digits) > len(str(maximum)) or int(digits) > maximum:
-        return None
-    return int(digits)
-
-
 def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
     """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
 
@@ -164,8 +126,8 @@ def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
 
     Returns:
         An :class:`EnvResult` with the parsed integer, a problem when the value
-        fails :func:`parse_bounded_positive_int`, or neither when the variable
-        is unset.
+        fails :func:`~gymrat.utils.parse_bounded_positive_int`, or neither when
+        the variable is unset.
     """
     raw = os.environ.get(env_var)
     if raw is None:
@@ -495,8 +457,7 @@ def _message_for_error(error: ErrorDetails) -> str:
 def validate_config_file(data: dict[str, object]) -> tuple[ConfigFile | None, list[str]]:
     """Validate parsed config data into a :class:`ConfigFile`.
 
-    Never raises: validation failures are returned as a problem list, not
-    exceptions, so callers can collect and display all errors at once.
+    Never raises, so callers can collect and display all errors at once.
 
     Args:
         data: Raw config data, shaped like a parsed ``gymrat.toml``.
@@ -800,9 +761,9 @@ def _resolve_config_source(
 ) -> tuple[str | None, ConfigFile | None, list[str]]:
     """Resolve which config file to load, load it, and report any problems.
 
-    When the config source itself is broken (blank ``--config``, blank
-    ``GYMRAT_CONFIG``), file loading is skipped so the merge still yields
-    defaults without probing the filesystem.
+    A broken config source (blank ``--config``, blank ``GYMRAT_CONFIG``) skips
+    file loading, so the merge still yields defaults without probing the
+    filesystem.
 
     Args:
         flags: Command-line overrides, consulted for an explicit ``--config``.

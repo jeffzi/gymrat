@@ -49,9 +49,8 @@ def repository_lookup_error(directory: str, cause: object) -> GymratError:
 
     Git reporting that ``directory`` is outside every repository is an answer
     callers can act on. Every other failure — dubious ownership, an unreadable
-    ``.git``, a git that cannot run at all — is git declining to answer, and
-    carries git's own diagnostics so the reader sees the real reason rather than
-    a wrong one.
+    ``.git``, a git that cannot run at all — is git declining to answer, so the
+    reader must see git's real reason rather than a wrong one.
 
     Args:
         directory: The directory whose repository lookup failed.

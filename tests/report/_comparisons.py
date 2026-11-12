@@ -35,7 +35,7 @@ if TYPE_CHECKING:
         GeomeanResult,
         MetricUnit,
     )
-    from gymrat.sampling import CleanupResult
+    from gymrat.worktree_sweep import CleanupResult
 
 
 # ---------------------------------------------------------------------------

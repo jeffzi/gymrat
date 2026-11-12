@@ -15,11 +15,12 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat import sampling
+from gymrat import sampling, worktree_sweep
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
-from gymrat.sampling import CleanupResult, RunOptions, SamplingOptions
+from gymrat.sampling import RunOptions, SamplingOptions
 from gymrat.utils import warn_to_stderr
+from gymrat.worktree_sweep import CleanupResult
 from tests._exec_fixtures import expected_result
 from tests._process_helpers import fake_install
 
@@ -124,4 +125,4 @@ def install_pipeline(
         return expected_result("".join(f"METRIC {key}={value}\n" for key, value in metrics.items()))
 
     monkeypatch.setattr(sampling, "exec", create_autospec(run_exec, side_effect=run))
-    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install([]))
+    monkeypatch.setattr(worktree_sweep, "install_termination_cleanup", fake_install([]))

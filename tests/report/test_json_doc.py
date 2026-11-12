@@ -30,11 +30,11 @@ from gymrat.report.json_doc import (
 from gymrat.report.types import (
     CandidateMetric,
 )
-from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from gymrat.session.records import (
     Confirm,
     PairedSamples,
 )
+from gymrat.worktree_sweep import CleanupResult, WorktreeRemovalFailure
 from tests.report._comparisons import (
     create_candidate,
     create_comparison_result,

@@ -18,11 +18,11 @@ from gymrat.config import (
     env_positive_int_result,
     find_implicit_base,
     inspect_config,
-    is_positive_integer,
     resolve_config,
     runbook_problem,
 )
 from gymrat.errors import GymratError
+from gymrat.utils import is_positive_integer
 from tests._config import benchless_config
 from tests._git import run_git
 from tests._imports import modules_imported_by

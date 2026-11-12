@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self, get_args
 from pydantic import (
     BaseModel,
     BeforeValidator,
-    ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
     Strict,
@@ -63,7 +62,7 @@ from gymrat.session.schema import (
     SchemaVersion,
     WithheldReason,
 )
-from gymrat.session.workspace import BaselineRef, Worktrees
+from gymrat.session.workspace import RECORD_CONFIG, BaselineRef, Worktrees
 from gymrat.utils import (
     VALUE_ERROR_PREFIX,
     coerce_integer,
@@ -82,14 +81,6 @@ if TYPE_CHECKING:
 # Validation and coercion helpers
 # ---------------------------------------------------------------------------
 
-
-_RECORD_CONFIG = ConfigDict(
-    strict=True,
-    extra="forbid",
-    frozen=True,
-    validate_by_name=True,
-    serialize_by_alias=True,
-)
 
 _wire_validation: ContextVar[bool] = ContextVar("_wire_validation", default=False)
 
@@ -160,7 +151,7 @@ class _RecordEnvelope(BaseModel):
     Each subclass declares its own ``type: Literal[...]`` discriminator.
     """
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     at: int = Field(description="Nanoseconds since the Unix epoch when the record was created.")
 
@@ -189,7 +180,7 @@ class _SequencedEnvelope(_RecordEnvelope):
 class SessionHooks(BaseModel):
     """The hook commands a session was started with; an absent stage ran nothing."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     before: _OptNonEmptyStr = Field(
         default=None, description="Command to run before each iteration."
@@ -200,7 +191,7 @@ class SessionHooks(BaseModel):
 class SessionConfig(BaseModel):
     """The settled configuration a session was opened with, kept for provenance."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     bench: str = Field(description="Benchmark command to run.")
     prepare: _OptStr = Field(
@@ -257,7 +248,7 @@ class BaselineRecord(_RecordEnvelope):
 class _DeltaPctSerializer(BaseModel):
     """Shared base for models whose ``delta_pct`` is always emitted, even as ``None``."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     delta_pct: _Number | None = Field(
         description="Percentage change from baseline, or null when undefined."
@@ -320,7 +311,7 @@ class IterationMetricVerdict(_DeltaPctSerializer):
 class PairedSamples(BaseModel):
     """The experiment and baseline sample rounds measured in one iteration."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     experiment: _SampleRounds = Field(description="Sample rounds from the experiment worktree.")
     baseline: _SampleRounds = Field(description="Sample rounds from the baseline worktree.")
@@ -333,7 +324,7 @@ class Confirm(BaseModel):
     ``None`` when the rerun skipped none.
     """
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     ran: bool = Field(description="Whether the confirmation rerun actually executed.")
     filtered: _NameList = Field(description="Metric names the rerun was filtered to.")
@@ -397,7 +388,7 @@ class IterationRecord(_SequencedEnvelope):
 class KeepChecks(BaseModel):
     """The outcome of a keep's configured checks, with relayed output sizes."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     configured: bool = Field(description="Whether checks were configured for this session.")
     passed: _OptBool = Field(default=None, description="Whether all configured checks passed.")

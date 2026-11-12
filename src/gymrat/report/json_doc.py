@@ -40,10 +40,10 @@ if TYPE_CHECKING:
         MetricComparison,
         MetricMeasurement,
     )
-    from gymrat.sampling import CleanupResult
     from gymrat.session.records import IterationRecord
     from gymrat.session.schema import WithheldReason
     from gymrat.verdict import KindAggregate
+    from gymrat.worktree_sweep import CleanupResult
 
 _SCHEMA_VERSION = 1
 

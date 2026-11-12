@@ -216,7 +216,7 @@ def format_verdict_delta(verdict: MetricVerdict) -> str:
 
 
 def format_noise_band_value(noise_pct: float) -> str:
-    """A noise band's figure, without the sign it is stated behind."""
+    """A noise band's or detectable change's figure, without the prefix it is stated behind."""
     return f"{noise_pct:.1f}%"
 
 

@@ -272,10 +272,9 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     """Read what the command span needs from the session log before the body runs.
 
     The span's events are the records the body appends, so the record count
-    must be taken before the body runs. Without an endpoint no span is emitted and
-    the log is not read. A log that exists but cannot be read warns to stderr:
-    without its record count the span cannot tell the body's records apart, so
-    none is emitted.
+    must be taken before the body runs. Without an endpoint no span is emitted,
+    so the log is not read. A log that exists but cannot be read warns to stderr:
+    without its record count the span cannot tell the body's records apart.
 
     Args:
         root: The repository whose session header names the session.

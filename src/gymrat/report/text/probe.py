@@ -87,7 +87,7 @@ class _ProbeRow:
 
 
 def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> str | None:
-    """The style a rendered delta wears, or ``None`` where it points nowhere.
+    """The style a rendered delta wears.
 
     Args:
         delta: The delta as :func:`~gymrat.report.format.format_percent_delta` rendered
@@ -133,7 +133,7 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
         {metric.name: metric for metric in result.metrics},
         _probe_row,
     )
-    skeleton = plan_table_skeleton(layout, None, lambda row: row.measured.value, label)
+    skeleton = plan_table_skeleton(layout, None, None, lambda row: row.measured.value, label)
     reference_fields = value_widths([row.reference for row in layout.ordered])
 
     def reference_cell(row: _ProbeRow) -> str:

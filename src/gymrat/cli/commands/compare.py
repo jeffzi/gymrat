@@ -96,15 +96,7 @@ class CompareFlags(SharedFlags):
 
 def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
     """Serialize fail-on conditions to the CLI grammar for trace args."""
-    parts: list[str] = []
-    for condition in conditions:
-        if isinstance(condition, RegressedFailOn):
-            parts.append("regressed")
-        elif isinstance(condition, GeomeanFailOn):
-            parts.append(f"geomean:{condition.pct:g}")
-        else:
-            assert_never(condition)
-    return ",".join(parts)
+    return ",".join(str(condition) for condition in conditions)
 
 
 def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:

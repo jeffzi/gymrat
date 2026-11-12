@@ -415,7 +415,8 @@ class RunShape:
         sample_count: The number of samples per target, or ``None`` when the
             total is discovered at runtime from ``PassStarted.total_rounds``.
         command: A label printed in the header row of the live display.
-        target_labels: Labels for each target, shown when ``target_count > 1``.
+        target_labels: Labels for each target, listed after ``command`` in the
+            live header; unused when ``command`` is ``None``.
     """
 
     target_count: int
@@ -427,9 +428,7 @@ class RunShape:
 class ProgressReporter(LiveDisplayMixin):
     """Single-use progress reporter for measure/compare commands.
 
-    Call ``stop`` exactly once after the run ends. The reporter renders to the
-    given ``console`` using either a rich ``Live`` block (live mode) or plain
-    timestamped lines (plain mode).
+    Call ``stop`` exactly once after the run ends.
 
     Args:
         mode: ``"live"`` for a rich live display or ``"plain"`` for timestamped

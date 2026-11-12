@@ -306,6 +306,10 @@ class SupervisedSession:
     budget: Budget
     max_usd: float | None
 
+    def is_lock_held(self) -> bool:
+        """Whether the repository lock at ``lock_path`` is held on disk."""
+        return is_held(self.lock_path)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SupervisionResult:
@@ -317,7 +321,9 @@ class SupervisionResult:
             or was ended by a condition read off the session log.
         end_reason: For ``guard``, the guard reason; for a cap, the cap name;
             for ``stop-condition`` and ``hook-failure``, the condition's
-            summary; for ``session``, ``None`` unless a log-read error set it.
+            summary; for ``session``, ``None`` unless an error ended the run (a
+            failed log read, lock probe, or settle or lock-poll task), in which
+            case it holds the error message.
         duration_ms: Elapsed milliseconds from start to settlement, measured
             on the monotonic clock.
     """
@@ -726,7 +732,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         observer: Optional callback receiving every session event.
         grace_ms: Milliseconds to wait after requesting a stop before forcing
             cancellation.
-        wall_clock_poll_ms: How often (ms) to check wall-clock and spend caps.
+        wall_clock_poll_ms: How often (ms) to check the wall-clock deadline.
         settle_window_ms: Idle time (ms) after a turn ends before reading the
             session log and deciding the next action.
         lock_poll_ms: How often (ms) to probe the repository lock while the
@@ -753,7 +759,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         wall_clock_poll_ms=wall_clock_poll_ms,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
-        is_lock_held=is_lock_held or partial(is_held, context.lock_path),
+        is_lock_held=is_lock_held or context.is_lock_held,
         warn=warn,
     )
     return await _Supervision(config).run()

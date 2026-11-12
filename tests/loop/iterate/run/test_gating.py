@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from gymrat.model import Direction
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
+    from gymrat.session.schema import Outcome
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 
@@ -493,6 +494,18 @@ def _regressed_metrics(*, gating: bool) -> MetricComparisons:
     return {"decode/time": permutation_metric(verdict="regressed", delta=4, gating=gating)}
 
 
+def _outcome_of(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
+    """The outcome ``metrics`` add up to, read off each metric's experiment verdict."""
+    verdicts = {
+        name: candidate.verdict
+        for name, metric in metrics.items()
+        for candidate in metric.candidates[:1]
+        if candidate.verdict is not None
+    }
+    metric_meta = {name: metric.meta for name, metric in metrics.items()}
+    return derive_outcome(verdicts, metric_meta, primary)
+
+
 @pytest.mark.parametrize(
     ("gating", "expected"),
     [
@@ -503,7 +516,7 @@ def _regressed_metrics(*, gating: bool) -> MetricComparisons:
 def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
     *, gating: bool, expected: str
 ):
-    outcome = derive_outcome(_regressed_metrics(gating=gating), GeomeanPrimary(-9))
+    outcome = _outcome_of(_regressed_metrics(gating=gating), GeomeanPrimary(-9))
 
     assert outcome == expected
 
@@ -524,7 +537,7 @@ def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
         "higher/time": _directed_metric("higher"),
     }
 
-    outcome = derive_outcome(metrics, primary)
+    outcome = _outcome_of(metrics, primary)
 
     assert outcome == expected
 
@@ -532,6 +545,6 @@ def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
 def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the_primary():
     unmeasured = replace(_directed_metric("lower"), candidates=())
 
-    outcome = derive_outcome({"lower/time": unmeasured}, GeomeanPrimary(-9))
+    outcome = _outcome_of({"lower/time": unmeasured}, GeomeanPrimary(-9))
 
     assert outcome == "improved"

@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from gymrat.measure import MeasureOptions, measure
-from gymrat.sampling import TargetSpec, compute_metric_stats
+from gymrat.metric_stats import compute_metric_stats
+from gymrat.sampling import TargetSpec
 from tests._git import (
     EMIT_ONE_BENCH,
     list_worktree_dirs,

@@ -283,6 +283,8 @@ def _first_non_blank_line(path: Path) -> tuple[str, int] | None:
 
     Raises:
         GymratError: When the first non-blank line is not valid UTF-8.
+        OSError: When the log exists but cannot be opened or read, such as a
+            directory or a file without read permission.
     """
     # Binary read: a text-mode read decodes a whole buffered chunk, so bytes on
     # later lines could fail the read of a header that is itself valid.
@@ -520,9 +522,8 @@ def complete_lines(raw: bytes) -> list[bytes]:
 def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read every record from the session log at ``jsonl_path``, in file order.
 
-    A log that does not exist reads as no session — an empty list — because the
-    loop commands distinguish "no session" from "corrupt session" and only the
-    latter is a failure.
+    The loop commands distinguish "no session" from "corrupt session", and only
+    the latter is a failure.
 
     Args:
         jsonl_path: Path to the session log file.

@@ -34,7 +34,7 @@ from gymrat.report.types import (
     RegressedFailOn,
     ReportOptions,
 )
-from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
+from gymrat.worktree_sweep import CleanupResult, WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
     highlight_lines,

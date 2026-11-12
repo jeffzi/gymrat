@@ -280,7 +280,7 @@ def validate_experiment_worktree(root: str) -> None:
 
     Raises:
         GymratError: When the experiment worktree has unsettled or unmeasured
-            changes.
+            changes, or the session log cannot be read or parsed.
     """
     state = fold_session(read_session_records(root))
     if state.finalized is not None or state.session is None:

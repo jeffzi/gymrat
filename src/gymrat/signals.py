@@ -128,6 +128,11 @@ class _ThreadMaskHold(threading.local):
     ``pthread_sigmask`` is per thread, so the mask is blocked by the first
     deferral a thread opens and restored only when its last one closes, in
     whatever order they close.
+
+    Attributes:
+        depth: How many deferrals this thread has open.
+        saved_mask: The signal mask the thread's first open deferral replaced,
+            restored when ``depth`` returns to zero.
     """
 
     def __init__(self) -> None:
@@ -173,9 +178,8 @@ def exit_process(code: int) -> NoReturn:
 def join_exit_writer(writer: threading.Thread, timeout_s: float) -> None:
     """Wait for the exit-output writer thread, giving up after ``timeout_s``.
 
-    Returns after at most ``timeout_s``, whether or not the writer finished: a
-    write stalled by terminal flow control must not hold the process past a
-    termination signal.
+    The wait ends whether or not the writer finished: a write stalled by
+    terminal flow control must not hold the process past a termination signal.
 
     Test seam: tests replace this function to observe the wait instead of
     sitting through it. The termination handler looks it up at call time, so a

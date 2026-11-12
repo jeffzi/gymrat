@@ -641,7 +641,7 @@ def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupReg
     Args:
         monkeypatch: The fixture that installs the swap.
         module: The dotted name of the module whose ``install_termination_cleanup``
-            binding is swapped, e.g. ``"gymrat.sampling"``.
+            binding is swapped, e.g. ``"gymrat.worktree_sweep"``.
 
     Returns:
         The registry recording every cleanup ``module`` installs.

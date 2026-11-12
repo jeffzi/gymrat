@@ -63,6 +63,8 @@ class GeomeanPrimary:
             value — a baseline median of zero leaves nothing to normalize
             against, a figure with no direction to read rather than one that
             stood still, so nothing may coerce it to ``0``.
+        kind: Always ``"geomean"``; tells this member of :data:`LoopPrimary`
+            apart from :class:`MetricPrimary`.
     """
 
     delta_pct: float | None
@@ -80,6 +82,8 @@ class MetricPrimary:
         name: The metric's key in the run's comparisons.
         delta_pct: How far the metric moved, or ``None`` where the ratio had no
             value (see :class:`GeomeanPrimary`).
+        kind: Always ``"metric"``; tells this member of :data:`LoopPrimary`
+            apart from :class:`GeomeanPrimary`.
     """
 
     name: str

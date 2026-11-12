@@ -92,15 +92,14 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
     """Take a geomean row's figure apart into the fields its cell pads and styles.
 
     A band of zero is what an aggregate over exact-only metrics propagates: there
-    is no noise to state, and ``±0.0%`` would read as a measurement, so the band
-    field is left empty.
+    is no noise to state, and ``±0.0%`` would read as a measurement.
 
     Args:
         geomean: The aggregate to take apart.
 
     Returns:
-        The geomean's delta, band, and provenance, or ``None`` when the geomean
-        covers no metrics.
+        The geomean's delta, band, and provenance, the band empty when it is
+        zero; or ``None`` when the geomean covers no metrics.
     """
     if geomean.n == 0:
         return None
@@ -137,9 +136,8 @@ def geomean_value_style(
     """How a geomean's figure is styled: bold always, colored once it clears the noise band.
 
     The figure is an average of ratios, so it moves whether or not anything did.
-    A value inside the band is emboldened and left uncolored. When every metric
-    behind the figure is quiet the color is vetoed, since coloring it would
-    announce a win the rows all decline to claim.
+    Coloring a figure every metric behind it is quiet about would announce a win
+    the rows all decline to claim.
 
     Args:
         geomean: The aggregate whose figure is being styled.
@@ -147,8 +145,9 @@ def geomean_value_style(
             leaves the band deciding alone.
 
     Returns:
-        A rich style string: ``"bold"``, or bold in the improved or regressed
-        verdict color.
+        A rich style string: bold in the improved or regressed verdict color
+        once the figure clears the band, ``"bold"`` alone when it sits inside
+        the band or every metric behind it is quiet.
     """
     if _is_quiet_row(outcomes):
         return "bold"
@@ -233,10 +232,9 @@ class VerdictWidths:
 def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     """Measure a column of verdict cells so every cell pads to the same fields.
 
-    Only the deltas set the delta width; a word standing in for a delta is not
-    measured. A caller that wants the delta field to fit a word widens it
-    itself. Only the cells stating a detectable change set the pair-count
-    width, since only those cells pad their pair count.
+    A word standing in for a delta is not measured; a caller that wants the
+    delta field to fit a word widens it itself. Only a cell stating a detectable
+    change pads its pair count.
 
     Args:
         cells: The verdict cells to measure.

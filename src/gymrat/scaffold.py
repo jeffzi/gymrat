@@ -284,9 +284,10 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         A :class:`ScaffoldResult` describing each artifact.
 
     Raises:
-        GymratError: When the config fails validation, the bundled skill cannot
-            be read, a non-regular file (directory, symlink) occupies an artifact
-            path, or a filesystem error prevents writing.
+        GymratError: When no config exists and ``request.bench`` is None, the
+            config fails validation, the bundled skill cannot be read, a
+            non-regular file (directory, symlink) occupies an artifact path, or
+            a filesystem error prevents writing.
     """
     base_dir = Path(base_dir)
     config_path = base_dir / CONFIG_FILENAME
@@ -296,6 +297,10 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         msg = f"Cannot access {config_path}: {error}"
         raise GymratError(msg, hint="Check directory permissions.") from error
 
+    # An existing config is kept as-is, so its bench command stands in for the flag.
+    if not config_exists and request.bench is None:
+        msg = "Missing --bench flag."
+        raise GymratError(msg)
     config_content = None if config_exists else _prepare_config(request)
     skill_content = read_bundled_skill() if request.install_skill else None
 

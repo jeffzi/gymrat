@@ -12,6 +12,7 @@ import pytest
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import OUTPUT_CAP, ExecResult, ExecTimeoutError
+from gymrat.metric_stats import compute_metric_stats
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -24,7 +25,6 @@ from gymrat.sampling import (
     SamplingOptions,
     TargetContext,
     collect_samples,
-    compute_metric_stats,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
 from tests._config import resolved_config

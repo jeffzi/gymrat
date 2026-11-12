@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import SupervisionResult
 
 _SUMMARY_LABEL_WIDTH = 6
-"""The label column of the summary rows, wide enough for "agent"."""
+"""The label column of the summary rows, wide enough for "effort", the longest label."""
 
 
 def _build_outcome_text(result: SupervisionResult) -> Text:

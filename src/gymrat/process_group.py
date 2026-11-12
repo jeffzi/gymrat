@@ -39,6 +39,7 @@ import sys
 import time
 import warnings
 from collections.abc import Awaitable, Callable, Iterable
+from ctypes import wintypes
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -128,8 +129,6 @@ attribute at all is what has to be avoided.
 # ---------------------------------------------------------------------------
 
 if sys.platform == "win32":
-    from ctypes import wintypes
-
     _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
     _JOB_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_BASIC_ACCOUNTING_INFORMATION = 1

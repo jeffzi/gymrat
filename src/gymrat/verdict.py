@@ -40,7 +40,7 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from gymrat.metric_name import parse as parse_metric_name
+from gymrat.metric_sections import section_metrics
 from gymrat.model import (
     DEFAULT_UNSTABLE_NOISE_PCT,
     NOISE_FLOOR_PCT,
@@ -110,6 +110,12 @@ class _PairedSamples:
     Bundles what every downstream step needs — :func:`compute_verdicts` computes
     the medians once for the delta, and the noise and verdict paths reuse them
     instead of recomputing.
+
+    Attributes:
+        left: The baseline's samples, one per paired round.
+        right: The candidate's samples, aligned round by round with ``left``.
+        median_left: The median of ``left``.
+        median_right: The median of ``right``.
     """
 
     left: Sequence[float]
@@ -568,7 +574,7 @@ class KindAggregate:
     gated_geomean: GeomeanResult | None = None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _KindBucket:
     """A kind's metrics, and the groups their short names sort them into."""
 
@@ -579,16 +585,15 @@ class _KindBucket:
 def _bucket_by_kind(
     metric_meta: Mapping[str, ResolvedMetricMeta],
 ) -> dict[str, _KindBucket]:
+    sections = section_metrics((name, meta.kind) for name, meta in metric_meta.items())
     buckets: dict[str, _KindBucket] = {}
-
-    for name, meta in metric_meta.items():
-        bucket = buckets.setdefault(meta.kind, _KindBucket(metrics={}, groups={}))
-        bucket.metrics[name] = meta
-
-        group = parse_metric_name(name).group
-        if group is not None:
-            bucket.groups.setdefault(group, {})[name] = meta
-
+    for kind, members in sections.items():
+        groups: dict[str, dict[str, ResolvedMetricMeta]] = {}
+        for name, group in members:
+            if group is not None:
+                groups.setdefault(group, {})[name] = metric_meta[name]
+        metrics = {name: metric_meta[name] for name, _ in members}
+        buckets[kind] = _KindBucket(metrics=metrics, groups=groups)
     return buckets
 
 

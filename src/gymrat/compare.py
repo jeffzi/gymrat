@@ -9,7 +9,7 @@ candidate; the gap between two candidates' deltas is not a quantity this test
 measured.
 
 Rendering is the caller's job. Worktree cleanup and signal handling belong to
-:func:`~gymrat.sampling.run_with_worktrees`.
+:func:`~gymrat.worktree_sweep.run_with_worktrees`.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ from functools import partial
 from gymrat.adapters.registry import get_adapter
 from gymrat.config import KindEntry
 from gymrat.metric_meta import resolve_metric_meta_from_samples
+from gymrat.metric_stats import compute_metric_stats
 from gymrat.model import MetricVerdict, ResolvedMetricMeta, pair_metric
 from gymrat.report.types import (
     CandidateComparison,
@@ -29,19 +30,17 @@ from gymrat.report.types import (
 )
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.sampling import (
-    CleanupResult,
     RunOptions,
     TargetSamples,
     TargetSpec,
     WorktreeInfo,
     collect_samples,
-    compute_metric_stats,
-    run_with_worktrees,
     to_context,
 )
 from gymrat.targets import resolve_target
 from gymrat.utils import WarnSink, own_values
 from gymrat.verdict import compute_kind_aggregates, compute_verdicts
+from gymrat.worktree_sweep import CleanupResult, run_with_worktrees
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -103,9 +102,8 @@ def _baseline_paired_values(
 
     A round counts only when at least one candidate also reported the metric at
     the same index — the same rounds a verdict's delta can be drawn from for at
-    least one candidate. When no candidate ever reported the metric, falls back to
-    every round the baseline reported it in: a baseline-only metric has no verdict
-    to stay consistent with, so its displayed median is the baseline's own.
+    least one candidate. A baseline-only metric has no verdict to stay consistent
+    with, so its displayed median is the baseline's own.
 
     Args:
         baseline_samples: The baseline's per-round samples.

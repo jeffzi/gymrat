@@ -7,7 +7,7 @@ directory benched where it sits), ``prepare`` runs once, ``bench`` runs
 
 Nothing is written to disk beyond that worktree — recording a run is the caller's
 business. Worktree cleanup and signal handling belong to
-:func:`~gymrat.sampling.run_with_worktrees`.
+:func:`~gymrat.worktree_sweep.run_with_worktrees`.
 """
 
 import asyncio
@@ -16,20 +16,13 @@ from functools import partial
 
 from gymrat.adapters.registry import get_adapter
 from gymrat.metric_meta import resolve_metric_meta_from_samples
+from gymrat.metric_stats import compute_metric_stats
 from gymrat.model import ResolvedMetricMeta
 from gymrat.report.types import MeasurementResult, MetricMeasurement
-from gymrat.sampling import (
-    CleanupResult,
-    RunOptions,
-    TargetSpec,
-    WorktreeInfo,
-    collect_samples,
-    compute_metric_stats,
-    run_with_worktrees,
-    to_context,
-)
+from gymrat.sampling import RunOptions, TargetSpec, WorktreeInfo, collect_samples, to_context
 from gymrat.targets import resolve_target
 from gymrat.utils import own_values
+from gymrat.worktree_sweep import CleanupResult, run_with_worktrees
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

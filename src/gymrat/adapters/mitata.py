@@ -14,17 +14,20 @@ from typing import Annotated
 from pydantic import BaseModel, Field, Strict, ValidationError
 
 from gymrat.adapters.contract import MEMORY_SUFFIX, TIME_SUFFIX
-from gymrat.adapters.json_payload import JsonArrayAdapter, NameWording, accepts_metric_prefix
-from gymrat.utils import (
-    Number,
-    WarnSink,
+from gymrat.adapters.json_payload import (
+    JsonArrayAdapter,
+    NameWording,
+    accepts_metric_prefix,
+    warn_skip,
+)
+from gymrat.adapters.payload_entry import (
     describe_error,
     first_problem,
     is_finite_or_warn,
     named_subject,
     record_metric,
-    warn_skip,
 )
+from gymrat.utils import Number, WarnSink
 
 _COLLISION_ADVICE = "give the benchmark aliases distinct $placeholders to separate the runs"
 

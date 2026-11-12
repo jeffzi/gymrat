@@ -43,12 +43,9 @@ from gymrat.report.table.grid import (
     AggregateRows,
     build_cell_dispatcher,
     compute_column_width,
-    is_grouped,
     join_value_cell,
-    metric_column_width,
-    name_cell,
-    plan_body,
     plan_sections,
+    plan_table_skeleton,
     render_body,
     value_widths,
 )
@@ -66,7 +63,7 @@ if TYPE_CHECKING:
     from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.table.cells import VerdictWidths
-    from gymrat.report.table.grid import BodyLine
+    from gymrat.report.table.grid import TableSkeleton
     from gymrat.report.types import CandidateComparison, ComparisonResult
 
 # The glyph slot a geomean figure fills — a blank, since the row states a mean,
@@ -169,22 +166,23 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
         result.metrics,
         comparison_row_builder(1, result.samples, with_band=True),
     )
-    baseline_fields = value_widths([row.baseline for row in layout.ordered])
-    candidate_fields = value_widths([_side(row).value for row in layout.ordered])
-
-    aggregates = _aggregate_rows(candidate)
-    body: list[BodyLine[ComparisonRow, _AggregateCell]] = plan_body(
-        layout, aggregates, result.config_kinds
+    skeleton = plan_table_skeleton(
+        layout,
+        _aggregate_rows(candidate),
+        result.config_kinds,
+        lambda row: row.baseline,
+        baseline,
     )
-    grouped = is_grouped(layout, body)
+    body = skeleton.body
+    candidate_fields = value_widths([_side(row).value for row in layout.ordered])
 
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
     verdict_fields = _verdict_fields(layout.ordered, [line.cell.parts for line in aggregate_lines])
 
     def metric_cells(row: ComparisonRow) -> _MetricCells:
         return (
-            Text(name_cell(row, grouped=grouped)),
-            Text(join_value_cell(row.baseline, baseline_fields)),
+            Text(skeleton.name_cell(row)),
+            Text(skeleton.value_cell(row)),
             Text(join_value_cell(_side(row).value, candidate_fields)),
             _metric_verdict_cell(row, verdict_fields),
         )
@@ -194,7 +192,7 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
         line.cell: _aggregate_verdict_cell(line.cell, verdict_fields) for line in aggregate_lines
     }
     widths = _column_widths(
-        headers, list(cells_by_name.values()), body, list(aggregate_cells.values())
+        headers, list(cells_by_name.values()), skeleton, list(aggregate_cells.values())
     )
 
     def cells_of(row: ComparisonRow) -> _MetricCells:
@@ -237,23 +235,19 @@ def _aggregate_rows(
 def _column_widths(
     headers: tuple[str, str, str],
     rows: Sequence[_MetricCells],
-    body: Sequence[BodyLine[ComparisonRow, _AggregateCell]],
+    skeleton: TableSkeleton[ComparisonRow, _AggregateCell],
     aggregate_verdicts: Sequence[Text],
 ) -> list[int]:
-    """The four column widths, measured over the rows, headers and aggregates' plain text."""
-
-    def value_width(index: int, header: str) -> int:
-        return compute_column_width(
-            cell_len(header), [row[index].cell_len for row in rows], VALUE_COLUMN_MIN
-        )
-
+    """The four column widths: the skeleton's name and baseline, then the candidate and verdict."""
     verdict_lengths = [row[3].cell_len for row in rows] + [
         verdict.cell_len for verdict in aggregate_verdicts
     ]
     return [
-        metric_column_width(body, [row[0].cell_len for row in rows]),
-        value_width(1, headers[0]),
-        value_width(2, headers[1]),
+        skeleton.metric_width,
+        skeleton.value_width,
+        compute_column_width(
+            cell_len(headers[1]), [row[2].cell_len for row in rows], VALUE_COLUMN_MIN
+        ),
         compute_column_width(cell_len(headers[2]), verdict_lengths, VERDICT_COLUMN_MIN),
     ]
 

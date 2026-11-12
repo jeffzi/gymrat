@@ -23,7 +23,7 @@ from gymrat.model import Exclusion
 from gymrat.report.style import EMPHASIZED_DIRECTION_STYLES
 from gymrat.report.text.render import render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
+from gymrat.worktree_sweep import CleanupResult, WorktreeRemovalFailure
 from tests.report._assertions import (
     line_containing,
     sgr_for,

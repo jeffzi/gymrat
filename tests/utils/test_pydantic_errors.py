@@ -4,13 +4,13 @@ import pytest
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from pydantic_core import ErrorDetails
 
+from gymrat.adapters.payload_entry import first_problem
 from gymrat.config import MAX_SAFE_INTEGER
 from gymrat.utils import (
     NON_BLANK_PATTERN,
     describe_key,
     drop_prefix_errors,
     expected_got,
-    first_problem,
     phrase_for_error,
 )
 

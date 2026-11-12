@@ -87,7 +87,9 @@ def measured_header_cells(title: str | None, label: str) -> tuple[Text, Text]:
     return header_metric_cell(title), variant_name_cell(label)
 
 
-def measured_cells[Row: NamedRow](skeleton: TableSkeleton[Row], row: Row) -> tuple[Text, Text]:
+def measured_cells[Row: NamedRow, Cell](
+    skeleton: TableSkeleton[Row, Cell], row: Row
+) -> tuple[Text, Text]:
     """The metric-name and measured-value cells of one metric row, as literal text.
 
     Args:
