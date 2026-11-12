@@ -63,6 +63,15 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     [
         pytest.param(5.0, "5", id="integral-float"),
         pytest.param(1.5, "1.5", id="float"),
+        pytest.param(0.001, "0.001", id="leading-zero-fraction"),
+        pytest.param(-0.0, "0", id="negative-zero"),
+        pytest.param(-1e-05, "-0.00001", id="negative-small-positional"),
+        pytest.param(1e-06, "0.000001", id="lower-threshold-positional"),
+        pytest.param(1.5e-7, "1.5e-7", id="below-lower-threshold-exponent"),
+        pytest.param(
+            1.2345678901234568e20, "123456789012345680000", id="below-upper-threshold-positional"
+        ),
+        pytest.param(1e21, "1e+21", id="upper-threshold-exponent"),
         pytest.param(True, "true", id="bool-true"),
         pytest.param(False, "false", id="bool-false"),
         pytest.param(None, "null", id="none"),
