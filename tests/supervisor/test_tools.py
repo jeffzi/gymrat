@@ -25,6 +25,7 @@ from gymrat.exec import (
     exec_argv,
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions
+from tests._cli import ENTRY
 from tests._exec_fixtures import expected_result
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,30 @@ async def test_probe_when_extra_env_names_a_fixed_key_does_let_the_extra_value_w
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.env is not None
     assert opts.env.get("NO_COLOR") == "0"
+
+
+@pytest.mark.parametrize(
+    "force_color",
+    [pytest.param("1", id="force-color-set"), pytest.param(None, id="force-color-unset")],
+)
+async def test_probe_when_child_fails_does_return_error_text_without_ansi(
+    tmp_path: pathlib.Path,
+    color_env: Callable[[str | None, str | None], None],
+    force_color: str | None,
+) -> None:
+    color_env(force_color, None)
+    host = ToolHost(
+        root=str(tmp_path),
+        abort=asyncio.Event(),
+        extra_env={},
+        argv_prefix=ENTRY,
+        _exec_fn=exec_argv,
+    )
+
+    result = await host.probe({})
+
+    text = _text_of(result)
+    assert (result["is_error"], text != "", "\x1b[" in text) == (True, True, False)
 
 
 async def test_probe_when_run_does_hand_the_child_the_supervisor_environment(
@@ -322,30 +347,35 @@ async def _call_via_sdk(
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "arguments", "expected_argv"),
+    ("arguments", "expected_options", "expected_names"),
     [
         pytest.param(
-            "probe",
             {"samples": 6},
-            ["gym", "rat", "probe", "--format", "json", "--samples", "6", "--"],
+            ["probe", "--format", "json", "--samples", "6"],
+            [],
             id="probe-samples-only",
         ),
         pytest.param(
-            "probe",
             {"names": ["a", "b"]},
-            ["gym", "rat", "probe", "--format", "json", "--", "a", "b"],
+            ["probe", "--format", "json"],
+            ["a", "b"],
             id="probe-names-only",
         ),
     ],
 )
-async def test_gymrat_tool_definitions_when_valid_arguments_given_does_run_child_with_expected_argv(
+async def test_gymrat_tool_definitions_when_valid_arguments_given_does_put_names_after_the_separator(
     sdk_config: McpSdkServerConfig,
     fake_exec: AsyncMock,
-    tool_name: str,
     arguments: dict[str, Any],
-    expected_argv: list[str],
+    expected_options: list[str],
+    expected_names: list[str],
 ) -> None:
-    result = await _call_via_sdk(sdk_config, tool_name, arguments)
+    result = await _call_via_sdk(sdk_config, "probe", arguments)
 
+    argv = list(fake_exec.call_args[0][0])
+    split = argv.index("--")
     assert result.is_error is False
-    assert list(fake_exec.call_args[0][0]) == expected_argv
+    assert (argv[split - len(expected_options) : split], argv[split + 1 :]) == (
+        expected_options,
+        expected_names,
+    )

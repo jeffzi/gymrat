@@ -112,7 +112,9 @@ class ToolHost:
         if self._busy:
             return _result("a gymrat command is already running", is_error=True)
         self._busy = True
-        argv = [*self._prefix, cmd, *_JSON_FORMAT_ARGS, *args]
+        # The agent reads the child's error text, so it must stay plain. The flag
+        # beats an inherited FORCE_COLOR, which outranks the NO_COLOR set below.
+        argv = [*self._prefix, "--no-color", cmd, *_JSON_FORMAT_ARGS, *args]
         try:
             # The origin marks the run as one the agent made through a tool, so the
             # child can tell it apart from a command a person typed.
