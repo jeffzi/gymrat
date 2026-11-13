@@ -136,14 +136,25 @@ _session_id: str = ""
 _provider: TracerProvider | None = None
 _tracer: Tracer | None = None
 _export_failed: bool = False
+_exported_span_count: int = 0
 _session_span_dropped: bool = False
 
 _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=None)
 
 
-def _traces_url(endpoint: str) -> str:
-    """Build the URL spans are posted to, as the OTLP exporter does from the environment."""
-    traces_endpoint = otlp_endpoint_from_env(_TRACES_ENDPOINT_ENV)
+def traces_url(endpoint: str, *, explicit: bool) -> str:
+    """Build the URL spans are posted to, as the OTLP exporter's environment precedence does.
+
+    Args:
+        endpoint: The OTLP base endpoint.
+        explicit: Whether ``endpoint`` was passed in rather than read from
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+
+    Returns:
+        ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` when it is set and ``endpoint``
+        is not explicit, otherwise ``endpoint`` joined with the traces path.
+    """
+    traces_endpoint = None if explicit else otlp_endpoint_from_env(_TRACES_ENDPOINT_ENV)
     if traces_endpoint is not None:
         return traces_endpoint
     separator = "" if endpoint.endswith("/") else "/"
@@ -166,8 +177,9 @@ def configure_tracing(
             IDs.
         span_processor: The span processor to install; a default OTLP
             batch processor is used when omitted.
-        endpoint: The OTLP endpoint to export to; ``None`` reads it from
-            ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+        endpoint: The OTLP endpoint to export to, over
+            ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT``; ``None`` reads it from
+            ``OTEL_EXPORTER_OTLP_ENDPOINT``, which the traces variable overrides.
 
     Returns:
         Whether a tracer provider is now active (``False`` when no endpoint
@@ -196,7 +208,8 @@ def configure_tracing(
             raise ValueError(msg)
         return True
 
-    endpoint = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
+    explicit = endpoint is not None
+    endpoint = otlp_endpoint(endpoint) if explicit else otlp_endpoint_from_env()
     if endpoint is None:
         return False
 
@@ -207,7 +220,7 @@ def configure_tracing(
         )
 
         if span_processor is None:
-            span_processor = _otlp_span_processor(endpoint)
+            span_processor = _otlp_span_processor(traces_url(endpoint, explicit=explicit))
     except ImportError:
         return False
 
@@ -226,14 +239,15 @@ def configure_tracing(
     return True
 
 
-def _otlp_span_processor(endpoint: str) -> SpanProcessor:
+def _otlp_span_processor(traces_url: str) -> SpanProcessor:
     """Build the batch processor that exports over OTLP HTTP.
 
     Args:
-        endpoint: The OTLP base endpoint the traces URL is derived from.
+        traces_url: The URL spans are posted to.
 
     Returns:
-        A batch processor whose failed exports set :func:`export_failed`.
+        A batch processor whose failed exports set :func:`export_failed`, and
+        whose exports count toward :func:`exported_span_count`.
 
     Raises:
         ImportError: When the OTLP exporter package is not installed.
@@ -243,7 +257,7 @@ def _otlp_span_processor(endpoint: str) -> SpanProcessor:
     )
     from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415 -- optional extra
 
-    exporter = _failure_recording(OTLPSpanExporter(endpoint=_traces_url(endpoint)))
+    exporter = _failure_recording(OTLPSpanExporter(endpoint=traces_url))
     return BatchSpanProcessor(exporter)
 
 
@@ -321,6 +335,19 @@ def export_failed() -> bool:
     return _export_failed
 
 
+def exported_span_count() -> int:
+    """How many spans the default OTLP exporter has been handed.
+
+    ``BatchSpanProcessor`` drops spans, logging only a warning, when its queue
+    is full because the exporter cannot keep up, so callers that report an
+    export (``gymrat export``) compare this with the spans they created.
+
+    Returns:
+        The number of spans passed to the exporter since tracing was configured.
+    """
+    return _exported_span_count
+
+
 def session_span_dropped() -> bool:
     """Whether the session span was started without recording.
 
@@ -347,12 +374,14 @@ def reset_tracing() -> None:
     The singleton is cleared before the shutdown runs, so a provider whose
     shutdown fails cannot leave stale state behind for the next configure.
     """
-    global _provider, _tracer, _session_id, _export_failed, _session_span_dropped  # noqa: PLW0603 — module singleton
+    global _provider, _tracer, _session_id  # noqa: PLW0603 — module singleton
+    global _export_failed, _exported_span_count, _session_span_dropped  # noqa: PLW0603 — module singleton
     provider = _provider
     _provider = None
     _tracer = None
     _session_id = ""
     _export_failed = False
+    _exported_span_count = 0
     _session_span_dropped = False
     if provider is not None:
         with warnings.catch_warnings():
@@ -361,7 +390,15 @@ def reset_tracing() -> None:
 
 
 def _failure_recording(exporter: SpanExporter) -> SpanExporter:
-    """Wrap ``exporter`` so that any failed export sets :func:`export_failed`."""
+    """Wrap ``exporter`` to record what its exports did.
+
+    Args:
+        exporter: The exporter to wrap.
+
+    Returns:
+        An exporter that adds each export's spans to :func:`exported_span_count`
+        and sets :func:`export_failed` when an export fails.
+    """
     from opentelemetry.sdk.trace.export import (  # noqa: PLC0415 -- optional extra
         SpanExporter,
         SpanExportResult,
@@ -370,7 +407,8 @@ def _failure_recording(exporter: SpanExporter) -> SpanExporter:
     class _FailureRecordingExporter(SpanExporter):
         @override
         def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-            global _export_failed  # noqa: PLW0603 — module singleton
+            global _export_failed, _exported_span_count  # noqa: PLW0603 — module singleton
+            _exported_span_count += len(spans)
             result = exporter.export(spans)
             if result is not SpanExportResult.SUCCESS:
                 _export_failed = True

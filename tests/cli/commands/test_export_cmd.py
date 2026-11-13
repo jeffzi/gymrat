@@ -9,6 +9,7 @@ summary. Which session-log lines and supervisor logs replay skips is pinned in
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -142,6 +143,41 @@ def test_export_when_collector_unreachable_does_exit_two_naming_endpoint(
     output = stderr_text(result)
     assert result.exit_code == 2, output
     assert _UNREACHABLE_ENDPOINT in output
+
+
+def test_export_when_spans_are_dropped_before_the_exporter_does_exit_two_naming_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    session_log = _populate_session_dir(str(tmp_path))
+    monkeypatch.setenv("OTEL_BSP_MAX_QUEUE_SIZE", "1")
+    monkeypatch.setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "1")
+    # The 503 makes the exporter back off and retry, so the one-span queue
+    # overflows while the replay keeps ending spans.
+    with otlp_collector(statuses=[HTTPStatus.SERVICE_UNAVAILABLE]) as collector:
+        monkeypatch.setenv(ENDPOINT_ENV, collector.endpoint)
+
+        result = runner.invoke(app, ["export", session_log])
+
+    output = stderr_text(result)
+    assert result.exit_code == 2, output
+    assert collector.endpoint in output
+
+
+def test_export_when_base_and_traces_variables_set_without_flag_does_post_to_the_traces_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    session_log = _populate_session_dir(str(tmp_path))
+
+    with otlp_collector() as collector:
+        monkeypatch.setenv(ENDPOINT_ENV, _UNREACHABLE_ENDPOINT)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", f"{collector.endpoint}/custom")
+
+        result = runner.invoke(app, ["export", session_log])
+
+    assert result.exit_code == 0, combined_output(result)
+    assert {export.path for export in collector.received} == {"/custom"}
+    assert f"to {collector.endpoint}/custom" in stderr_text(result)
 
 
 # ---------------------------------------------------------------------------

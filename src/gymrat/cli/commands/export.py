@@ -17,7 +17,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import read_session_header
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, write_and_flush
+from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, otlp_endpoint_from_env, write_and_flush
 
 if TYPE_CHECKING:
     from gymrat.session.records import SessionRecord
@@ -25,9 +25,16 @@ if TYPE_CHECKING:
 _SessionLogArgument = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
 ]
+# No ``envvar=`` on the option: configure_tracing must see whether the endpoint
+# came from the flag, which beats OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, or from
+# OTEL_EXPORTER_OTLP_ENDPOINT, which yields to it.
 _EndpointOption = Annotated[
     str | None,
-    typer.Option("--endpoint", envvar=ENDPOINT_ENV, help="OTLP HTTP endpoint URL"),
+    typer.Option(
+        "--endpoint",
+        help="OTLP HTTP endpoint URL; overrides OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, "
+        f"defaults to ${ENDPOINT_ENV}",
+    ),
 ]
 
 _OTEL_MISSING = (
@@ -51,9 +58,9 @@ def export_command(
     Args:
         session_log: Path to the session's ``session.jsonl``, or ``None`` for
             the current repository's session log.
-        endpoint: OTLP HTTP endpoint URL from ``--endpoint`` or
-            ``OTEL_EXPORTER_OTLP_ENDPOINT``; surrounding whitespace is trimmed,
-            and ``None`` or a blank value is an error.
+        endpoint: OTLP HTTP endpoint URL from ``--endpoint``, or ``None`` to
+            read ``OTEL_EXPORTER_OTLP_ENDPOINT``; surrounding whitespace is
+            trimmed, and no endpoint or a blank one is an error.
         color: The ``--color``/``--no-color`` flag, or ``None`` when neither
             was given.
         debug: The ``--debug`` flag; shows stack traces on errors.
@@ -86,20 +93,24 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
     from gymrat.telemetry.provider import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         configure_tracing,
         export_failed,
+        exported_span_count,
         flush_tracing,
         session_span_dropped,
+        traces_url,
     )
     from gymrat.telemetry.replay import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         replay_session,
     )
 
-    endpoint = otlp_endpoint(endpoint)
+    explicit_endpoint = endpoint
+    endpoint = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
     if endpoint is None:
         msg = f"No endpoint: pass --endpoint or set {ENDPOINT_ENV}"
         raise GymratError(msg)
 
-    if not configure_tracing(session_id, endpoint=endpoint):
+    if not configure_tracing(session_id, endpoint=explicit_endpoint):
         raise GymratError(_OTEL_MISSING)
+    destination = traces_url(endpoint, explicit=explicit_endpoint is not None)
 
     session_dir = Path(session_log).parent
     supervisor_logs = [str(path) for path in sorted(session_dir.glob(supervisor_log_name("*")))]
@@ -114,12 +125,19 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
     flush_tracing()
     if export_failed():
         msg = (
-            f"Could not export spans to {endpoint}: the collector is unreachable or rejected "
+            f"Could not export spans to {destination}: the collector is unreachable or rejected "
             "a batch. The exporter's log lines above give the cause."
         )
         raise GymratError(msg)
+    exported = exported_span_count()
+    if exported < count:
+        msg = (
+            f"Only {exported} of {count} spans reached the exporter for {destination}: "
+            "the span queue filled up while the collector was slow to accept batches."
+        )
+        raise GymratError(msg, hint="Raise OTEL_BSP_MAX_QUEUE_SIZE and run the export again.")
 
     write_and_flush(
         sys.stderr,
-        f"exported {count} spans for session {session_id} to {endpoint}\n",
+        f"exported {count} spans for session {session_id} to {destination}\n",
     )

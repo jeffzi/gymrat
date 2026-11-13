@@ -70,6 +70,22 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_enviro
     ]
 
 
+def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_traces_variable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"{collector.endpoint}/custom/traces")
+        configure_tracing(SESSION, endpoint=collector.endpoint)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [(export.path, export.span_names) for export in collector.received] == [
+        ("/v1/traces", ["probe"])
+    ]
+
+
 def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the_traces_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ):
