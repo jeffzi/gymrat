@@ -18,8 +18,9 @@ from rich.style import Style
 from gymrat.cli.style import STYLE_DONE, STYLE_META, STYLE_REGRESSED
 from gymrat.cli.supervise.frame import format_eta
 from gymrat.session.store import BestIteration
+from tests._rich import sealed_console
 from tests.cli.supervise._fixtures import (
-    color_console,
+    FRAME_WIDTH,
     fire_launch_and_edit_cycle,
     make_reporter,
     reporter_showing_session,
@@ -66,7 +67,7 @@ def _styles_of(lines: list[list[Segment]], token: str) -> list[str]:
 
 def _frame_lines(reporter: SuperviseReporter) -> list[list[Segment]]:
     """The reporter's current frame as rendered lines, through a color-enabled console."""
-    console = color_console()
+    console = sealed_console(width=FRAME_WIDTH, no_color=False, color_system="standard")
     return console.render_lines(reporter.frame(), console.options)
 
 

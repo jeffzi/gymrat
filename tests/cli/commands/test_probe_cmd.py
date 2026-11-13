@@ -13,9 +13,6 @@ guards in ``tests/session/test_store.py`` and ``tests/cli/test_supervised.py``.
 import pytest
 
 from gymrat.cli.app import app
-from tests.cli._command_stubs import (
-    stub_probe_measure,
-)
 from tests.cli._runner import (
     runner,
 )
@@ -24,6 +21,8 @@ from tests.cli._session import (
 )
 from tests.loop._probe import (
     MeasureRecorder,
+    install_measure,
+    measurement,
 )
 from tests.session.records._fixtures import (
     last_command_record,
@@ -33,7 +32,7 @@ from tests.session.records._fixtures import (
 @pytest.fixture
 def measure(monkeypatch: pytest.MonkeyPatch) -> MeasureRecorder:
     """The stubbed measurement engine, answering a canned result."""
-    return stub_probe_measure(monkeypatch)
+    return install_measure(monkeypatch, measurement(adapter="metric-lines"))
 
 
 @pytest.fixture

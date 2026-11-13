@@ -33,7 +33,6 @@ from gymrat.session.records import BaselineRecord
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._doctor_fixtures import single_check_report
-from tests.cli._session import make_discard_repo
 from tests.loop._settle import start_with
 from tests.session.records._fixtures import (
     append_records,
@@ -257,7 +256,7 @@ def test_preflight_when_warning_raised_does_print_it_to_stderr(
 def test_preflight_when_experiment_worktree_dirty_with_unsettled_does_refuse_with_settle_hint(
     repo: str,
 ):
-    make_discard_repo(repo)
+    start_with(repo, (iteration_record(seq=1),), config=resolved_config())
     _dirty_experiment_worktree(repo)
 
     with pytest.raises(GymratError) as exc:

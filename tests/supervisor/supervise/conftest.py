@@ -9,16 +9,12 @@ from tests.session.records._fixtures import append_records, session_record
 from tests.supervisor._fixtures import SupervisorClock
 
 
-def seed_session_log(root: str) -> None:
-    """Write a minimal session header so ``read_records`` / ``fold_session`` work."""
-    append_records(root, session_record())
-
-
 @pytest.fixture
 def root(tmp_path: Path) -> str:
     """A scratch repository root whose session log holds only its header."""
     path = str(tmp_path / "repo")
-    seed_session_log(path)
+    # A minimal session header, so ``read_records`` / ``fold_session`` work.
+    append_records(path, session_record())
     return path
 
 

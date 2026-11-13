@@ -14,6 +14,7 @@ import json
 import math
 import sys
 from collections.abc import AsyncIterator, Callable, Mapping
+from operator import methodcaller
 from typing import override
 
 import pytest
@@ -43,6 +44,7 @@ from gymrat.supervisor.events import (
     ToolEndEvent,
     ToolStartEvent,
     TurnEndEvent,
+    UsageUpdateEvent,
 )
 from gymrat.supervisor.tool_names import MCP_SERVER
 from tests._clock import install_monotonic_clock
@@ -59,7 +61,6 @@ from tests.supervisor._fixtures import (
     make_prompt,
     result_message,
     run_acting_on_first,
-    run_interrupting_on_first_usage_update,
     run_outcome,
     run_session,
     run_with_messages,
@@ -381,7 +382,9 @@ async def test_start_when_system_message_subclass_arrives_does_emit_nothing():
 async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost():
     client = FakeClient([result_message(total_cost_usd=0.15), result_message(total_cost_usd=0.25)])
 
-    outcome = await run_interrupting_on_first_usage_update(client)
+    # Usage updates come from result messages, which leave the session idle
+    # between turns, so the soft stop lands when the stream delivers its next message.
+    outcome = await run_acting_on_first(client, UsageUpdateEvent, methodcaller("interrupt"))
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.15)
     assert client.interrupt_called is True

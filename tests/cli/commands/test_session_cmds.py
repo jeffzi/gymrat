@@ -8,6 +8,7 @@ The closed-stdout table drives ``measure --record`` and ``supervise`` with the
 stdout reader gone.
 """
 
+import errno
 from collections.abc import Callable
 
 import pytest
@@ -19,7 +20,6 @@ from tests.cli._command_stubs import (
 )
 from tests.cli._runner import (
     FailingStdoutRunner,
-    closed_stdout_error,
     runner,
 )
 from tests.cli._session import (
@@ -78,6 +78,6 @@ def test_command_when_stdout_reader_closed_does_exit_without_stderr(
 ):
     arrange(repo, monkeypatch)
 
-    result = FailingStdoutRunner(closed_stdout_error()).invoke(app, argv)
+    result = FailingStdoutRunner(BrokenPipeError(errno.EPIPE, "Broken pipe")).invoke(app, argv)
 
     assert (result.exit_code, result.stderr) == (0, "")

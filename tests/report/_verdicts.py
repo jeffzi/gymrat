@@ -75,7 +75,6 @@ def band_verdict(
     usable_n: int = 3,
     noise_pct: float = 2.5,
     noise_abs: float = 2.5,
-    reason: WithheldReason | None = None,
 ) -> BandVerdict:
     """A noise-band verdict, the method used when too few pairs remain for a permutation test.
 
@@ -87,7 +86,6 @@ def band_verdict(
             permutation test is starved and the band decides.
         noise_pct: The noise band, in percent of the baseline median.
         noise_abs: The noise band, in the metric's own units.
-        reason: Why a no-signal verdict was withheld, or ``None``.
 
     Returns:
         The band verdict.
@@ -100,7 +98,7 @@ def band_verdict(
         noise_abs=noise_abs,
         delta=delta,
         n=n,
-        reason=reason,
+        reason=None,
     )
 
 

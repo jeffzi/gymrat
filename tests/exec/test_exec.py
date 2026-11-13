@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult
+from gymrat.exec import ExecOptions, ExecResult, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
     OVERRUN_KEPT_BYTES,
@@ -36,8 +36,6 @@ from tests._exec_fixtures import (
     ExecTask,
     expected_result,
     open_gate_after_reading,
-    run_argv,
-    run_shell,
     shell_leaving_a_descendant,
     stderr_overruns,
     stdout_overruns,
@@ -96,13 +94,13 @@ _MIB = 1024 * 1024
     ("run", "args", "expected"),
     [
         pytest.param(
-            run_shell,
+            run_exec,
             "echo out; echo err >&2; exit 3",
             expected_result("out\n", "err\n", 3),
             id="exec",
         ),
         pytest.param(
-            run_argv,
+            exec_argv,
             [
                 sys.executable,
                 "-c",
@@ -128,8 +126,8 @@ async def test_exec_when_run_to_completion_does_capture_the_full_result(
 @pytest.mark.parametrize(
     ("run", "args", "stdin", "expected_stdout"),
     [
-        pytest.param(run_shell, "cat", "piped input\n", "piped input\n", id="exec-stdin-delivered"),
-        pytest.param(run_argv, _ECHO_STDIN_ARGV, None, "", id="exec_argv-stdin-omitted-is-closed"),
+        pytest.param(run_exec, "cat", "piped input\n", "piped input\n", id="exec-stdin-delivered"),
+        pytest.param(exec_argv, _ECHO_STDIN_ARGV, None, "", id="exec_argv-stdin-omitted-is-closed"),
     ],
 )
 async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
@@ -206,9 +204,9 @@ def _missing_dir(tmp_path: Path) -> str:
 @pytest.mark.parametrize(
     ("run", "args", "cwd"),
     [
-        pytest.param(run_shell, "echo hello", _missing_dir, id="exec-cwd-missing"),
-        pytest.param(run_shell, "echo a\x00b", _in_tmp, id="exec-nul-in-command"),
-        pytest.param(run_argv, [], _in_tmp, id="argv-empty"),
+        pytest.param(run_exec, "echo hello", _missing_dir, id="exec-cwd-missing"),
+        pytest.param(run_exec, "echo a\x00b", _in_tmp, id="exec-nul-in-command"),
+        pytest.param(exec_argv, [], _in_tmp, id="argv-empty"),
     ],
 )
 async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
@@ -381,7 +379,7 @@ async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its
     make_opts: Callable[..., ExecOptions],
     record_killpg: Callable[[], list[int]],
 ) -> None:
-    await run_shell("echo hello", make_opts())
+    await run_exec("echo hello", make_opts())
     attempted = record_killpg()
 
     exec_mod.kill_live_process_groups()

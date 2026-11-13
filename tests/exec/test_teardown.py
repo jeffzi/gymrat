@@ -40,7 +40,6 @@ from tests._exec_fixtures import (
     cancel_task,
     expected_result,
     open_gate_after_reading,
-    run_shell,
     set_abort,
     settle,
     shell_leaving_a_descendant,
@@ -367,7 +366,7 @@ async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_par
     gate = tmp_path / "kept-bytes-read"
     open_gate_after_reading(monkeypatch, gate, OVERRUN_KEPT_BYTES)
 
-    result = await run_shell(f"{command(gate)}; sleep 30", make_opts(timeout_ms=1000))
+    result = await run_exec(f"{command(gate)}; sleep 30", make_opts(timeout_ms=1000))
 
     assert result == expected
 
@@ -518,7 +517,7 @@ async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendan
     # The descendant holds stderr open, so the run is still reading when the
     # shell exits and asyncio's own child watcher collects its exit status.
     pid_file = tmp_path / "descendant.pid"
-    task = asyncio.create_task(run_shell(shell_leaving_a_descendant(pid_file), make_opts()))
+    task = asyncio.create_task(run_exec(shell_leaving_a_descendant(pid_file), make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     descendant = await wait_for_pid_file(pid_file)
     stray_process_ids.append(descendant)
@@ -545,7 +544,7 @@ async def test_exec_when_completed_with_a_detached_descendant_does_not_signal_it
     pid_file = tmp_path / "descendant.pid"
     signalled = record_killpg()
 
-    await run_shell(shell_leaving_a_descendant(pid_file, detached=True), make_opts())
+    await run_exec(shell_leaving_a_descendant(pid_file, detached=True), make_opts())
     stray_process_ids.append(await wait_for_pid_file(pid_file))
 
     assert signalled == []

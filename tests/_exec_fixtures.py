@@ -14,7 +14,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
 from tests._process_helpers import capture_spawns, poll_until
 
@@ -279,16 +279,6 @@ class Teardown:
 # ---------------------------------------------------------------------------
 
 type ExecRun = Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]]
-
-
-async def run_shell(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run ``args``, a shell command line, through ``exec``."""
-    return await run_exec(args, options)
-
-
-async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run ``args``, a program and its arguments, through ``exec_argv``."""
-    return await exec_argv(args, options)
 
 
 def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str:

@@ -162,20 +162,6 @@ class _ProcessExitedError(BaseException):
 
 
 @pytest.fixture
-def forbid_direct_exit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail the test when the process exit is reached other than through a replaced seam."""
-    # The termination handler must exit through `signals.exit_process`, the seam
-    # tests replace. A handler that calls `os._exit` itself, or that kept the
-    # real seam bound from before the replacement, would otherwise take the test
-    # worker down with no assertion naming the bypass.
-
-    def bypassed(code: int) -> NoReturn:
-        pytest.fail(f"os._exit({code}) reached without going through the replaced exit seam")
-
-    monkeypatch.setattr(os, "_exit", create_autospec(os._exit, side_effect=bypassed))
-
-
-@pytest.fixture
 def color_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str | None, str | None], None]:
     """Return a setter leaving exactly the given ``FORCE_COLOR`` and ``NO_COLOR`` set; ``None`` clears one."""
 
@@ -204,8 +190,18 @@ def recorded_exits(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, float]]:
 
 
 @pytest.fixture
-def raise_signal(monkeypatch: pytest.MonkeyPatch, forbid_direct_exit: None) -> Callable[[int], int]:
+def raise_signal(monkeypatch: pytest.MonkeyPatch) -> Callable[[int], int]:
     """Stub the process exit and return a helper that runs the installed signal handler."""
+    # The termination handler must exit through `signals.exit_process`, the seam
+    # stubbed below. A handler that calls `os._exit` itself, or that kept the
+    # real seam bound from before the replacement, would otherwise take the test
+    # worker down with no assertion naming the bypass.
+
+    def bypassed(code: int) -> NoReturn:
+        pytest.fail(f"os._exit({code}) reached without going through the replaced exit seam")
+
+    monkeypatch.setattr(os, "_exit", create_autospec(os._exit, side_effect=bypassed))
+
     # Emitting a real signal would take the test runner down, so the helper
     # fetches the handler via signal.getsignal and calls it directly. With the
     # exit seam stubbed to raise, the handler unwinds exactly where the real one
@@ -324,9 +320,6 @@ def reap_groups() -> Iterator[list[int]]:
                 os.killpg(group, signal.SIGKILL)
 
 
-_SCRATCH_PREFIX = "gymrat-test-"
-
-
 def _remove_stranded_worktrees(repo_dir: str) -> None:
     """Delete worktree directories a run stranded, keeping temp dirs clean.
 
@@ -347,13 +340,13 @@ def _remove_stranded_worktrees(repo_dir: str) -> None:
 
 
 @pytest.fixture
-def create_scratch_repo() -> Iterator[Callable[..., str]]:
+def create_scratch_repo() -> Iterator[Callable[[], str]]:
     """Factory yielding fresh scratch repositories, all cleaned up on teardown."""
     created: list[str] = []
     original_cwd = Path.cwd()
 
-    def factory(prefix: str = _SCRATCH_PREFIX) -> str:
-        directory = init_scratch_repo(prefix)
+    def factory() -> str:
+        directory = init_scratch_repo()
         created.append(directory)
         return directory
 

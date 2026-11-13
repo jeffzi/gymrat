@@ -92,8 +92,6 @@ def install_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     root: Path,
     rounds: dict[str, list[dict[str, float]]],
-    *,
-    bench: str = "run",
 ) -> None:
     """Bench in-place directory targets whose bench run reports canned metrics.
 
@@ -109,7 +107,6 @@ def install_pipeline(
         root: The directory the target directories are created under.
         rounds: Each target's per-round metrics, keyed by the target name the
             options name.
-        bench: The bench command the run options carry.
     """
     for name in rounds:
         (root / name).mkdir()
@@ -117,7 +114,7 @@ def install_pipeline(
     benched: Counter[str] = Counter()
 
     async def run(command: str, options: ExecOptions) -> ExecResult:
-        if command != bench:
+        if command != "run":
             return expected_result()
         target = Path(options.cwd).name
         metrics = rounds[target][benched[target]]

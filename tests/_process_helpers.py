@@ -164,26 +164,6 @@ def _process_state(pid: int) -> str | None:
     return state[:1] or None
 
 
-def _has_exited(pid: int) -> bool:
-    """Probe whether ``pid`` has exited.
-
-    ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
-    its process group looks alive until whoever inherited it calls ``wait``.
-    That reap is scheduled by the kernel, not by the test, so treating a zombie
-    as alive makes every kill assertion race against an unrelated reaper. The
-    reap can also land between that probe and this check, leaving no entry to
-    read.
-
-    Args:
-        pid: The process to probe.
-
-    Returns:
-        True when ``pid`` is a zombie waiting to be reaped or is no longer
-        listed.
-    """
-    return _process_state(pid) in {None, "Z"}
-
-
 def is_zombie(pid: int) -> bool:
     """Report whether ``pid`` has exited and still waits to be reaped, checked without reaping it.
 
@@ -220,7 +200,12 @@ def is_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
-    return not _has_exited(pid)
+    # ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
+    # its process group looks alive until whoever inherited it calls ``wait``.
+    # That reap is scheduled by the kernel, not by the test, so treating a zombie
+    # as alive makes every kill assertion race against an unrelated reaper. The
+    # reap can also land between that probe and the state read, leaving no entry.
+    return _process_state(pid) not in {None, "Z"}
 
 
 async def poll_until(
@@ -402,13 +387,7 @@ async def wait_for_file(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) 
     Raises:
         TimeoutError: ``path`` has not appeared within ``timeout_s``.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not await asyncio.to_thread(path.exists):
-        if loop.time() > deadline:
-            message = f"file never appeared at {path}"
-            raise TimeoutError(message)
-        await asyncio.sleep(_POLL_INTERVAL_S)
+    await poll_until(path.exists, timeout_s, lambda: TimeoutError(f"file never appeared at {path}"))
 
 
 @contextlib.contextmanager

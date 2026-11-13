@@ -91,23 +91,16 @@ def leave_untouched(_root: str) -> None:
     """Leave the repository as it is: an arrange step that sets nothing up."""
 
 
-def keep_iteration(
-    root: str, seq: int, *, commit: str | None = None, message: str | None = None
-) -> None:
+def keep_iteration(root: str, seq: int, *, commit: str | None = None) -> None:
     """Log iteration ``seq`` and the committed keep that settled it.
 
     Args:
         root: The repository whose session log is appended to.
         seq: The iteration number both records carry.
         commit: The commit the keep names; ``None`` keeps the builder's default.
-        message: The keep's message; ``None`` keeps the builder's default.
     """
-    overrides = {
-        name: value
-        for name, value in (("commit", commit), ("message", message))
-        if value is not None
-    }
-    append_records(root, iteration_record(seq=seq), committed_keep(seq, **overrides))
+    keep = committed_keep(seq) if commit is None else committed_keep(seq, commit=commit)
+    append_records(root, iteration_record(seq=seq), keep)
 
 
 def commit_iteration(root: str, seq: int, message: str) -> str:

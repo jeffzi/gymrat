@@ -20,7 +20,6 @@ from tests._ansi import strip_ansi
 from tests.report._assertions import (
     line_starting_with,
     stripped_cells,
-    table_rows,
 )
 from tests.report._comparisons import (
     create_candidate,
@@ -85,7 +84,7 @@ def _sectioned_bracketed_result() -> ComparisonResult:
 def test_render_report_when_sectioned_names_carry_brackets_does_print_them_literally():
     report = render_report(_sectioned_bracketed_result())
 
-    assert [stripped_cells(row)[0] for row in table_rows(report)] == [
+    assert [stripped_cells(row)[0] for row in report.split("\n") if "│" in row] == [
         "[underline]time",
         "[bold]entity",
         "spawn",

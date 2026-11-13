@@ -14,12 +14,9 @@ from gymrat.measure import measure
 from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
     import pytest
 
     from gymrat.measure import MeasureOptions
-    from gymrat.progress_events import ProgressEvent
     from gymrat.report.types import MeasurementResult
 
 #: The rounds the recorded baseline reports, whose ``total_ms`` median is 100.
@@ -46,39 +43,20 @@ class MeasureRecorder:
 
     Args:
         result: The measurement every call hands back.
-        progress: Events each call reports through the progress callback it was handed.
-        on_call: Run at the start of each call, before anything is recorded: where
-            a test advances a clock to give the measurement a duration.
     """
 
-    def __init__(
-        self,
-        result: MeasurementResult,
-        progress: Sequence[ProgressEvent] = (),
-        on_call: Callable[[], None] | None = None,
-    ) -> None:
+    def __init__(self, result: MeasurementResult) -> None:
         self.result = result
-        self.progress = tuple(progress)
-        self.on_call = on_call
         self.calls: list[MeasureOptions] = []
 
     async def __call__(self, options: MeasureOptions) -> MeasurementResult:
-        if self.on_call is not None:
-            self.on_call()
         self.calls.append(options)
-        sampling = options.run.sampling
-        if sampling.on_progress is not None:
-            for event in self.progress:
-                sampling.on_progress(event)
         return self.result
 
 
 def install_measure(
     monkeypatch: pytest.MonkeyPatch,
     result: MeasurementResult,
-    *,
-    progress: Sequence[ProgressEvent] = (),
-    on_call: Callable[[], None] | None = None,
 ) -> MeasureRecorder:
     """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
 
@@ -88,13 +66,11 @@ def install_measure(
     Args:
         monkeypatch: The test's monkeypatch fixture.
         result: The measurement every call hands back.
-        progress: Events each call reports through the progress callback it was handed.
-        on_call: Run at the start of each call, before anything is recorded.
 
     Returns:
         The installed recorder.
     """
-    recorder = MeasureRecorder(result, progress, on_call)
+    recorder = MeasureRecorder(result)
     monkeypatch.setattr(
         "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
     )

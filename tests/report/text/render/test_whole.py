@@ -15,6 +15,7 @@ measurement report's golden output, are pinned here too.
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -47,7 +48,6 @@ from tests.report._comparisons import (
     n_way_kind_metric,
     other_kind,
     two_kind_result,
-    undefined_ratio_metric,
 )
 from tests.report._measurements import two_kind_measurement
 from tests.report._verdicts import (
@@ -163,7 +163,15 @@ def _degenerate_result() -> ComparisonResult:
             "zero-median/time": exact_metric(
                 delta=0, n=4, unit="ns", baseline_median=0, short_name="zero-median/time"
             ),
-            "nan-delta/count": undefined_ratio_metric("nan-delta/count", n=4),
+            # A unitless exact metric whose zero baseline leaves its delta undefined.
+            "nan-delta/count": exact_metric(
+                delta=math.nan,
+                n=4,
+                unit=None,
+                baseline_median=0,
+                median=120,
+                short_name="nan-delta/count",
+            ),
             "old-side-only/time": MetricComparison(
                 baseline_median=2048,
                 baseline_spread=2,

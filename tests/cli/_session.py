@@ -17,7 +17,6 @@ from tests.loop._probe import BASELINE_SAMPLES
 from tests.loop._settle import (
     commit_and_keep,
     edit_experiment,
-    keep_iteration,
     start_with,
 )
 from tests.loop.iterate._fixtures import write_iterate_session
@@ -33,36 +32,16 @@ from tests.session.records._fixtures import (
 )
 
 
-def make_discard_repo(repo: str) -> str:
-    """Set up ``repo`` with an open session and one unsettled iteration to discard."""
-    start_with(repo, (iteration_record(seq=1),), config=resolved_config())
-    return repo
-
-
-def open_stop_ready_session(repo: str) -> None:
-    """Open a configured session with one settled iteration, ready for the stop command."""
-    start_with(repo)
-    keep_iteration(repo, 1)
+def write_settled_session(repo: str) -> None:
+    """Log a configured session with one kept iteration."""
+    write_session_log(repo, session_record(), (iteration_record(seq=1), committed_keep(1)))
     write_bench_config(repo)
 
 
-def write_settled_session(repo: str, *trailing_records: SessionLogRecord) -> None:
-    """Log a configured session with one kept iteration, followed by ``trailing_records``."""
-    write_session_log(
-        repo, session_record(), (iteration_record(seq=1), committed_keep(1), *trailing_records)
-    )
-    write_bench_config(repo)
-
-
-def open_probe_session(repo: str, **config: object) -> None:
-    """Open a session on a recorded baseline and write the bench config, ready for probe.
-
-    Args:
-        repo: The repository the session opens in.
-        **config: Extra ``gymrat.toml`` keys written beside the bench command.
-    """
+def open_probe_session(repo: str) -> None:
+    """Open a session on a recorded baseline and write the bench config, ready for probe."""
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))
-    write_bench_config(repo, **config)
+    write_bench_config(repo)
 
 
 def start_edited_session(

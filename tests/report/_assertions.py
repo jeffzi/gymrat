@@ -29,11 +29,6 @@ def render_colored(*markup: str) -> str:
     return render_lines(*markup, color=True)
 
 
-def table_rows(report: str) -> list[str]:
-    """Every rendered table row of ``report``, styling stripped, in report order."""
-    return [strip_ansi(line) for line in report.split("\n") if _SEPARATOR in line]
-
-
 def cells_of(line: str) -> list[str]:
     """The cells of a rendered table line, padding included."""
     return line.split(_SEPARATOR)

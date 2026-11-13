@@ -107,11 +107,6 @@ def nested_with(record: dict[str, object], field: str, **overrides: object) -> d
     return patching(record, {field: {**field_of(record, field), **overrides}})
 
 
-def verdict_with(**overrides: object) -> dict[str, object]:
-    """``ITERATION_RECORD`` whose ``total_ms`` verdict has ``overrides`` merged over it."""
-    return patching(ITERATION_RECORD, {"metrics": {"total_ms": {**METRIC_VERDICT, **overrides}}})
-
-
 def field_of(record: dict[str, object], key: str) -> dict[str, object]:
     """The nested object ``record`` holds under ``key``.
 

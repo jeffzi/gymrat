@@ -14,7 +14,6 @@ from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from tests._rich import unwrap_panel
 from tests.cli._runner import (
     FailingStdoutRunner,
-    disk_full_error,
     runner,
 )
 
@@ -31,7 +30,9 @@ def test_app_when_version_flag_does_print_package_version():
 
 
 def test_app_when_version_and_stdout_write_fails_with_disk_full_does_exit_two_with_error_on_stderr():
-    result = FailingStdoutRunner(disk_full_error()).invoke(app, ["--version"])
+    result = FailingStdoutRunner(OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))).invoke(
+        app, ["--version"]
+    )
 
     assert result.exit_code == TOOL_FAILURE_EXIT_CODE
     assert os.strerror(errno.ENOSPC) in unwrap_panel(result.stderr)

@@ -26,31 +26,6 @@ def no_color_env() -> dict[str, str]:
     return env
 
 
-def run_module(
-    module: str, *args: str, cwd: str | Path | None = None
-) -> subprocess.CompletedProcess[str]:
-    """Run ``python -m <module> <args>`` in a child process with color forced off.
-
-    A non-zero exit never raises: callers read the exit code off the result.
-
-    Args:
-        module: The module to run as ``__main__``.
-        *args: The command line after the module name.
-        cwd: The directory the child runs in; ``None`` means the current one.
-
-    Returns:
-        The finished child with text-decoded stdout and stderr.
-    """
-    return subprocess.run(  # noqa: S603 -- fixed interpreter plus test-chosen args
-        [sys.executable, "-m", module, *args],
-        cwd=cwd,
-        env=no_color_env(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
 def run_cli(
     args: list[str],
     cwd: str | Path,

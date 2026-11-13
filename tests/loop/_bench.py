@@ -79,24 +79,6 @@ def tune_experiment(repo: str, latency: int) -> None:
     (Path(experiment_worktree_dir(repo)) / TUNING_FILE).write_text(f"{latency}\n", encoding="utf-8")
 
 
-def config_text(*, samples: int = 5) -> str:
-    """Render the ``gymrat.toml`` a bench project runs under.
-
-    Args:
-        samples: Paired samples per target the config asks for.
-
-    Returns:
-        The rendered TOML text.
-    """
-    config: dict[str, object] = {
-        "bench": f"{shlex.quote(sys.executable)} {BENCH_FILE}",
-        "adapter": "metric-lines",
-        "samples": samples,
-        "timeout_seconds": 120,
-    }
-    return tomli_w.dumps(config)
-
-
 def commit_project(
     repo_dir: str,
     *,
@@ -119,7 +101,12 @@ def commit_project(
     files = {
         ".gitignore": ".gymrat/\n",
         BENCH_FILE: bench_script(gate_file),
-        "gymrat.toml": config_text(samples=samples),
+        "gymrat.toml": tomli_w.dumps({
+            "bench": f"{shlex.quote(sys.executable)} {BENCH_FILE}",
+            "adapter": "metric-lines",
+            "samples": samples,
+            "timeout_seconds": 120,
+        }),
     }
     for name, content in files.items():
         (Path(repo_dir) / name).write_text(content, encoding="utf-8")

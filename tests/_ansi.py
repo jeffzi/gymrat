@@ -40,11 +40,6 @@ def warning_lines(stderr: str) -> list[str]:
     return [line for line in strip_ansi(stderr).splitlines() if line.startswith("warning: ")]
 
 
-def normalize(text: str) -> str:
-    """Strip ANSI codes then collapse whitespace, so a reflowed block matches."""
-    return " ".join(strip_ansi(text).split())
-
-
 _EXTENDED_COLOR_INTRODUCERS = frozenset({"38", "48", "58"})
 """SGR codes that open a 256-color or truecolor run instead of naming an attribute."""
 

@@ -18,6 +18,8 @@ tells the reader to run ``task schemas``.
 """
 
 import json
+import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,8 +47,8 @@ from gymrat.supervisor.events import (
     SessionEvent,
     event_from_wire,
 )
-from tests._ansi import normalize
-from tests._cli import run_module
+from tests._ansi import strip_ansi
+from tests._cli import no_color_env
 from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
 from tests._markdown import md_section
@@ -93,7 +95,14 @@ def test_main_module_when_run_does_print_each_written_path(
 ):
     root = Path(create_scratch_repo())
 
-    result = run_module("gymrat.event_docs", cwd=root)
+    result = subprocess.run(
+        [sys.executable, "-m", "gymrat.event_docs"],
+        cwd=root,
+        env=no_color_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert result.returncode == 0, f"stderr: {result.stderr}"
     written = [Path(line).resolve() for line in result.stdout.splitlines()]
@@ -372,7 +381,7 @@ def test_render_reference_when_called_does_describe_a_reader_operation():
 
     md = _render_reference_doc()
 
-    bullet = normalize(md_section(md, "\n- **dashboard**", r"\n- |\n#"))
+    bullet = " ".join(strip_ansi(md_section(md, "\n- **dashboard**", r"\n- |\n#")).split())
     assert spec.channel in bullet
     assert [t for t in spec.types if f"`{t}`" not in bullet] == []
 

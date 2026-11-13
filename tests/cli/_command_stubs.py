@@ -6,7 +6,6 @@ They replace config resolution, the render mode, the tty check, and the
 This is test-support code, not a test module: it carries no test functions.
 """
 
-from collections.abc import Sequence
 from typing import Literal
 from unittest.mock import create_autospec
 
@@ -16,10 +15,9 @@ from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.compare import compare
 from gymrat.config import ResolvedConfig, resolve_config
 from gymrat.measure import MeasureOptions
-from gymrat.progress_events import ProgressEvent
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from tests._config import resolved_config
-from tests.loop._probe import MeasureRecorder, install_measure, measurement
+from tests.loop._probe import install_measure
 from tests.report._comparisons import create_comparison_result
 from tests.report._measurements import create_measurement_result
 
@@ -93,20 +91,17 @@ def capture_measure(
     return install_measure(monkeypatch, handed_back).calls
 
 
-def stub_measure(
-    monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
-) -> list[MeasureOptions]:
-    """Stub both config resolution and the ``measure`` seam.
+def stub_measure(monkeypatch: pytest.MonkeyPatch) -> list[MeasureOptions]:
+    """Stub both config resolution and the ``measure`` seam with a default clean run.
 
     Args:
         monkeypatch: The fixture that installs the fakes.
-        result: What the fake hands back; a default clean run when ``None``.
 
     Returns:
         The options each call to the fake ``measure`` received, in call order.
     """
     stub_resolve(monkeypatch)
-    return capture_measure(monkeypatch, result)
+    return capture_measure(monkeypatch)
 
 
 def stub_compare_command(
@@ -120,32 +115,7 @@ def stub_compare_command(
             regressions when ``None``.
     """
     stub_config(monkeypatch, "compare", COMPARE_CONFIG)
-    stub_compare(monkeypatch, result)
-
-
-def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> None:
-    """Replace the ``compare`` seam with a fake that returns a fixed comparison.
-
-    Args:
-        monkeypatch: The fixture that installs the fake.
-        result: What the fake hands back; a comparison with no regressions when ``None``.
-    """
     handed_back = create_comparison_result() if result is None else result
     monkeypatch.setattr(
         "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
     )
-
-
-def stub_probe_measure(
-    monkeypatch: pytest.MonkeyPatch, progress: Sequence[ProgressEvent] = ()
-) -> MeasureRecorder:
-    """Replace the measurement engine with a recorder answering a metric-lines measurement.
-
-    Args:
-        monkeypatch: The fixture the engine is patched through.
-        progress: Events each call reports through the progress callback it was handed.
-
-    Returns:
-        The installed recorder.
-    """
-    return install_measure(monkeypatch, measurement(adapter="metric-lines"), progress=progress)

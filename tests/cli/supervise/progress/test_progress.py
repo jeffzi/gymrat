@@ -52,7 +52,6 @@ from tests.cli.supervise._fixtures import (
     read_result,
     render_frame,
     reporter_showing_session,
-    row_content,
     session_state_three_iterations,
     turn_end_event,
     usage_event,
@@ -97,7 +96,7 @@ def _split_at_loop_row(frame: str) -> tuple[list[str], list[str]]:
     Returns:
         The summary rows ending on the loop row, then the rows below it.
     """
-    rows = [row_content(line) for line in frame.splitlines() if line.startswith("│")]
+    rows = [line.strip("│").strip() for line in frame.splitlines() if line.startswith("│")]
     loop_index = next(i for i, row in enumerate(rows) if row.startswith("loop "))
     return rows[: loop_index + 1], rows[loop_index + 1 :]
 

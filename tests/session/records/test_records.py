@@ -34,12 +34,13 @@ from tests.session.records._wire import (
     COMMAND_RECORD,
     COMMAND_RECORD_SUCCESS,
     DISCARD_RECORD,
+    ITERATION_RECORD,
+    METRIC_VERDICT,
     SESSION_RECORD,
     field_of,
     nested_with,
     omitting,
     patching,
-    verdict_with,
 )
 
 
@@ -48,7 +49,18 @@ from tests.session.records._wire import (
     [
         pytest.param(
             patching(
-                verdict_with(delta_pct=None, verdict="no-signal"),
+                patching(
+                    ITERATION_RECORD,
+                    {
+                        "metrics": {
+                            "total_ms": {
+                                **METRIC_VERDICT,
+                                "delta_pct": None,
+                                "verdict": "no-signal",
+                            }
+                        }
+                    },
+                ),
                 {"primary": {"kind": "geomean", "delta_pct": None}, "outcome": "no-signal"},
             ),
             id="iteration-nulled-deltas",

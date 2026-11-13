@@ -13,7 +13,6 @@ POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 """
 
 import subprocess
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,7 +45,7 @@ from tests._cli import run_cli
 from tests._git import run_git as _git
 from tests._git import status_of
 from tests._platform import needs_posix_worktrees
-from tests._process_helpers import reaped
+from tests._process_helpers import poll_until_blocking, reaped
 from tests.loop._bench import (
     BASELINE_LATENCY,
     LONG_RUN_TIMEOUT,
@@ -198,19 +197,20 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 
 def _wait_until_lock_held(first: subprocess.Popen[str], lock_path: str) -> None:
     """Block until ``first`` holds the repository lock, failing the test if it never does."""
-    deadline = time.monotonic() + 30
-    while True:
+
+    def first_holds_the_lock() -> bool:
         if first.poll() is not None:
             pytest.fail(f"first iterate exited early: {first.communicate()}")
-        if time.monotonic() > deadline:
-            first.kill()
-            pytest.fail("first iterate never grabbed the lock")
         # A pure read on purpose: probing with flock would itself take the
         # lock whenever it is still free, stealing it from the first run.
         holder = read_holder(lock_path)
-        if holder is not None and holder.pid == first.pid:
-            return
-        time.sleep(0.025)
+        return holder is not None and holder.pid == first.pid
+
+    def never_grabbed() -> AssertionError:
+        first.kill()
+        return AssertionError("first iterate never grabbed the lock")
+
+    poll_until_blocking(first_holds_the_lock, 30, never_grabbed)
 
 
 def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -175,8 +174,6 @@ def permutation_metric(
     verdict: ApproximateVerdict,
     delta: float,
     baseline_median: float = 100.0,
-    baseline_spread: float = 1.0,
-    p: float = 0.01,
     noise_pct: float = 2.5,
     noise_abs: float = 3.5,
     unit: MetricUnit | None = None,
@@ -190,8 +187,6 @@ def permutation_metric(
         verdict: The verdict the permutation test reached.
         delta: The candidate's delta against the baseline, in percent.
         baseline_median: The baseline's measured value.
-        baseline_spread: The baseline's spread, in percent of its median.
-        p: The permutation test's p-value.
         noise_pct: The noise band, in percent.
         noise_abs: The noise band, in the metric's own unit.
         unit: The metric's unit, or ``None`` for a unitless count.
@@ -204,7 +199,7 @@ def permutation_metric(
     """
     return MetricComparison(
         baseline_median=baseline_median,
-        baseline_spread=baseline_spread,
+        baseline_spread=1.0,
         candidates=(
             CandidateMetric(
                 median=baseline_median * (1 + delta / 100),
@@ -213,7 +208,7 @@ def permutation_metric(
                     verdict=verdict,
                     delta=delta,
                     n=n,
-                    p=p,
+                    p=0.01,
                     noise_pct=noise_pct,
                     noise_abs=noise_abs,
                 ),
@@ -257,21 +252,6 @@ def exact_metric(
             ),
         ),
         meta=metric_meta(short_name, exact=True, unit=unit),
-    )
-
-
-def undefined_ratio_metric(short_name: str, *, n: int) -> MetricComparison:
-    """A unitless exact metric whose zero baseline leaves its delta undefined.
-
-    Args:
-        short_name: The name the metric displays under.
-        n: The pair count behind the verdict.
-
-    Returns:
-        The metric comparison, its candidate at 120 against a baseline of 0.
-    """
-    return exact_metric(
-        delta=math.nan, n=n, unit=None, baseline_median=0, median=120, short_name=short_name
     )
 
 

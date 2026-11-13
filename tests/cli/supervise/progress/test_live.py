@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from io import StringIO
 from typing import TYPE_CHECKING, override
-from unittest.mock import DEFAULT, MagicMock, Mock
+from unittest.mock import DEFAULT, MagicMock, Mock, patch
 
 import pytest
 
@@ -32,7 +32,6 @@ from tests.cli.supervise._fixtures import (
     FRAME_WIDTH,
     KEPT_READ,
     ReporterKit,
-    dashboard_console_patch,
     fire_launch_and_iterate_start,
     launched,
     make_reporter,
@@ -146,7 +145,7 @@ def terminal() -> Iterator[StringIO]:
     term = StringIO()
     console = sealed_console(width=_SCREEN_WIDTH, color_system=None)
     console.file = term
-    with dashboard_console_patch(console):
+    with patch("gymrat.cli.supervise.progress.stderr_console", autospec=True, return_value=console):
         yield term
 
 

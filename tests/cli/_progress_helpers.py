@@ -64,7 +64,6 @@ def report_full_pass(
     duration_s: float,
     target_count: int = 1,
     label: str = "bench",
-    phase: Literal["measure", "confirm"] = "measure",
 ) -> None:
     """Report one pass starting now and finishing ``duration_s`` later on ``clock``.
 
@@ -77,7 +76,6 @@ def report_full_pass(
         duration_s: How long the pass takes, in seconds.
         target_count: Targets sampled per pass.
         label: The target the pass samples.
-        phase: Whether the pass measures or confirms.
     """
     renderer.report(
         pass_started(
@@ -86,7 +84,6 @@ def report_full_pass(
             target_count=target_count,
             label=label,
             at_ms=ms_from_clock(clock),
-            phase=phase,
         )
     )
     clock.tick(duration_s)
@@ -97,7 +94,6 @@ def report_full_pass(
             target_count=target_count,
             label=label,
             at_ms=ms_from_clock(clock),
-            phase=phase,
         )
     )
 
