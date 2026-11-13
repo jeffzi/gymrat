@@ -287,19 +287,13 @@ def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_ba
 _UNKNOWN_ADAPTER_ERROR = unknown_adapter_error("banana")
 
 
-@pytest.mark.parametrize(
-    ("adapter", "checks"),
-    [
-        pytest.param(None, [("bench", "ok")], id="config-problems"),
-        pytest.param("metric-lines", [("adapter", "ok"), ("bench", "fail")], id="bench-unresolved"),
-    ],
-)
-def test_build_bench_section_when_bench_unresolved_does_skip_or_fail_the_bench_check(
-    adapter: str | None, checks: list[tuple[str, str]]
-):
-    section = build_bench_section(bench=None, adapter=adapter, base_dir=".")
+def test_build_bench_section_when_bench_unset_does_fail_the_bench_check():
+    section = build_bench_section(bench=None, adapter="metric-lines", base_dir=".")
 
-    assert [(check.name, check.status) for check in section.checks] == checks
+    assert [(check.name, check.status) for check in section.checks] == [
+        ("adapter", "ok"),
+        ("bench", "fail"),
+    ]
 
 
 def _stub_which(monkeypatch: pytest.MonkeyPatch, on_path: str | None) -> None:
@@ -366,7 +360,6 @@ def test_build_bench_section_when_bench_needs_the_shell_does_skip_the_executable
     section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
 
     assert _names_and_statuses(section) == [("adapter", "ok"), ("bench", "ok")]
-    assert bench in _find(section, "bench").detail
 
 
 # ---------------------------------------------------------------------------

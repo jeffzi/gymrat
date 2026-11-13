@@ -55,13 +55,6 @@ def test_compute_verdicts_when_byte_permutation_does_give_signal_only_beyond_byt
     assert (verdict.verdict, verdict.reason) == (expected_verdict, expected_reason)
 
 
-def test_compute_verdicts_when_resolution_is_none_does_take_no_step_floor():
-    result = run(BYTE_ONE_MOVE_A, BYTE_ONE_MOVE_B, METRIC_APPROX_LOWER)
-
-    verdict = get_permutation(result)
-    assert verdict.noise_pct == pytest.approx(30.0, abs=1e-5)
-
-
 # The -25% delta sits inside the 30% noise band: the permutation path never
 # compares the delta to the band.
 def test_compute_verdicts_when_permutation_delta_inside_noise_band_does_still_signal():

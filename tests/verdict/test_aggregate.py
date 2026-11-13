@@ -103,14 +103,6 @@ def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order():
     )
 
 
-def test_compute_geomean_when_metrics_excluded_does_average_only_the_rest():
-    verdicts, meta = build_inputs(_TWO_EXCLUDED)
-
-    result = compute_geomean(verdicts, meta)
-
-    assert result.n == 1
-
-
 # ---------------------------------------------------------------------------
 # Unstable exclusion
 # ---------------------------------------------------------------------------

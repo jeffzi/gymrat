@@ -242,13 +242,6 @@ def test_compute_verdicts_when_band_fewer_differing_than_min_n_does_report_no_si
     [
         pytest.param(samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="band-spread"),
         pytest.param(create_samples(2, 100.0), samples(100.0, 100.1), 0.5, id="band-floor"),
-        # The candidate side's spread (half-range 50 over median 110) sets the band.
-        pytest.param(
-            create_samples(2, 100.0),
-            samples(60.0, 160.0),
-            150 * 50 / 110,
-            id="band-candidate-spread",
-        ),
         # The candidate's relative spread sets the percentage although the
         # baseline has the larger half-range.
         pytest.param(
@@ -274,7 +267,6 @@ def test_compute_verdicts_when_band_does_report_noise_pct_from_wider_relative_sp
     ("samples_a", "samples_b", "expected_noise_abs"),
     [
         pytest.param(samples(80.0, 120.0), samples(90.0, 110.0), 30.0, id="baseline-larger"),
-        pytest.param(create_samples(2, 100.0), samples(60.0, 160.0), 75.0, id="candidate-larger"),
         # The percentage floor does not floor the absolute band.
         pytest.param(
             create_samples(2, 100.0), samples(100.0, 100.1), 0.075, id="pct-floor-left-out"

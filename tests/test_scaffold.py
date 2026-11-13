@@ -175,6 +175,13 @@ def test_scaffold_when_skill_declined_does_decline_the_skill(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def test_scaffold_when_no_config_and_no_bench_does_raise_naming_the_flag(tmp_path: Path):
+    with pytest.raises(GymratError) as caught:
+        scaffold(str(tmp_path), ScaffoldRequest(bench=None))
+
+    assert "--bench" in str(caught.value)
+
+
 def test_scaffold_when_bench_empty_does_raise(tmp_path: Path):
     with pytest.raises(GymratError):
         scaffold(str(tmp_path), ScaffoldRequest(bench=""))
@@ -193,11 +200,9 @@ def _directory_at(*relatives: str) -> Callable[[Path], None]:
     return plant
 
 
-def _symlink_at(relative: str, *, dangling: bool = False) -> Callable[[Path], None]:
+def _dangling_symlink_at(relative: str) -> Callable[[Path], None]:
     def plant(base: Path) -> None:
         target = base / "symlink-target.md"
-        if not dangling:
-            target.write_text("# target\n", encoding="utf-8")
         (base / relative).parent.mkdir(parents=True, exist_ok=True)
         (base / relative).symlink_to(target)
 
@@ -219,15 +224,14 @@ def _file_at(relative: str) -> Callable[[Path], None]:
             f"gymrat.toml, gymrat-runbook.md, {SKILL_RELATIVE_PATH}",
             id="every-path-a-directory-named-in-write-order",
         ),
-        pytest.param(_symlink_at("gymrat-runbook.md"), "gymrat-runbook.md", id="runbook-symlink"),
         pytest.param(
-            _symlink_at("gymrat-runbook.md", dangling=True),
+            _dangling_symlink_at("gymrat-runbook.md"),
             "gymrat-runbook.md",
             id="runbook-dangling-symlink",
         ),
         pytest.param(_file_at(".claude"), SKILL_RELATIVE_PATH, id="skill-ancestor-a-file"),
         pytest.param(
-            _symlink_at(".claude", dangling=True),
+            _dangling_symlink_at(".claude"),
             SKILL_RELATIVE_PATH,
             id="skill-ancestor-a-dangling-symlink",
         ),
@@ -248,7 +252,7 @@ def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it(
     "plant",
     [
         pytest.param(_file_at(".claude"), id="file"),
-        pytest.param(_symlink_at(".claude", dangling=True), id="dangling-symlink"),
+        pytest.param(_dangling_symlink_at(".claude"), id="dangling-symlink"),
     ],
 )
 def test_scaffold_when_a_skill_ancestor_is_not_a_directory_does_write_nothing(

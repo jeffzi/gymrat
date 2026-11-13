@@ -1,0 +1,176 @@
+import json
+
+import pytest
+
+from gymrat.adapters.contract import AdapterError
+from gymrat.adapters.metric_lines import metric_lines_adapter
+from gymrat.metric_name import EmptyPathSegmentError
+
+# ---------------------------------------------------------------------------
+# basic parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_line_has_surrounding_whitespace_does_strip_it():
+    assert metric_lines_adapter.parse("  METRIC foo=42  ") == {"foo": 42.0}
+
+
+# ---------------------------------------------------------------------------
+# line terminators
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_lines_end_on_bare_carriage_return_does_split_into_metrics():
+    assert metric_lines_adapter.parse("METRIC foo=42\rMETRIC bar=1") == {"foo": 42.0, "bar": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# split on the last equals sign
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_name_contains_equals_does_split_at_last_equals():
+    assert metric_lines_adapter.parse("METRIC k=v=3.14") == {"k=v": 3.14}
+
+
+# ---------------------------------------------------------------------------
+# number grammar
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        pytest.param("METRIC val=0x10", 16.0, id="hex"),
+        pytest.param("METRIC val=0o17", 15.0, id="octal"),
+        pytest.param("METRIC val=0b101", 5.0, id="binary"),
+    ],
+)
+def test_parse_when_value_matches_js_number_grammar_does_convert(stdout: str, expected: float):
+    assert metric_lines_adapter.parse(stdout) == {"val": expected}
+
+
+# ---------------------------------------------------------------------------
+# ignore non-matching lines (silent)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_non_metric_lines_present_does_ignore_them_silently():
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(
+        "some other output\nMETRIC valid=1\nother log line", warnings.append
+    )
+
+    assert result == {"valid": 1.0}
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
+# malformed or near-miss METRIC warnings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "offending",
+    [
+        pytest.param("METRICfoo=42", id="no-space"),
+        pytest.param("METRIC 42", id="no-value"),
+        pytest.param("METRIC =5", id="empty-name"),
+        pytest.param("METRIC foo=bar", id="non-numeric"),
+        pytest.param("METRIC foo=Infinity", id="infinity"),
+        pytest.param("METRIC u=1_0", id="underscore-separator"),
+        pytest.param("METRIC h=0x10z", id="radix-trailing-junk"),
+        pytest.param("METRIC h=-0x10", id="signed-radix"),
+        # JavaScript Number() reads only ASCII digits. Full-width digits are the case
+        # because Unicode normalization (NFKC) folds them to ASCII, which would let
+        # them through.
+        pytest.param("METRIC foo=\uff11\uff12", id="full-width-digits"),
+        # A radix literal matches the number grammar but names an integer too large
+        # to convert to a float; the conversion overflows and the line is skipped.
+        pytest.param(f"METRIC big=0x{'f' * 300}", id="radix-overflows-float"),
+        # One non-LF/CR terminator proves the adapter keeps the line whole and rejects
+        # the name; which characters count as terminators is pinned in
+        # tests/utils/test_utils.py (LINE_TERMINATORS).
+        pytest.param("METRIC na\u2028me=42", id="name-holds-line-separator"),
+    ],
+)
+def test_parse_when_metric_line_malformed_does_skip_line_with_warning(
+    offending: str,
+):
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(f"{offending}\nMETRIC valid=1", warnings.append)
+
+    assert (result, len(warnings)) == ({"valid": 1.0}, 1)
+    assert json.dumps(offending) in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# multi-'#' in name is a hard error
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_name_contains_multiple_hashes_does_raise_adapter_error():
+    name = 'bad#na"me#extra'
+
+    with pytest.raises(AdapterError) as exc:
+        metric_lines_adapter.parse(f"METRIC {name}=42")
+
+    assert '"bad#na\\"me#extra"' in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# empty path segment or empty kind in name
+# ---------------------------------------------------------------------------
+
+
+# Which name shape breaks which grammar rule is pinned in tests/test_metric_name.py;
+# here one name proves the adapter inserts the rule's flaw into the warning.
+def test_parse_when_name_has_empty_part_does_skip_line_with_warning():
+    name = 'a//b"c'
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(f"METRIC {name}=42\nMETRIC valid=1", warnings.append)
+
+    assert result == {"valid": 1.0}
+    assert len(warnings) == 1
+    assert EmptyPathSegmentError.flaw in warnings[0]
+    assert '"a//b\\"c"' in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# repeated metric name → median
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_name_repeats_does_return_median_per_name():
+    result = metric_lines_adapter.parse("METRIC x=1\nMETRIC x=3")
+
+    assert result == {"x": 2.0}
+
+
+# ---------------------------------------------------------------------------
+# zero metrics → AdapterError
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_no_valid_metrics_does_raise_adapter_error():
+    with pytest.raises(AdapterError):
+        metric_lines_adapter.parse("some output\nwith no metrics")
+
+
+# ---------------------------------------------------------------------------
+# embedded METRIC token warning
+# ---------------------------------------------------------------------------
+
+
+def test_parse_when_name_embeds_metric_token_does_record_metric_with_warning():
+    name = 'METRIC f"oo'
+    warnings: list[str] = []
+
+    result = metric_lines_adapter.parse(f"METRIC {name}=42", warnings.append)
+
+    assert result == {name: 42.0}
+    assert len(warnings) == 1
+    assert '"METRIC f\\"oo"' in warnings[0]

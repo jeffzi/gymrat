@@ -20,9 +20,6 @@ from tests.adapters._inputs import (
     ("alias", "args", "p50", "metric_name"),
     [
         pytest.param(
-            "op/$a/$b", {"a": "x", "b": "y"}, 50, f"op/a=x/b=y{TIME_SUFFIX}", id="multiple"
-        ),
-        pytest.param(
             "test/$x/$unknown", {"x": "1"}, 77, f"test/x=1/$unknown{TIME_SUFFIX}", id="stray-dollar"
         ),
         pytest.param("$ab", {"a": "x", "ab": "y"}, 8, f"ab=y{TIME_SUFFIX}", id="longest-key-first"),

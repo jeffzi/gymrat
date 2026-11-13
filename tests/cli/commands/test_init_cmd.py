@@ -31,19 +31,6 @@ def live_repo(repo: str, monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 # ---------------------------------------------------------------------------
-# missing --bench
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("_in_non_repo")
-def test_init_when_bench_missing_does_exit_two_naming_bench():
-    result = runner.invoke(app, ["init"])
-
-    assert result.exit_code == 2
-    assert "--bench" in result.stderr
-
-
-# ---------------------------------------------------------------------------
 # success summary
 # ---------------------------------------------------------------------------
 
