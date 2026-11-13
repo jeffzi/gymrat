@@ -4,11 +4,12 @@ Every test drives the real ``sync_to_experiment`` against a throwaway repository
 from the shared ``create_scratch_repo`` factory, so the suite is order-independent
 and safe under ``pytest-xdist`` / ``pytest-randomly``. No git call is mocked: the
 sync only reveals its behavior against real worktrees and real dirty files.
-The one exception is a copy whose source the main tree leaves unchanged: git
-never reports that shape, so that test fakes the main tree's ``git status``
-process output.
+Two shapes git never reports are the exception: a copy whose source the main
+tree leaves unchanged, and a path outside the worktree. Their tests fake the
+main tree's ``git status`` process output.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -186,6 +187,12 @@ def _rename_readme(repo: str) -> None:
     run_git(["mv", "README.md", "GUIDE.md"], repo)
 
 
+def _rename_readme_intent_to_add(repo: str) -> None:
+    """Rename ``README.md`` to ``GUIDE.md`` in the working tree only, marking ``GUIDE.md`` intent-to-add."""
+    (Path(repo) / "README.md").rename(Path(repo) / "GUIDE.md")
+    run_git(["add", "--intent-to-add", "GUIDE.md"], repo)
+
+
 def _rename_readme_then_delete(repo: str) -> None:
     """Rename ``README.md`` to ``GUIDE.md``, then delete ``GUIDE.md`` from the working tree."""
     _rename_readme(repo)
@@ -204,6 +211,7 @@ def _text_or_none(path: Path) -> str | None:
     ("arrange", "expected_guide"),
     [
         pytest.param(_rename_readme, "# Test Repo\n", id="renamed"),
+        pytest.param(_rename_readme_intent_to_add, "# Test Repo\n", id="renamed-in-working-tree"),
         pytest.param(_rename_readme_then_delete, None, id="renamed-then-deleted"),
     ],
 )
@@ -249,6 +257,71 @@ def test_sync_to_experiment_when_copy_reported_does_sync_copy_leaving_source_unt
 
     assert (Path(experiment) / "COPY.md").read_text(encoding="utf-8") == "# Test Repo\n"
     assert (Path(experiment) / "README.md").read_text(encoding="utf-8") == experiment_readme
+
+
+# ---------------------------------------------------------------------------
+# paths outside the experiment
+# ---------------------------------------------------------------------------
+
+
+def _absolute(victim: Path, experiment: Path) -> str:
+    """``victim`` spelled as an absolute path, which a join onto the worktree replaces wholesale."""
+    return str(victim)
+
+
+def _rooted(victim: Path, experiment: Path) -> str:
+    """``victim``'s name under the root, as git spells it: no drive, forward slash."""
+    return f"/{victim.name}"
+
+
+def _climbing(victim: Path, experiment: Path) -> str:
+    """``victim`` as a path relative to ``experiment`` that climbs out through ``..``."""
+    return os.path.relpath(victim, experiment)
+
+
+@pytest.mark.parametrize(
+    ("spell_victim", "entry"),
+    [
+        pytest.param(_absolute, " D {hostile}", id="absolute"),
+        pytest.param(_rooted, " D {hostile}", id="rooted-without-a-drive"),
+        pytest.param(_climbing, " D {hostile}", id="dot-dot"),
+        pytest.param(_absolute, "R  README.md\0{hostile}", id="rename-source"),
+    ],
+)
+def test_sync_to_experiment_when_status_names_path_outside_worktree_does_refuse_leaving_both_untouched(
+    session_repo: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spell_victim: Callable[[Path, Path], str],
+    entry: str,
+):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me\n", encoding="utf-8")
+    experiment = Path(experiment_worktree_dir(session_repo))
+    hostile = spell_victim(victim, experiment)
+    (Path(session_repo) / "README.md").write_text("# Changed\n", encoding="utf-8")
+    main_tree = Path(session_repo).resolve()
+    real_run = subprocess.run
+
+    def status_reports_hostile_path(
+        argv: list[str], *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[1:2] == ["status"] and Path(kwargs["cwd"]).resolve() == main_tree:
+            stdout = f" M README.md\0{entry.format(hostile=hostile)}\0"
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(
+        subprocess, "run", create_autospec(subprocess.run, side_effect=status_reports_hostile_path)
+    )
+    before = _tree_snapshot(str(experiment))
+
+    with pytest.raises(GymratError) as excinfo:
+        sync_to_experiment(session_repo)
+
+    assert hostile in str(excinfo.value)
+    assert victim.read_text(encoding="utf-8") == "keep me\n"
+    assert _tree_snapshot(str(experiment)) == before
 
 
 _NEEDS_POSIX_SYMLINKS = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
