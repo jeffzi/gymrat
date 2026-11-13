@@ -113,7 +113,7 @@ _UNMEASURED_ROW: dict[str, object] = {
 
 
 def test_render_json_when_candidate_unmeasured_does_null_every_field_but_its_label():
-    metric = shared_baseline_metric((_PAIRED,), name="decode/time")
+    metric = shared_baseline_metric((_PAIRED, CandidateMetric()), name="decode/time")
     result = create_comparison_result(
         candidates=[create_candidate(label="alpha"), create_candidate(label="beta")],
         metrics={"decode/time": metric},

@@ -21,7 +21,6 @@ from pydantic_core import to_json
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import BandVerdict, verdict_stats
 from gymrat.report.tally import count_verdicts
-from gymrat.report.types import CandidateMetric, candidate_at
 
 if TYPE_CHECKING:
     from gymrat.loop.discard import DiscardResult
@@ -35,6 +34,7 @@ if TYPE_CHECKING:
     from gymrat.model import GeomeanResult, MetricVerdict
     from gymrat.report.types import (
         CandidateComparison,
+        CandidateMetric,
         ComparisonResult,
         MeasurementResult,
         MetricComparison,
@@ -156,10 +156,9 @@ def _serialize_metric(
     candidates: tuple[CandidateComparison, ...],
 ) -> dict[str, object]:
     """One metric's meta, baseline, and positional per-candidate rows."""
-    empty = CandidateMetric()
     rows = [
-        _candidate_row(candidate.label, candidate_at(metric, index) or empty)
-        for index, candidate in enumerate(candidates)
+        _candidate_row(candidate.label, side)
+        for candidate, side in zip(candidates, metric.candidates, strict=True)
     ]
     return {
         "unit": metric.meta.unit,

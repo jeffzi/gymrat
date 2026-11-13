@@ -71,7 +71,6 @@ from gymrat.report.types import (
     GeomeanFailOn,
     RegressedFailOn,
     ReportOptions,
-    candidate_at,
 )
 from gymrat.utils import balancing_cycle, collapse_whitespace, pluralize
 
@@ -313,12 +312,11 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
-        candidate = candidate_at(highlight.metric, candidate_index)
         evidence = format_evidence(
             verdict,
             highlight.metric.meta.unit,
             highlight.metric.baseline_median,
-            None if candidate is None else candidate.median,
+            highlight.metric.candidates[candidate_index].median,
         )
 
         label_field = f"{label}{' ' * (name_width - width)}"

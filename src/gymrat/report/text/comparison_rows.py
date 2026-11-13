@@ -22,7 +22,6 @@ from gymrat.report.format import (
 )
 from gymrat.report.table.cells import VerdictParts, indented_section_label
 from gymrat.report.table.grid import AggregateRows
-from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -220,21 +219,13 @@ def comparison_row_builder(
     """
 
     def build(name: str, group: str | None, metric: MetricComparison) -> ComparisonRow:
-        cells: list[CandidateCell] = []
-        for index in range(candidate_count):
-            side = candidate_at(metric, index)
-            cells.append(
-                CandidateCell(
-                    value=(
-                        format_metric_cell_parts(None, None, metric.meta.unit)
-                        if side is None
-                        else format_metric_cell_parts(side.median, side.spread, metric.meta.unit)
-                    ),
-                    verdict=shown_verdict(
-                        side.verdict if side is not None else None, samples, with_band=with_band
-                    ),
-                )
+        cells = [
+            CandidateCell(
+                value=format_metric_cell_parts(side.median, side.spread, metric.meta.unit),
+                verdict=shown_verdict(side.verdict, samples, with_band=with_band),
             )
+            for side in metric.candidates[:candidate_count]
+        ]
         return ComparisonRow(
             name=name,
             label=indented_section_label(metric.meta.short_name, group),
