@@ -147,7 +147,7 @@ def test_measure_when_record_and_session_finalized_does_refuse_as_finalized(repo
         ),
     ],
 )
-def test_measure_when_success_does_record_trace_with_the_resolved_target_and_only_the_flags_given(
+def test_measure_when_success_does_record_the_resolved_target_with_only_the_flags_given(
     argv: list[str],
     traced: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,

@@ -267,15 +267,8 @@ def test_emit_report_when_git_declines_the_repository_lookup_does_raise_git_diag
     assert str(exc.value) == expected
 
 
-@pytest.mark.parametrize(
-    "run",
-    [
-        pytest.param(lambda: _emit("text"), id="emit-report"),
-        pytest.param(_warn, id="warn-duration-over-budget"),
-    ],
-)
-def test_budget_lookup_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
-    run: Callable[[], None], repo: str
+def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    repo: str,
 ):
     _seed_session(repo, budget=LIVE_BUDGET)
 
@@ -283,7 +276,21 @@ def test_budget_lookup_when_supervise_lock_cannot_be_probed_does_raise_the_lock_
         expected = lock_probe_error(supervise_lockfile_path(repo))
 
         with pytest.raises(GymratError) as exc:
-            run()
+            _emit("text")
+
+    assert str(exc.value) == expected
+
+
+def test_warn_duration_over_budget_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    repo: str,
+):
+    _seed_session(repo, budget=LIVE_BUDGET)
+
+    with block_supervise_lock(repo):
+        expected = lock_probe_error(supervise_lockfile_path(repo))
+
+        with pytest.raises(GymratError) as exc:
+            _warn()
 
     assert str(exc.value) == expected
 

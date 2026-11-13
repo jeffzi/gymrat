@@ -1,15 +1,12 @@
-"""Live-wiring, render-refresh, and render-failure tests.
+"""Live-wiring, repaint, session-refresh and render-failure tests.
 
-Tests for the ``Live`` construction contract (the refresh rate derived from the
-refresh interval, rendering through ``get_renderable``), the color flag handed
-to the console factory, the single ``refresh()`` an event that changes state
-triggers, the skipped repaint for events that leave state unchanged, and the
-session refresh that re-reads the session, keeping the last good read when one
-fails and repainting only when the re-read succeeds.
+Tests for the refresh rate the live display is built with, the single repaint an
+event or exit phase that changes state triggers, the session refresh that
+re-reads the session and repaints only when the re-read succeeds, and a frame
+that fails to render: the last good frame holds with one warning, a fresh frame
+returns once the failures stop, and a setup frame that fails warns through the
+dashboard.
 
-The ``terminal`` fixture makes a sealed console writing to a buffer the
-dashboard's console. A
-warning printed while the frame is up is pinned here, on a real live display.
 The zero-width fallback, what a termination signal does to a display, and the
 ``stop()`` guards every renderer shares are tested in
 ``tests/cli/test_live_display.py`` and ``tests/cli/test_live_display_mixin.py``.

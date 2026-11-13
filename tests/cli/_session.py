@@ -117,23 +117,3 @@ def open_capped_session_under_budget(repo: str, monkeypatch: pytest.MonkeyPatch)
     """Open a session at its iteration cap, under a live budget."""
     write_capped_session(repo)
     install_budget(repo, monkeypatch)
-
-
-def open_hooked_iterate_session(repo: str, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Open a session whose before hook touches a marker file, under a live budget.
-
-    The hook runs in the experiment worktree, so the worktree is created for it to fire.
-
-    Args:
-        repo: The repository the session opens in.
-        monkeypatch: The fixture that releases the supervise lock at teardown.
-
-    Returns:
-        The marker file the before hook creates when it runs.
-    """
-    header = write_iterate_session(repo)
-    Path(header.worktrees.experiment).mkdir()
-    marker = Path(repo, "hook-ran")
-    write_bench_config(repo, hooks={"before": f"touch '{marker}'"})
-    install_budget(repo, monkeypatch)
-    return marker

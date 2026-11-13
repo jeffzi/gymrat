@@ -1,9 +1,8 @@
-"""Tests for the root ``gymrat`` typer app: version, dispatch.
+"""Tests for the root ``gymrat`` typer app's ``--version`` option.
 
 These drive the assembled CLI through :class:`typer.testing.CliRunner`, so the
-root callback and the ``--version`` eager option are
-exercised the way a shell would invoke them. How a command's color flag replaces the root's is
-pinned in ``tests/cli/test_console.py``.
+``--version`` eager option is exercised the way a shell would invoke it. How a
+command's color flag replaces the root's is pinned in ``tests/cli/test_console.py``.
 """
 
 import errno

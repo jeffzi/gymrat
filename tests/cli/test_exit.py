@@ -187,6 +187,16 @@ def test_format_cli_error_when_gymrat_error_carries_hint_does_append_the_hint_wi
     assert BUGS_URL not in output
 
 
+def test_format_cli_error_when_gymrat_error_has_no_hint_does_omit_the_bug_footer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    output = format_cli_error(GymratError("boom"))
+
+    assert BUGS_URL not in output
+
+
 def test_format_cli_error_when_not_gymrat_error_does_append_the_bug_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):

@@ -31,7 +31,7 @@ from tests.cli._runner import (
         pytest.param("HEAD", TargetSpec(label=None, target="HEAD"), id="no-equals"),
     ],
 )
-def test_parse_positional_when_equals_present_or_absent_does_split_on_the_first_equals(
+def test_parse_positional_when_value_given_does_label_only_the_text_before_the_first_equals(
     positional: str, expected: TargetSpec
 ):
     assert parse_positional(positional) == expected
@@ -99,8 +99,8 @@ def test_parse_fail_on_when_regressed_or_geomean_percentage_does_accept(
 @pytest.mark.parametrize(
     "value",
     [
-        "geomean:",
-        " geomean:2",
+        pytest.param("geomean:", id="geomean-without-a-threshold"),
+        pytest.param(" geomean:2", id="leading-space"),
     ],
 )
 def test_parse_fail_on_when_not_regressed_or_geomean_does_reject(value: str):

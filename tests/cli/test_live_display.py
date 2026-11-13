@@ -305,10 +305,8 @@ def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
 
 
 def _live_whose_first_paint_raises() -> ErasableLive:
-    """An auto-refreshing live display whose first frame render raises."""
-    return ErasableLive(
-        _FailingFrame(), console=sealed_console(), auto_refresh=True, refresh_per_second=4
-    )
+    """A live display, with no refresh thread, whose first frame render raises."""
+    return ErasableLive(_FailingFrame(), console=sealed_console(), auto_refresh=False)
 
 
 def _live_on_a_gone_terminal() -> ErasableLive:
@@ -339,7 +337,7 @@ def test_mount_live_when_mounting_raises_does_roll_back_the_mount(
     with pytest.raises(error, match=message):
         mount_live(live)
 
-    assert (live.is_started, registry.live()) == (False, [])
+    assert (live.is_started, registry.live(), registry.uninstall_counts()) == (False, [], [1])
 
 
 def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_a_note():

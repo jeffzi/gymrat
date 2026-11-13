@@ -46,9 +46,6 @@ from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
 )
-from tests.cli._command_stubs import (
-    never_tty,
-)
 from tests.cli._runner import (
     runner,
 )
@@ -79,6 +76,11 @@ from tests.session.records._fixtures import (
 def _always_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its interactive path."""
     return True
+
+
+def _never_tty(_stream: object) -> bool:
+    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +148,7 @@ def test_discard_command_when_tty_and_input_ends_does_cancel_with_exit_one(edite
     ("args", "is_tty_stub", "traced"),
     [
         pytest.param(["--force"], _always_tty, {"force": True}, id="force-long"),
-        pytest.param([], never_tty, {}, id="stdin-not-tty"),
+        pytest.param([], _never_tty, {}, id="stdin-not-tty"),
     ],
 )
 def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompting(
@@ -190,7 +192,7 @@ def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: s
 # ---------------------------------------------------------------------------
 
 
-def test_keep_command_when_checks_pass_does_trace_its_message_and_seq(
+def test_keep_command_when_checks_pass_does_record_its_message_and_seq(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_edited_session(repo, checks=CHECKS)

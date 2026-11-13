@@ -226,7 +226,8 @@ def test_supervise_when_outcome_error_without_message_does_exit_two_quietly(
     result = run()
 
     assert result.exit_code == 2
-    assert len(result.stderr.splitlines()) == 1
+    (line,) = result.stderr.splitlines()
+    assert line.startswith("log: ")
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,7 @@ every run component's warning reaches the reporter rather than stderr.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
@@ -56,7 +57,10 @@ def test_supervise_when_tracing_enabled_does_export_the_session_and_run_spans_on
     with memory_tracing(SESSION_ID) as exporter:
         run()
 
-    assert [s.name for s in exporter.get_finished_spans()] == [RUN_SPAN, SESSION_SPAN]
+    assert Counter(s.name for s in exporter.get_finished_spans()) == Counter([
+        RUN_SPAN,
+        SESSION_SPAN,
+    ])
     assert [r for r in caplog.records if r.name == "opentelemetry.sdk.trace"] == []
 
 

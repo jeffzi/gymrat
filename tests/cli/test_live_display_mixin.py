@@ -108,6 +108,7 @@ def test_stop_when_signal_already_erased_the_display_does_write_nothing(
     assert console_output(console) == before
 
 
+@pytest.mark.usefixtures("manual_refresh")
 def test_stop_when_called_again_after_a_failed_stop_does_write_nothing_more(
     build_reporter: ReporterFactory,
 ):

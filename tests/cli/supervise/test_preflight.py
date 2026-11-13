@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 import pytest
 import typer
@@ -23,7 +24,7 @@ from gymrat.cli.supervise.preflight import (
     validate_experiment_worktree,
 )
 from gymrat.config import ResolvedConfig, StopConfig
-from gymrat.doctor import Check, DoctorReport
+from gymrat.doctor import Check, DoctorReport, build_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.session.paths import (
     experiment_worktree_dir,
@@ -112,11 +113,10 @@ def _run_preflight(
 
 def _install_doctor_seam(monkeypatch: pytest.MonkeyPatch, report: DoctorReport) -> None:
     """Replace the doctor gate's ``build_doctor_report`` with one returning *report*."""
-
-    def fake_build(_flags: object, _cwd: object) -> DoctorReport:
-        return report
-
-    monkeypatch.setattr(f"{_MODULE}.build_doctor_report", fake_build)
+    monkeypatch.setattr(
+        f"{_MODULE}.build_doctor_report",
+        create_autospec(build_doctor_report, return_value=report),
+    )
 
 
 # ---------------------------------------------------------------------------

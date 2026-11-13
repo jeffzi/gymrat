@@ -27,6 +27,7 @@ from gymrat.supervisor.hooks import supervise_hooks_factory
 from gymrat.supervisor.tools import gymrat_tools_factory
 from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
+from tests._ansi import strip_ansi
 from tests._cli import stderr_text
 from tests._git import git_exclude_path
 from tests._process_helpers import track_cleanups
@@ -45,7 +46,7 @@ _TRACING_FAILURE = "tracing exporter unreachable"
 
 
 # ---------------------------------------------------------------------------
-# flag parsing
+# the session supervise is handed
 # ---------------------------------------------------------------------------
 
 
@@ -220,6 +221,13 @@ def test_supervise_when_config_sets_max_iterations_does_hand_it_to_the_reporter(
 # ---------------------------------------------------------------------------
 
 
+def _summary_value(stdout: str, label: str) -> str:
+    """The value the printed summary shows on the row labelled *label*."""
+    rows = [line.split() for line in strip_ansi(stdout).splitlines()]
+    (value,) = [row[1] for row in rows if len(row) == 2 and row[0] == label]
+    return value
+
+
 @pytest.mark.parametrize(
     ("flag_args", "configured", "expected"),
     [
@@ -235,13 +243,12 @@ def test_supervise_when_run_does_resolve_the_model_from_flag_or_config(
     expected: str,
 ):
     config = command_config(supervise=SuperviseConfig(model=configured))
-    seams = install_seams(monkeypatch, config=config)
+    install_seams(monkeypatch, config=config)
 
     result = run(*flag_args)
 
     assert result.exit_code == 0
-    prompt = seams.supervise_calls[0]["prompt"]
-    assert prompt.model == expected
+    assert _summary_value(result.stdout, "model") == expected
 
 
 @pytest.mark.parametrize(
@@ -259,13 +266,12 @@ def test_supervise_when_run_does_resolve_the_effort_from_flag_or_config(
     expected: str,
 ):
     config = command_config(supervise=SuperviseConfig(effort=configured))
-    seams = install_seams(monkeypatch, config=config)
+    install_seams(monkeypatch, config=config)
 
     result = run(*flag_args)
 
     assert result.exit_code == 0
-    prompt = seams.supervise_calls[0]["prompt"]
-    assert prompt.effort == expected
+    assert _summary_value(result.stdout, "effort") == expected
 
 
 # ---------------------------------------------------------------------------

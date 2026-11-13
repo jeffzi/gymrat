@@ -37,9 +37,7 @@ MEASURE_CONFIG = resolved_config(
 COMPARE_CONFIG = resolved_config(bench="sh bench.sh")
 
 
-def stub_config(
-    monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig
-) -> ResolvedConfig:
+def stub_config(monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig) -> None:
     """Replace a command's config resolution with one that hands back ``config``.
 
     The stand-in keeps the real resolver's signature, so a call the real
@@ -49,15 +47,11 @@ def stub_config(
         monkeypatch: The fixture that installs the stand-in.
         command: The module under ``gymrat.cli.commands`` whose resolver is replaced.
         config: What every resolution hands back.
-
-    Returns:
-        ``config``, for a test that asserts against it.
     """
     monkeypatch.setattr(
         f"gymrat.cli.commands.{command}.resolve_config",
         create_autospec(resolve_config, return_value=config),
     )
-    return config
 
 
 def force_render_mode(
@@ -140,11 +134,6 @@ def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | Non
     monkeypatch.setattr(
         "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
     )
-
-
-def never_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
-    return False
 
 
 def stub_probe_measure(

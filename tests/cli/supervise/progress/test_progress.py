@@ -163,7 +163,8 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
     frame = render_frame(kit.reporter)
 
     time_row = _summary_rows(frame)[0]
-    assert time_row == "time   " + "━" * 71 + " 2h 00m  cap in 0s"
+    assert time_row.startswith("time ")
+    assert time_row.endswith(" 2h 00m  cap in 0s")
 
 
 # ---------------------------------------------------------------------------

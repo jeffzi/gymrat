@@ -83,10 +83,11 @@ def _session_result() -> ReadSessionResult:
 
 
 def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
-    summary = _summary(session_result=_session_result())
     best = build_best_text(_session_result())
-    assert best is not None
 
+    summary = _summary(session_result=_session_result())
+
+    assert best is not None
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "✓ completed · 1m 0s · $0.05\n"
         f"  best    {best.plain}\n"
@@ -128,32 +129,21 @@ def test_summary_when_run_capped_or_errored_does_hide_the_agent_row(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("final_text", "expected_lines"),
-    [
-        pytest.param(
-            "Line one.\nLine two.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   Line one.",
-                "          Line two.",
-                _NO_SESSION_ROW,
-                _LOG_ROW,
-            ],
-            id="single-newline",
-        ),
-    ],
-)
-def test_summary_agent_row_when_final_text_given_does_indent_continuation_lines_under_content(
-    final_text: str, expected_lines: list[str]
-) -> None:
+def test_summary_agent_row_when_final_text_spans_lines_does_indent_continuation_lines_under_content():
     summary = _summary(
-        make_supervision_result(reason="completed", ended_by="session"), final_text=final_text
+        make_supervision_result(reason="completed", ended_by="session"),
+        final_text="Line one.\nLine two.",
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
 
-    assert text.splitlines() == expected_lines
+    assert text.splitlines() == [
+        "✓ completed · 1m 0s · $0.05",
+        "  agent   Line one.",
+        "          Line two.",
+        _NO_SESSION_ROW,
+        _LOG_ROW,
+    ]
 
 
 # ---------------------------------------------------------------------------

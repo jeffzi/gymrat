@@ -159,7 +159,7 @@ def test_export_when_no_session_log_argument_does_use_repo_session_path(
 
         result = runner.invoke(app, ["export"])
 
-    (exported,) = [line for line in result.stderr.splitlines() if SESSION_ID in line]
     assert result.exit_code == 0, combined_output(result)
+    (exported,) = [line for line in result.stderr.splitlines() if SESSION_ID in line]
     assert "3" in exported.split()
     assert collector.endpoint in exported

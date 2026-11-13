@@ -249,7 +249,7 @@ def test_frame_when_compact_layout_does_show_single_row():
     assert result == "⠋ sampling                                            0% · A · 00:00/--:--"
 
 
-def test_frame_when_compact_next_pass_started_does_show_its_target_with_progress_and_eta():
+def test_frame_when_compact_second_target_starts_does_show_it_with_progress_and_eta():
     _console, clock, renderer = _live(height=10, sample_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     report_full_pass(renderer, clock, 1, 5, label="A", duration_s=2)

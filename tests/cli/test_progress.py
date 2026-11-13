@@ -1,9 +1,8 @@
 """Tests for the rich-based progress renderer (live + plain modes).
 
 Tests inject a deterministic ``Clock`` from ``tests._rich`` and capture
-output through ``sealed_console``.  Frame content is pinned with syrupy
-golden snapshots; plain-mode milestones use exact-line equality; live wiring
-assertions check ``Live`` attributes directly.
+output through ``sealed_console``. Frame content is pinned with syrupy
+golden snapshots; plain-mode milestones use exact-line equality.
 
 The pure reducer behind the bar (``advance``) is driven
 terminal-free: ``advance`` takes ``now`` from the event's own ``at_ms``, so a

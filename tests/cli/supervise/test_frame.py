@@ -154,15 +154,15 @@ def test_finished_tool_line_when_rendered_with_color_does_style_it_by_result(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        (0, "~1s left"),
-        (48200, "~48s left"),
-        (59999, "~1m left"),
-        (130000, "~2m 10s left"),
-        (3599999, "~1h left"),
-        (3900000, "~1h 05m left"),
+        pytest.param(0, "~1s left", id="zero-clamps-to-one-second"),
+        pytest.param(48200, "~48s left", id="seconds"),
+        pytest.param(59999, "~1m left", id="rounds-up-into-minutes"),
+        pytest.param(130000, "~2m 10s left", id="minutes-and-seconds"),
+        pytest.param(3599999, "~1h left", id="rounds-up-into-hours"),
+        pytest.param(3900000, "~1h 05m left", id="hours-and-minutes"),
     ],
 )
-def test_format_eta_when_given_milliseconds_does_round_to_the_two_largest_tiers_clamped_to_one_second(
+def test_format_eta_when_given_milliseconds_does_round_to_the_two_largest_tiers(
     ms: float, expected: str
 ) -> None:
     assert format_eta(ms) == expected

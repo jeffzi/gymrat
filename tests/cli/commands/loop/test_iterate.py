@@ -1,6 +1,9 @@
-"""Iterate command tests: basic execution, progress renderer wiring, format flags, and budget.
+"""Iterate command tests.
 
-Budget tests verify that a live budget appends a time-left line to text output
+They cover execution, the progress frame, a failing progress subscriber,
+``--format json``, and a run under a live budget.
+
+The budget tests verify that a live budget appends a time-left line to text output
 and inserts a ``budget`` key in JSON output, including on stop-condition exits.
 """
 
@@ -8,25 +11,23 @@ import itertools
 import json
 import shlex
 import signal
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
-from rich.console import Console
 
 from gymrat.cli.app import app
 from gymrat.cli.console import stderr_console
 from gymrat.cli.iterate.progress import IterateRenderer
-from gymrat.cli.iterate.state import IterationFacts
 from gymrat.config import CONFIG_DEFAULTS
-from gymrat.progress_events import ProgressEvent
+from gymrat.progress_events import PassStarted, ProgressEvent
 from gymrat.sampling import SamplingOptions
+from gymrat.session.budget import SIDES_PER_ITERATE
 from gymrat.session.paths import progress_path
 from gymrat.session.progress_file import SidecarWriter
 from gymrat.session.records import CommandRecord
-from gymrat.utils import MS_PER_SECOND
 from tests._ansi import (
     strip_ansi,
     stripped_lines,
@@ -35,7 +36,7 @@ from tests._ansi import (
 from tests._clock import install_monotonic_clock
 from tests._platform import needs_posix_signals
 from tests._process_helpers import wait_for_pid_file_blocking
-from tests._rich import Clock, sealed_console
+from tests._rich import Clock, frame_text, sealed_console
 from tests.cli._command_stubs import (
     force_render_mode,
 )
@@ -45,7 +46,6 @@ from tests.cli._runner import (
 )
 from tests.cli._session import (
     open_capped_session_under_budget,
-    open_hooked_iterate_session,
     write_bench_config,
     write_capped_session,
 )
@@ -62,7 +62,7 @@ from tests.loop.iterate._fixtures import (
     run_before_each_call,
     write_iterate_session,
 )
-from tests.session._budget import install_budget_with_ten_minutes_left
+from tests.session._budget import install_budget, install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
     last_command_record,
     records_of_type,
@@ -103,8 +103,8 @@ def test_iterate_command_when_run_ends_does_remove_the_progress_sidecar(
 def test_iterate_command_when_supervised_run_live_does_refuse_as_supervised_use_tool(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    open_hooked_iterate_session(repo, monkeypatch)
-    install_improved_samples(monkeypatch, repo)
+    write_iterate_session(repo)
+    install_budget(repo, monkeypatch)
 
     result = runner.invoke(app, ["iterate"])
 
@@ -145,56 +145,58 @@ def _capture_renderers(monkeypatch: pytest.MonkeyPatch) -> list[IterateRenderer]
     return built
 
 
-def _capture_renderer_inputs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[tuple[IterationFacts, Callable[[], float]]]:
-    """Keep the real ``IterateRenderer``, collecting the facts and clock each one is built with."""
-    built: list[tuple[IterationFacts, Callable[[], float]]] = []
-
-    class _CapturedRenderer(IterateRenderer):
-        def __init__(
-            self,
-            mode: Literal["live", "plain"],
-            console: Console,
-            facts: IterationFacts,
-            *,
-            clock: Callable[[], float],
-            verbose: bool = False,
-        ) -> None:
-            super().__init__(mode, console, facts, clock=clock, verbose=verbose)
-            built.append((facts, clock))
-
-    monkeypatch.setattr("gymrat.cli.commands.loop.IterateRenderer", _CapturedRenderer)
-    return built
-
-
-def test_iterate_command_when_run_does_hand_the_renderer_the_session_facts(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_iterate_session(repo)
-    install_improved_samples(monkeypatch, repo)
-    inputs = _capture_renderer_inputs(monkeypatch)
-
-    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
-
-    ((facts, _clock),) = inputs
-    assert result.exit_code == 0
-    assert (facts.seq, facts.sample_count) == (1, CONFIG_DEFAULTS.samples)
-
-
-def test_iterate_command_when_run_does_hand_the_renderer_a_seconds_clock(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    write_iterate_session(repo)
-    install_improved_samples(monkeypatch, repo)
-    inputs = _capture_renderer_inputs(monkeypatch)
+def _frames_at_first_pass(
+    monkeypatch: pytest.MonkeyPatch, repo: str, *, elapsed_ms: float
+) -> list[str]:
+    """Collect the live frame as the first pass starts, ``elapsed_ms`` after the run began."""
     clock = install_monotonic_clock(monkeypatch)
+    renderers = _capture_renderers(monkeypatch)
+    frames: list[str] = []
+
+    async def first_pass(options: SamplingOptions) -> None:
+        assert options.on_progress is not None
+        options.on_progress(
+            PassStarted(
+                round=1,
+                total_rounds=CONFIG_DEFAULTS.samples,
+                target_count=SIDES_PER_ITERATE,
+                label="baseline",
+                at_ms=clock(),
+            )
+        )
+        clock.tick(elapsed_ms)
+        frames.append(frame_text(renderers[-1].frame(), width=120))
+
+    run_before_each_call(monkeypatch, install_improved_samples(monkeypatch, repo), first_pass)
+    return frames
+
+
+def test_iterate_command_when_run_does_show_the_session_facts_in_the_frame(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_iterate_session(repo)
+    _install_live_console(monkeypatch)
+    frames = _frames_at_first_pass(monkeypatch, repo, elapsed_ms=0.0)
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    ((_facts, renderer_clock),) = inputs
     assert result.exit_code == 0
-    assert renderer_clock() == clock() / MS_PER_SECOND
+    header, *rows = frames[0].splitlines()
+    assert header.startswith("iterate #1 ")
+    assert any(f"0/{CONFIG_DEFAULTS.samples * SIDES_PER_ITERATE}" in row for row in rows)
+
+
+def test_iterate_command_when_run_does_time_the_frame_in_seconds(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    write_iterate_session(repo)
+    _install_live_console(monkeypatch)
+    frames = _frames_at_first_pass(monkeypatch, repo, elapsed_ms=2_000.0)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
+    assert result.exit_code == 0
+    assert frames[0].splitlines()[0].endswith(" · 2s elapsed")
 
 
 async def _raise_bench_exploded(_options: SamplingOptions) -> None:
@@ -292,7 +294,7 @@ def test_iterate_command_when_debug_and_subscriber_raises_does_follow_the_warnin
         ),
     ],
 )
-def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_failure_without_failing_the_run(
+def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_failure(
     repo: str, monkeypatch: pytest.MonkeyPatch, messages: tuple[str, ...], warnings: list[str]
 ):
     _wire_failing_subscriber(repo, monkeypatch, messages)
@@ -300,8 +302,17 @@ def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_fail
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
     assert warning_lines(result.stderr) == warnings
-    assert "Traceback" not in result.stderr
+
+
+def test_iterate_command_when_subscriber_raises_does_finish_the_run_without_a_traceback(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _wire_failing_subscriber(repo, monkeypatch, _THREE_DISK_FULL)
+
+    result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
+
     assert result.exit_code == 0
+    assert "Traceback" not in result.stderr
 
 
 # ---------------------------------------------------------------------------

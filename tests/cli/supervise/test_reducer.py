@@ -267,7 +267,7 @@ def test_advance_when_untracked_tool_ends_does_log_it_without_summary_or_livenes
     assert after.liveness == Starting()
 
 
-def test_advance_when_more_tools_finish_than_the_bound_does_keep_only_the_most_recent():
+def test_advance_when_more_tools_finish_than_the_finished_tool_bound_does_keep_only_the_most_recent():
     state = make_state()
     for index in range(1, 5):
         at_ms = 1000 + index * 1000
@@ -354,18 +354,20 @@ def test_advance_when_parent_tool_ends_does_drop_only_its_own_nested_tools():
     }
 
 
-def test_advance_when_nested_tool_outlives_another_parent_does_clear_its_line_when_it_ends():
+def test_advance_when_nested_tool_ends_beside_another_live_parent_does_fall_back_to_its_own_sibling():
     before = started("Task", "task-1", 1600, base=two_nested_tools_state())
     before = advance(
         before, tool_start_event("Glob", "glob-1", 2200, parent_tool_use_id="task-1"), None
     )
-    before = advance(before, tool_end_event("Bash", "bash-1", 3000, started_at_ms=1500), None)
 
     after = advance(
-        before, tool_end_event("Glob", "glob-1", 3500, parent_tool_use_id="task-1"), None
+        before, tool_end_event("Grep", "grep-1", 2500, parent_tool_use_id="bash-1"), None
     )
 
-    assert dict(after.nested) == {}
+    assert dict(after.nested) == {
+        "bash-1": RunningTool(tool_name="Read", input_summary="...", since=2000),
+        "task-1": RunningTool(tool_name="Glob", input_summary="...", since=2200),
+    }
 
 
 @pytest.mark.parametrize(
