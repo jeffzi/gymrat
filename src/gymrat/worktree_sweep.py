@@ -18,7 +18,11 @@ from gymrat.exec import kill_live_process_groups
 from gymrat.git import try_git
 from gymrat.report.text.render import format_cleanup_failures
 from gymrat.sampling import WorktreeInfo
-from gymrat.signals import install_termination_cleanup, write_on_exit
+from gymrat.signals import (
+    deferring_termination_signals,
+    install_termination_cleanup,
+    write_on_exit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,9 +103,11 @@ class _SweepLedger:
     """The worktrees no sweep has taken yet, and what the sweeps so far have learned.
 
     A signal can land while one sweep is inside a git call, and the sweep the
-    signal path then runs is the last thing the process does. Both sweeps write
-    to one ledger, so the second reports the worktrees the first could not
-    remove and collects the stale entry the first had met.
+    signal path then runs is the last thing the process does. The signal waits
+    until that call's outcome is on the ledger, and both sweeps write to that
+    one ledger, so the second reports every worktree the first could not
+    remove, collects the stale entry the first had met, and carries the error
+    of a prune the first had run.
 
     Attributes:
         worktrees: The registry of claimed worktrees, emptied as sweeps take them.
@@ -109,12 +115,15 @@ class _SweepLedger:
         failures: Worktrees the sweeps left on disk, one entry each.
         prune_owed: Whether a targeted removal came back stale and no sweep has
             started the prune that collects it.
+        prune_error: Why the prune a sweep ran failed, or ``None`` if it
+            succeeded or never ran.
     """
 
     worktrees: list[WorktreeInfo]
     removed: int = 0
     failures: list[WorktreeRemovalFailure] = field(default_factory=list)
     prune_owed: bool = False
+    prune_error: str | None = None
 
     def __iter__(self) -> Iterator[WorktreeInfo]:
         # Each worktree leaves the registry before it is yielded, so a sweep that
@@ -143,14 +152,23 @@ def cleanup_worktrees(worktrees: Iterable[WorktreeInfo], repo_dir: str) -> Clean
     """
     ledger = worktrees if isinstance(worktrees, _SweepLedger) else _SweepLedger([])
 
-    for worktree in worktrees:
-        outcome = _remove_worktree(worktree, repo_dir)
-        if isinstance(outcome, WorktreeRemovalFailure):
-            ledger.failures.append(outcome)
-        elif outcome == "removed":
-            ledger.removed += 1
-        elif outcome == "stale":
-            ledger.prune_owed = True
+    # Each worktree is taken, handed to git, and its outcome recorded under one
+    # deferral, so a signal landing at any point in between waits until the
+    # ledger holds what git answered: the signal path's sweep then reports it
+    # instead of losing a worktree that left the registry with no outcome.
+    taken = iter(worktrees)
+    while True:
+        with deferring_termination_signals():
+            worktree = next(taken, None)
+            if worktree is None:
+                break
+            outcome = _remove_worktree(worktree, repo_dir)
+            if isinstance(outcome, WorktreeRemovalFailure):
+                ledger.failures.append(outcome)
+            elif outcome == "removed":
+                ledger.removed += 1
+            elif outcome == "stale":
+                ledger.prune_owed = True
 
     # Prune only when a targeted removal failed and may have left an entry with
     # no directory behind it. Naming each worktree already clears its own entry,
@@ -158,14 +176,14 @@ def cleanup_worktrees(worktrees: Iterable[WorktreeInfo], repo_dir: str) -> Clean
     # that may not even be a git repo — has nothing to collect. Pruning anyway
     # would deregister worktrees of the user's own that are only temporarily
     # absent: an unmounted volume, a directory moved aside.
-    prune_error = None
-    if ledger.prune_owed:
-        # Settled before git is asked: a sweep that starts while this prune is
-        # running must not run a second one.
-        ledger.prune_owed = False
-        prune_error = try_git(["worktree", "prune"], repo_dir)
+    with deferring_termination_signals():
+        if ledger.prune_owed:
+            # Settled before git is asked: a sweep that starts while this prune
+            # is running must not run a second one.
+            ledger.prune_owed = False
+            ledger.prune_error = try_git(["worktree", "prune"], repo_dir)
     return CleanupResult(
-        removed=ledger.removed, failures=tuple(ledger.failures), prune_error=prune_error
+        removed=ledger.removed, failures=tuple(ledger.failures), prune_error=ledger.prune_error
     )
 
 
@@ -182,10 +200,11 @@ async def run_with_worktrees[M, R](
     arriving mid-run still sweeps whatever was claimed; that cleanup aborts the
     run, sweeps, and hands what the sweep left unfinished to the exit output.
     The normal path sweeps exactly once whether the phase returns or raises. A
-    signal that lands during the normal path's sweep takes over only the
-    worktrees that sweep has not reached, and inherits its accounting: the exit
-    output names the worktrees that sweep could not remove, and a stale entry
-    it had met is pruned once.
+    signal that lands during the normal path's sweep waits for the git call in
+    flight to finish, then takes over only the worktrees that sweep has not
+    reached, and inherits its accounting: the exit output names the worktrees
+    that sweep could not remove, including the one the signal landed on, and
+    the error of a prune it ran, and a stale entry it had met is pruned once.
 
     Args:
         phase: The work to run. It receives the repository directory, the

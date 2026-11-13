@@ -14,10 +14,12 @@ import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
+from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat import worktree_sweep
+from gymrat import signals, worktree_sweep
 from gymrat.errors import CommandError, GymratError
 from gymrat.loop.stop_condition import LoopStopError
 from gymrat.report.text.render import format_cleanup_failures
@@ -484,37 +486,54 @@ class _Exit:
     git_calls: list[tuple[str, ...]]
 
 
+class _ExitedError(BaseException):
+    """Raised by the stubbed exit seam so the signal path unwinds where the process would exit."""
+
+
 def _patch_git(
     monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
     capsys: pytest.CaptureFixture[str],
     *,
     refused: Path,
     signal_during: tuple[str, ...],
     prune_error: str | None = None,
 ) -> list[_Exit]:
-    """Stub the sweep's git seam with scripted answers and one call that delivers SIGTERM.
+    """Stub the sweep's git seam with scripted answers and one call that SIGTERM lands in.
 
     Git answers as :func:`_fake_git` scripts it, with ``refused`` as the one
-    directory it refuses to remove.
+    directory it refuses to remove. The installed handler is called from inside
+    the ``signal_during`` call, as a signal arriving mid-call reaches it. The
+    exit seam records what the process had done and unwinds, whenever the
+    signal path gets there.
 
     Args:
-        monkeypatch: Patches the git seam the sweep calls.
-        raise_signal: Delivers the signal from inside the stubbed call.
+        monkeypatch: Patches the git seam and the exit seam.
         capsys: Reads what the signal path wrote before it exited.
         refused: The worktree directory git refuses to remove.
         signal_during: The recorded call the signal lands in.
         prune_error: What a prune answers; ``None`` is success.
 
     Returns:
-        The exits observed, one per delivered signal.
+        The exits observed, one per exit the signal path reached.
     """
     exits: list[_Exit] = []
+    delivered: list[tuple[str, ...]] = []
+
+    def _exit(_code: int) -> NoReturn:
+        exits.append(_Exit(_reported(capsys.readouterr().err), sorted(git_calls)))
+        raise _ExitedError
+
+    monkeypatch.setattr(
+        signals, "exit_process", create_autospec(signals.exit_process, side_effect=_exit)
+    )
 
     def _deliver(call: tuple[str, ...]) -> None:
-        if call == signal_during and not exits:
-            raise_signal(signal.SIGTERM)
-            exits.append(_Exit(_reported(capsys.readouterr().err), sorted(git_calls)))
+        if call == signal_during and not delivered:
+            delivered.append(call)
+            handler = signal.getsignal(signal.SIGTERM)
+            if not callable(handler):
+                pytest.fail("no termination handler installed during the sweep")
+            handler(signal.SIGTERM, None)
 
     git_calls = _fake_git(
         monkeypatch, refused=(refused,), prune_error=prune_error, on_call=_deliver
@@ -524,22 +543,20 @@ def _patch_git(
 
 async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_left_a_worktree_does_report_it_before_exit(
     monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ):
     left, in_flight, remaining = tmp_path / "left", tmp_path / "in-flight", tmp_path / "remaining"
     worktrees = [_worktree_at(left), _worktree_at(in_flight), _worktree_at(remaining)]
-    exits = _patch_git(
-        monkeypatch, raise_signal, capsys, refused=left, signal_during=_removal(in_flight)
-    )
+    exits = _patch_git(monkeypatch, capsys, refused=left, signal_during=_removal(in_flight))
     reported = CleanupResult(
         removed=0,
         failures=(WorktreeRemovalFailure(dir=str(left), error=_REFUSED),),
         prune_error=None,
     )
 
-    await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
+    with pytest.raises(_ExitedError):
+        await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
 
     assert exits == [
         _Exit(
@@ -549,9 +566,33 @@ async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_left_a_w
     ]
 
 
+async def test_run_with_worktrees_when_signalled_during_a_removal_git_refuses_does_name_that_worktree_before_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+):
+    refused, remaining = tmp_path / "refused", tmp_path / "remaining"
+    worktrees = [_worktree_at(refused), _worktree_at(remaining)]
+    exits = _patch_git(monkeypatch, capsys, refused=refused, signal_during=_removal(refused))
+    reported = CleanupResult(
+        removed=0,
+        failures=(WorktreeRemovalFailure(dir=str(refused), error=_REFUSED),),
+        prune_error=None,
+    )
+
+    with pytest.raises(_ExitedError):
+        await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
+
+    assert exits == [
+        _Exit(
+            report=_cleanup_block(reported),
+            git_calls=sorted([_removal(refused), _removal(remaining)]),
+        )
+    ]
+
+
 async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_met_a_stale_entry_does_prune_once_before_exit(
     monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ):
@@ -559,14 +600,14 @@ async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_met_a_st
     worktrees = [_worktree_at(stale, on_disk=False), _worktree_at(in_flight)]
     exits = _patch_git(
         monkeypatch,
-        raise_signal,
         capsys,
         refused=stale,
         signal_during=_removal(in_flight),
         prune_error="could not prune",
     )
 
-    await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
+    with pytest.raises(_ExitedError):
+        await run_with_worktrees(_phase_leaving(worktrees), lambda m, c: (m, c))
 
     assert exits == [
         _Exit(
@@ -576,20 +617,27 @@ async def test_run_with_worktrees_when_signalled_after_the_normal_sweep_met_a_st
     ]
 
 
-async def test_run_with_worktrees_when_signalled_during_the_normal_prune_does_exit_without_a_second_prune(
+async def test_run_with_worktrees_when_signalled_during_the_normal_prune_does_report_its_error_without_a_second_prune(
     monkeypatch: pytest.MonkeyPatch,
-    raise_signal: Callable[[int], int],
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ):
     stale = tmp_path / "stale"
-    exits = _patch_git(monkeypatch, raise_signal, capsys, refused=stale, signal_during=_PRUNE)
-
-    await run_with_worktrees(
-        _phase_leaving([_worktree_at(stale, on_disk=False)]), lambda m, c: (m, c)
+    exits = _patch_git(
+        monkeypatch, capsys, refused=stale, signal_during=_PRUNE, prune_error="could not prune"
     )
 
-    assert [exit_.git_calls for exit_ in exits] == [sorted([_removal(stale), _PRUNE])]
+    with pytest.raises(_ExitedError):
+        await run_with_worktrees(
+            _phase_leaving([_worktree_at(stale, on_disk=False)]), lambda m, c: (m, c)
+        )
+
+    assert exits == [
+        _Exit(
+            report=_cleanup_block(_PRUNE_FAILED),
+            git_calls=sorted([_removal(stale), _PRUNE]),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
