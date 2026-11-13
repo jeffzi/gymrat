@@ -56,7 +56,7 @@ from gymrat.report.table.grid import (
     plan_table_skeleton,
     render_body,
 )
-from gymrat.report.tally import each_candidate_verdict, verdict_summary_parts
+from gymrat.report.tally import CandidateVerdict, each_candidate_verdict, verdict_summary_parts
 from gymrat.report.text.measure_table import (
     MeasuredRow,
     measured_cells,
@@ -85,7 +85,6 @@ if TYPE_CHECKING:
         ComparisonResult,
         FailOnCondition,
         MeasurementResult,
-        MetricComparison,
         MetricComparisons,
     )
     from gymrat.worktree_sweep import WorktreeRemovalFailure
@@ -187,21 +186,6 @@ def _render_summaries(result: ComparisonResult) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class MetricHighlight:
-    """A metric worth calling out for one candidate, with the name it is reported under.
-
-    Attributes:
-        name: The metric name the highlight is reported under.
-        metric: The metric's comparison data.
-        verdict: The candidate's verdict that earned the highlight.
-    """
-
-    name: str
-    metric: MetricComparison
-    verdict: MetricVerdict
-
-
 _HIGHLIGHT_RANK: dict[DisplayClass, int | None] = {
     "regressed": 0,
     "improved": 1,
@@ -230,7 +214,7 @@ def _highlight_weight(
 def select_highlights(
     metrics: MetricComparisons,
     candidate_index: int,
-) -> list[MetricHighlight]:
+) -> list[CandidateVerdict]:
     """The metrics worth calling out for one candidate, ordered by class then loudness.
 
     Regressions come first (by delta magnitude, descending), then improvements
@@ -246,16 +230,15 @@ def select_highlights(
     Returns:
         The highlights in report order.
     """
-    ranked: list[tuple[int, float, MetricHighlight]] = []
+    ranked: list[tuple[int, float, CandidateVerdict]] = []
     for judged in each_candidate_verdict(metrics, candidate_index):
         rank = _HIGHLIGHT_RANK[display_class(judged.verdict)]
         if rank is None:
             continue
-        highlight = MetricHighlight(name=judged.name, metric=judged.metric, verdict=judged.verdict)
         weight = _highlight_weight(
             judged.verdict, judged.metric.baseline_median, judged.candidate.median
         )
-        ranked.append((rank, -weight, highlight))
+        ranked.append((rank, -weight, judged))
 
     ranked.sort(key=operator.itemgetter(0, 1))
     return [highlight for _, _, highlight in ranked]

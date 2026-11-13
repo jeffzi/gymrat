@@ -15,7 +15,6 @@ from gymrat.utils import fraction_of_median
 
 if TYPE_CHECKING:
     from gymrat.model import MetricUnit, MetricVerdict
-    from gymrat.report.types import CandidateMetric, MetricComparison
 
 
 # ---------------------------------------------------------------------------
@@ -157,9 +156,7 @@ class MetricCellParts:
 
 
 def format_metric_cell_parts(
-    median: float | None = None,
-    spread: float | None = None,
-    unit: MetricUnit | None = None,
+    median: float | None, spread: float | None, unit: MetricUnit | None
 ) -> MetricCellParts:
     """A value cell's fields: the scaled measurement and the spread stated behind it.
 
@@ -184,23 +181,6 @@ def format_metric_cell_parts(
             magnitude=magnitude, spread=format_value(abs(median * spread / 100), unit)
         )
     return MetricCellParts(magnitude=magnitude, spread=f"{spread:.0f}%")
-
-
-def baseline_cell_parts(metric: MetricComparison) -> MetricCellParts:
-    """A metric's baseline figure, taken apart the way :func:`format_metric_cell_parts` does."""
-    return format_metric_cell_parts(
-        metric.baseline_median, metric.baseline_spread, metric.meta.unit
-    )
-
-
-def candidate_cell_parts(
-    side: CandidateMetric | None,
-    unit: MetricUnit | None = None,
-) -> MetricCellParts:
-    """One candidate's side of a metric, taken apart into padded fields."""
-    if side is None:
-        return format_metric_cell_parts(None, None, unit)
-    return format_metric_cell_parts(side.median, side.spread, unit)
 
 
 def format_verdict_delta(verdict: MetricVerdict) -> str:
@@ -252,33 +232,6 @@ def is_noise_percentage_undefined(
     )
 
 
-def is_noise_absolute(
-    noise_pct: float,
-    noise_abs: float,
-    baseline_median: float,
-    candidate_median: float | None = None,
-) -> bool:
-    """Whether a noise figure reads in the metric's own units rather than as a percentage.
-
-    Past :data:`_RELATIVE_SPREAD_CAP_PCT` a percentage stops being readable, and
-    when either median leaves the noise without a finite percentage (see
-    :func:`is_noise_percentage_undefined`) it is only the noise floor, standing
-    in for a scatter no percentage can express.
-
-    Args:
-        noise_pct: The noise as a percentage of the median.
-        noise_abs: The noise in the metric's own units.
-        baseline_median: The baseline median the noise is stated against.
-        candidate_median: The candidate median, or ``None`` when unknown.
-
-    Returns:
-        ``True`` when the noise belongs in absolute units.
-    """
-    return noise_pct > _RELATIVE_SPREAD_CAP_PCT or is_noise_percentage_undefined(
-        noise_abs, baseline_median, candidate_median
-    )
-
-
 def format_evidence(
     verdict: MetricVerdict,
     unit: MetricUnit | None = None,
@@ -311,8 +264,9 @@ def format_evidence(
         return "(exact)"
     if verdict.verdict != "unstable":
         return ""
-    if baseline_median is None or not is_noise_absolute(
-        verdict.noise_pct, verdict.noise_abs, baseline_median, candidate_median
+    if baseline_median is None or (
+        verdict.noise_pct <= _RELATIVE_SPREAD_CAP_PCT
+        and not is_noise_percentage_undefined(verdict.noise_abs, baseline_median, candidate_median)
     ):
         return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"
     noise = f"{PLUS_MINUS}{format_value(verdict.noise_abs, unit)} noise"

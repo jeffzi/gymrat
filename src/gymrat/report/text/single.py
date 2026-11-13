@@ -181,16 +181,20 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
             _metric_verdict_cell(row, verdict_fields),
         )
 
-    cells_by_name = {row.name: metric_cells(row) for row in layout.ordered}
+    cells_by_row = {row: metric_cells(row) for row in layout.ordered}
     aggregate_cells = {
-        line.cell: _aggregate_verdict_cell(line.cell, verdict_fields) for line in aggregate_lines
+        line.cell: verdict_cell(
+            line.cell.parts,
+            verdict_fields,
+            glyph_style=line.cell.glyph_style,
+            delta_style=line.cell.delta_style,
+            band_style=line.cell.band_style,
+        )
+        for line in aggregate_lines
     }
     widths = _column_widths(
-        headers, list(cells_by_name.values()), skeleton, list(aggregate_cells.values())
+        headers, list(cells_by_row.values()), skeleton, list(aggregate_cells.values())
     )
-
-    def cells_of(row: ComparisonRow) -> _MetricCells:
-        return cells_by_name[row.name]
 
     to_cells = build_cell_dispatcher(
         header=lambda title: (
@@ -200,7 +204,7 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
             Text.assemble("vs ", variant_name_cell(headers[0])),
         ),
         group=lambda label: (group_metric_cell(label), "", "", ""),
-        metric=cells_of,
+        metric=cells_by_row.__getitem__,
         aggregate=lambda line: (
             aggregate_label_cell(line.label),
             "",
@@ -283,15 +287,4 @@ def _metric_verdict_cell(row: ComparisonRow, verdict_fields: VerdictWidths) -> T
         glyph_style=VERDICT_STYLES[outcome],
         delta_style=VERDICT_STYLES[outcome] if quiet else None,
         band_style="dim",
-    )
-
-
-def _aggregate_verdict_cell(cell: _AggregateCell, verdict_fields: VerdictWidths) -> Text:
-    """A geomean row's verdict cell, each field in the style the aggregate chose for it."""
-    return verdict_cell(
-        cell.parts,
-        verdict_fields,
-        glyph_style=cell.glyph_style,
-        delta_style=cell.delta_style,
-        band_style=cell.band_style,
     )

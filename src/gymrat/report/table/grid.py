@@ -159,24 +159,16 @@ def plan_sections[Row, Metric: SectionedMetric](
 def _gather_blocks[Row](members: list[tuple[Row, str | None]]) -> list[SectionBlock[Row]]:
     """Lay one kind's rows out as blocks, each group gathered where its first row appeared."""
     blocks: list[SectionBlock[Row]] = []
+    opened: dict[str, GroupBlock[Row]] = {}
     for row, group in members:
         if group is None:
             blocks.append(MetricBlock(metric=row))
-            continue
-        opened = _open_group(blocks, group)
-        if opened is not None:
-            opened.metrics.append(row)
+        elif group in opened:
+            opened[group].metrics.append(row)
         else:
-            blocks.append(GroupBlock(group=group, metrics=[row]))
+            opened[group] = GroupBlock(group=group, metrics=[row])
+            blocks.append(opened[group])
     return blocks
-
-
-def _open_group[Row](blocks: list[SectionBlock[Row]], group: str) -> GroupBlock[Row] | None:
-    """The already-opened block for ``group`` among ``blocks``, or ``None`` when none is open."""
-    return next(
-        (block for block in blocks if isinstance(block, GroupBlock) and block.group == group),
-        None,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -379,33 +371,16 @@ def compute_column_width(header_len: int, content_lengths: Sequence[int], minimu
     return max(minimum, header_len, max(content_lengths, default=0))
 
 
-def informational_tag(kind: str, config_kinds: Mapping[str, KindEntry] | None) -> str:
-    """Word the tag a non-gating kind's title carries.
-
-    Gating is resolved per metric before the report sees it, so only the config
-    distinguishes a kind switched off wholesale from one whose metrics were each
-    switched off by name. Naming the key is what lets the reader switch it back.
-
-    Args:
-        kind: The kind whose title the tag decorates.
-        config_kinds: The configured kinds, keyed by name, or ``None`` when
-            absent.
-
-    Returns:
-        The informational tag, naming the config key when the config switched
-        the kind's gating off.
-    """
-    entry = config_kinds.get(kind) if config_kinds is not None else None
-    switched_off = entry is not None and entry.gating is False
-    source = f" (config: kinds.{kind}.gating = false)" if switched_off else ""
-    return f"{_INFORMATIONAL_TAG}{source}"
-
-
 def section_annotation[Metric](
     section: SectionPlan[Metric],
     config_kinds: Mapping[str, KindEntry] | None,
 ) -> str | None:
     """Title a non-gating section with its informational tag.
+
+    Gating is resolved per metric before the report sees it, so only the config
+    distinguishes a kind switched off wholesale from one whose metrics were each
+    switched off by name. Naming the config key is what lets the reader switch
+    it back.
 
     Args:
         section: The planned section to tag.
@@ -413,12 +388,16 @@ def section_annotation[Metric](
             carries no kind metadata.
 
     Returns:
-        The tag as dimmed markup, or ``None`` when the section has a gating
-        metric.
+        The tag as dimmed markup, naming the config key when the config switched
+        the kind's gating off, or ``None`` when the section has a gating metric.
     """
     if section.has_gating:
         return None
-    return markup(informational_tag(section.kind, config_kinds), "dim")
+    kind = section.kind
+    entry = config_kinds.get(kind) if config_kinds is not None else None
+    switched_off = entry is not None and entry.gating is False
+    source = f" (config: kinds.{kind}.gating = false)" if switched_off else ""
+    return markup(f"{_INFORMATIONAL_TAG}{source}", "dim")
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,20 +460,6 @@ class TableSkeleton[Row, Cell]:
     value_cell: Callable[[Row], str]
     metric_width: int
     value_width: int
-
-
-def name_cell(row: NamedRow, *, grouped: bool) -> str:
-    """The metric-column text of one row.
-
-    Args:
-        row: The metric row.
-        grouped: Whether the table is grouped (see :func:`is_grouped`).
-
-    Returns:
-        The row's indented section label once the table is grouped, its bare
-        name otherwise.
-    """
-    return row.label if grouped else row.name
 
 
 def is_grouped[Metric, Cell](
@@ -582,7 +547,8 @@ def plan_table_skeleton[Row: NamedRow, Cell](
     grouped = is_grouped(layout, body)
 
     def row_name_cell(row: Row) -> str:
-        return name_cell(row, grouped=grouped)
+        # A grouped table names each row by its indented section label.
+        return row.label if grouped else row.name
 
     def value_cell(row: Row) -> str:
         return join_value_cell(value_of(row), value_fields)

@@ -15,8 +15,7 @@ from typing import TYPE_CHECKING
 from gymrat.model import GeomeanResult
 from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.format import (
-    baseline_cell_parts,
-    candidate_cell_parts,
+    format_metric_cell_parts,
     format_noise_band_value,
     format_pair_count,
     format_percent_delta,
@@ -226,7 +225,11 @@ def comparison_row_builder(
             side = candidate_at(metric, index)
             cells.append(
                 CandidateCell(
-                    value=candidate_cell_parts(side, metric.meta.unit),
+                    value=(
+                        format_metric_cell_parts(None, None, metric.meta.unit)
+                        if side is None
+                        else format_metric_cell_parts(side.median, side.spread, metric.meta.unit)
+                    ),
                     verdict=shown_verdict(
                         side.verdict if side is not None else None, samples, with_band=with_band
                     ),
@@ -235,7 +238,9 @@ def comparison_row_builder(
         return ComparisonRow(
             name=name,
             label=indented_section_label(metric.meta.short_name, group),
-            baseline=baseline_cell_parts(metric),
+            baseline=format_metric_cell_parts(
+                metric.baseline_median, metric.baseline_spread, metric.meta.unit
+            ),
             candidates=tuple(cells),
             gating=metric.meta.gating,
         )

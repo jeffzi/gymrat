@@ -103,11 +103,11 @@ def _measure_columns(
 
 def _column_widths(
     skeleton: TableSkeleton[ComparisonRow, _AggregateCells],
-    cells_by_name: dict[str, _MetricCells],
+    cells_by_row: dict[ComparisonRow, _MetricCells],
     candidates: Sequence[CandidateComparison],
 ) -> list[int]:
     """The column widths: the skeleton's name and baseline, then each candidate's."""
-    rows = list(cells_by_name.values())
+    rows = list(cells_by_row.values())
     aggregate_lines = [line for line in skeleton.body if isinstance(line, AggregateLine)]
     candidate_widths = [
         compute_column_width(
@@ -163,11 +163,8 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
         baseline_header,
     )
     body = skeleton.body
-    cells_by_name = {row.name: _metric_cells(row, fields, skeleton) for row in layout.ordered}
-    widths = _column_widths(skeleton, cells_by_name, candidates)
-
-    def cells_of(row: ComparisonRow) -> _MetricCells:
-        return cells_by_name[row.name]
+    cells_by_row = {row: _metric_cells(row, fields, skeleton) for row in layout.ordered}
+    widths = _column_widths(skeleton, cells_by_row, candidates)
 
     to_cells = build_cell_dispatcher(
         header=lambda title: (
@@ -176,7 +173,7 @@ def render_comparison_table(result: ComparisonResult, *, color: bool | None) -> 
             *(variant_name_cell(candidate.label) for candidate in candidates),
         ),
         group=lambda label: (group_metric_cell(label), "", *("" for _ in candidates)),
-        metric=cells_of,
+        metric=cells_by_row.__getitem__,
         aggregate=lambda line: (aggregate_label_cell(line.label), "", *line.cell),
     )
 
