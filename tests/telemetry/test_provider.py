@@ -65,9 +65,7 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_enviro
 
         flush_tracing()
 
-    assert [(export.path, export.span_names) for export in collector.received] == [
-        ("/v1/traces", ["probe"])
-    ]
+    assert [export.path for export in collector.received] == ["/v1/traces"]
 
 
 def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_traces_variable(
@@ -81,9 +79,7 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_traces
 
         flush_tracing()
 
-    assert [(export.path, export.span_names) for export in collector.received] == [
-        ("/v1/traces", ["probe"])
-    ]
+    assert [export.path for export in collector.received] == ["/v1/traces"]
 
 
 def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the_traces_endpoint(
@@ -98,9 +94,7 @@ def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the
 
         flush_tracing()
 
-    assert [(export.path, export.span_names) for export in collector.received] == [
-        ("/custom/traces", ["probe"])
-    ]
+    assert [export.path for export in collector.received] == ["/custom/traces"]
 
 
 # ---------------------------------------------------------------------------

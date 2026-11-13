@@ -893,11 +893,6 @@ def minutes_to_ms(minutes: float) -> int:
     return int(minutes * _MS_PER_MINUTE)
 
 
-def ms_to_minutes(ms: float) -> float:
-    """Convert milliseconds to minutes, keeping fractional precision."""
-    return ms / _MS_PER_MINUTE
-
-
 def format_duration(ms: float) -> str:
     """Format an elapsed duration, flooring to whole seconds.
 

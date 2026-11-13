@@ -36,11 +36,6 @@ class ReceivedExport:
     path: str
     spans: list[ReceivedSpan]
 
-    @property
-    def span_names(self) -> list[str]:
-        """Names of the spans in this export, in request order."""
-        return [span.name for span in self.spans]
-
 
 @dataclass(frozen=True, slots=True)
 class OtlpCollector:

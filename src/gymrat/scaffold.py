@@ -110,24 +110,30 @@ def _make_directory(directory: Path) -> bool:
     return True
 
 
-def _make_directories(directory: Path, created: list[Path]) -> None:
-    """Create ``directory`` and its missing ancestors, recording each one this call made.
+def _make_directories(directory: Path, base_dir: Path, created: list[Path]) -> None:
+    """Create ``directory`` and its missing ancestors below ``base_dir``, recording each one made.
 
-    A directory is recorded the moment it is made, so a failure part-way
-    through still leaves ``created`` naming everything there is to roll back.
+    ``base_dir`` itself is never created: a project root that does not exist is
+    a mistyped path, so the write under it fails instead. A directory is
+    recorded the moment it is made, so a failure part-way through still leaves
+    ``created`` naming everything there is to roll back.
 
     Args:
         directory: The directory that must exist afterwards.
+        base_dir: The project root, which must already exist.
         created: Extended with each directory this call created, an ancestor
             before its descendants.
 
     Raises:
-        OSError: When a directory cannot be created.
+        OSError: When a directory cannot be created, ``base_dir`` included
+            when it is missing.
     """
+    if directory == base_dir:
+        return
     try:
         made = _make_directory(directory)
     except FileNotFoundError:
-        _make_directories(directory.parent, created)
+        _make_directories(directory.parent, base_dir, created)
         made = _make_directory(directory)
     if made:
         created.append(directory)
@@ -162,7 +168,7 @@ def _write_artifact(
         return ScaffoldArtifact(path=relative, status="exists")
 
     try:
-        _make_directories(full_path.parent, created_directories)
+        _make_directories(full_path.parent, base_dir, created_directories)
         create_text_atomic(full_path, content)
     except FileExistsError:
         return ScaffoldArtifact(path=relative, status="exists")
@@ -194,32 +200,6 @@ def _prepare_config(request: ScaffoldRequest) -> str:
         config_dict["runbook"] = DEFAULT_RUNBOOK_PATH
     validate_config_dict(config_dict)
     return "".join(f"{key} = {json.dumps(value)}\n" for key, value in config_dict.items())
-
-
-def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
-    """Write the config atomically, so a failed write never leaves a truncated ``gymrat.toml``.
-
-    A config that appears after the existence check is kept, never replaced.
-
-    Args:
-        base_dir: The project root the config is written into.
-        content: The serialized TOML text.
-
-    Returns:
-        The config artifact, reported as ``exists`` when a file appeared at the
-        path before the write and as ``created`` otherwise.
-
-    Raises:
-        GymratError: When the file cannot be written.
-    """
-    try:
-        create_text_atomic(base_dir / CONFIG_FILENAME, content)
-    except FileExistsError:
-        return ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
-    except OSError as exc:
-        msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
-        raise GymratError(msg, hint=str(exc)) from exc
-    return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
 def _is_blocked(base_dir: Path, relative: str) -> bool:
@@ -338,7 +318,7 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         artifacts.append(
             ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
             if config_content is None
-            else _write_config(base_dir, config_content)
+            else _write_artifact(base_dir, CONFIG_FILENAME, config_content, created_directories)
         )
         artifacts.append(
             _write_artifact(base_dir, DEFAULT_RUNBOOK_PATH, _RUNBOOK_STUB, created_directories)

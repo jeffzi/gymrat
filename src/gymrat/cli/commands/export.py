@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 import typer
 
@@ -18,9 +18,6 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import read_session_header
 from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, otlp_endpoint_from_env, write_and_flush
-
-if TYPE_CHECKING:
-    from gymrat.session.records import SessionRecord
 
 _SessionLogArgument = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
@@ -74,20 +71,14 @@ def export_command(
     run_guarded(lambda: _export(session_log, endpoint))
 
 
-def _read_header(session_log: str) -> SessionRecord:
-    header = read_session_header(session_log)
-    if header is None:
-        msg = f"No session found in {session_log}"
-        raise GymratError(msg)
-    return header
-
-
 def _export(session_log: str | None, endpoint: str | None) -> None:
     if session_log is None:
         session_log = session_jsonl_path(repo_root())
 
-    header = _read_header(session_log)
-
+    header = read_session_header(session_log)
+    if header is None:
+        msg = f"No session found in {session_log}"
+        raise GymratError(msg)
     session_id = header.session_id
 
     from gymrat.telemetry.provider import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack

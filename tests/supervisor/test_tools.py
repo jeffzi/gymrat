@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, create_autospec
@@ -25,7 +26,6 @@ from gymrat.exec import (
     exec_argv,
 )
 from gymrat.supervisor.tools import ToolHost, gymrat_tool_definitions
-from tests._cli import ENTRY
 from tests._exec_fixtures import expected_result
 
 # ---------------------------------------------------------------------------
@@ -50,12 +50,11 @@ def fake_exec() -> AsyncMock:
 
 @pytest.fixture
 def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
-    """A ToolHost wired to the fake executor, with a trivial prefix and no extra env."""
+    """A ToolHost wired to the fake executor, with no extra env."""
     return ToolHost(
         root=str(tmp_path),
         abort=asyncio.Event(),
         extra_env={},
-        argv_prefix=["gym", "rat"],
         _exec_fn=fake_exec,
     )
 
@@ -65,6 +64,15 @@ def host(tmp_path: pathlib.Path, fake_exec: AsyncMock) -> ToolHost:
 # ---------------------------------------------------------------------------
 
 
+async def test_probe_when_called_does_run_this_interpreter_as_gymrat(
+    host: ToolHost, fake_exec: AsyncMock
+) -> None:
+    await host.probe({})
+
+    argv = list(fake_exec.call_args[0][0])
+    assert argv[:3] == [sys.executable, "-m", "gymrat"]
+
+
 async def test_probe_when_extra_env_names_a_fixed_key_does_let_the_extra_value_win(
     tmp_path: pathlib.Path, fake_exec: AsyncMock
 ) -> None:
@@ -72,7 +80,6 @@ async def test_probe_when_extra_env_names_a_fixed_key_does_let_the_extra_value_w
         root=str(tmp_path),
         abort=asyncio.Event(),
         extra_env={"NO_COLOR": "0"},
-        argv_prefix=["gym", "rat"],
         _exec_fn=fake_exec,
     )
 
@@ -97,7 +104,6 @@ async def test_probe_when_child_fails_does_return_error_text_without_ansi(
         root=str(tmp_path),
         abort=asyncio.Event(),
         extra_env={},
-        argv_prefix=ENTRY,
         _exec_fn=exec_argv,
     )
 
@@ -317,7 +323,6 @@ async def test_probe_when_abort_fires_after_partial_json_does_return_killed(
         root=str(tmp_path),
         abort=abort,
         extra_env={},
-        argv_prefix=["gym", "rat"],
         _exec_fn=fake_exec,
     )
 

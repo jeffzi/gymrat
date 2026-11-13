@@ -316,6 +316,15 @@ def test_scaffold_when_config_write_fails_does_raise_gymrat_error_naming_file_an
     assert exc_info.value.hint == "Read-only file system"
 
 
+def test_scaffold_when_base_directory_missing_does_raise_without_creating_it(tmp_path: Path):
+    base = tmp_path / "banana"
+
+    with pytest.raises(GymratError):
+        scaffold(str(base), ScaffoldRequest(bench="npm run bench"))
+
+    assert not base.exists()
+
+
 STRAY_NAME = "stray.txt"
 STRAY_CONTENT = "left by someone else\n"
 

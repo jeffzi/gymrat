@@ -49,7 +49,14 @@ from gymrat.session.store import (
     unmeasured_edit_count,
 )
 from gymrat.session.workspace import dirty_file_count
-from gymrat.utils import minutes_to_ms, ms_to_minutes, pluralize, warn_to_stderr, write_and_flush
+from gymrat.utils import (
+    MS_PER_SECOND,
+    SECONDS_PER_MINUTE,
+    minutes_to_ms,
+    pluralize,
+    warn_to_stderr,
+    write_and_flush,
+)
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -197,6 +204,10 @@ async def _baseline_step(
         progress.stop()
 
 
+def _ms_to_minutes(ms: float) -> float:
+    return ms / (SECONDS_PER_MINUTE * MS_PER_SECOND)
+
+
 def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
     """Refuse to launch when the cap cannot fit one iterate, unless ``force``."""
     records = read_session_records(root)
@@ -215,9 +226,9 @@ def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
 
     # Rounding away from each other keeps a refused launch from printing a
     # needed figure that reads as fitting inside the cap.
-    source_minutes = round(ms_to_minutes(estimate.source_duration_ms))
-    needed_minutes = math.ceil(ms_to_minutes(needed_ms))
-    cap_minutes = math.floor(ms_to_minutes(cap_ms))
+    source_minutes = round(_ms_to_minutes(estimate.source_duration_ms))
+    needed_minutes = math.ceil(_ms_to_minutes(needed_ms))
+    cap_minutes = math.floor(_ms_to_minutes(cap_ms))
     message = (
         f"the {estimate.source} took {source_minutes}m; "
         f"one iterate needs about {needed_minutes}m; "
