@@ -142,6 +142,15 @@ def test_parse_record_when_key_unknown_does_reject_naming_key():
     assert str(exc.value).endswith(" config.retries")
 
 
+def test_parse_record_when_key_is_field_name_instead_of_alias_does_reject_naming_key():
+    value = omitting(SESSION_RECORD, "schema") | {"schema_version": 1}
+
+    with pytest.raises(GymratError) as exc:
+        parse_record(value)
+
+    assert str(exc.value).endswith(" schema_version")
+
+
 # ---------------------------------------------------------------------------
 # parse_record — invalid values: the key path, the shape this module asks
 # for, and the rejected value

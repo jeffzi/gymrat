@@ -113,10 +113,18 @@ def test_event_from_wire_when_given_serialized_launch_does_reconstruct_it():
     assert reconstructed == event
 
 
+def _launch_wire_keyed_by_field_name() -> dict[str, object]:
+    """A serialized launch event carrying ``schema_version`` in place of its ``schema`` alias."""
+    wire = json.loads(to_json_line(make_launch()))
+    wire["schema_version"] = wire.pop("schema")
+    return wire
+
+
 @pytest.mark.parametrize(
     "obj",
     [
         pytest.param([1, 2, 3], id="non-dict-list"),
+        pytest.param(_launch_wire_keyed_by_field_name(), id="launch-keyed-by-field-name"),
         pytest.param({"at": 1}, id="missing-type"),
         pytest.param(
             {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},

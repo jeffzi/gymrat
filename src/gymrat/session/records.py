@@ -597,11 +597,19 @@ def parse_record(value: object) -> SessionLogRecord:
         raise GymratError(message)
     token = _wire_validation.set(True)
     try:
-        return SESSION_LOG_ADAPTER.validate_python(value)
+        return SESSION_LOG_ADAPTER.validate_python(value, by_alias=True, by_name=False)
     except ValidationError as exc:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)
-        error = drop_prefix_errors(errors)[0]
+        remaining = drop_prefix_errors(errors)
+        error = remaining[0]
+        if error["type"] == "missing":
+            # An unknown key next to a missing one is usually the missing key
+            # under the wrong name (a typo, or a field name in place of its
+            # alias), so name the key the record actually carries.
+            error = next(
+                (other for other in remaining if other["type"] == "extra_forbidden"), error
+            )
         raise GymratError(_message_for_error(error, value)) from exc
     finally:
         _wire_validation.reset(token)
