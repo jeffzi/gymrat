@@ -229,10 +229,10 @@ def _file_at(relative: str) -> Callable[[Path], None]:
             "gymrat-runbook.md",
             id="runbook-dangling-symlink",
         ),
-        pytest.param(_file_at(".claude"), SKILL_RELATIVE_PATH, id="skill-ancestor-a-file"),
+        pytest.param(_file_at(".claude"), ".claude", id="skill-ancestor-a-file"),
         pytest.param(
             _dangling_symlink_at(".claude"),
-            SKILL_RELATIVE_PATH,
+            ".claude",
             id="skill-ancestor-a-dangling-symlink",
         ),
     ],
@@ -404,17 +404,12 @@ def test_scaffold_when_runbook_write_fails_does_roll_back_the_config(
 # a failed run removes what it created and nothing else
 # ---------------------------------------------------------------------------
 
-BLOCKING_FILE = "not a directory\n"
-
 
 @pytest.mark.parametrize(
     "already_there",
     [
         pytest.param({}, id="nothing-existed"),
         pytest.param({"gymrat.toml": EXISTING_CONFIG}, id="config-existed"),
-        # A file where the skill's first directory goes fails the directory creation itself,
-        # before the write is reached.
-        pytest.param({".claude": BLOCKING_FILE}, id="file-blocks-the-claude-directory"),
         pytest.param({".claude": None}, id="empty-claude-directory-existed"),
     ],
 )

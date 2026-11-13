@@ -202,21 +202,24 @@ def _prepare_config(request: ScaffoldRequest) -> str:
     return "".join(f"{key} = {json.dumps(value)}\n" for key, value in config_dict.items())
 
 
-def _is_blocked(base_dir: Path, relative: str) -> bool:
+def _blocking_path(base_dir: Path, relative: str) -> str | None:
     full = base_dir / relative
     if full.is_symlink() or (full.exists() and not full.is_file()):
-        return True
+        return relative
     # A file or dangling symlink where a directory of the path belongs leaves
     # nowhere to write; ``is_file`` reports such a path as missing, not blocked.
-    return any(
-        (ancestor := base_dir / parent).exists(follow_symlinks=False) and not ancestor.is_dir()
-        for parent in Path(relative).parents
-        if parent != Path()
-    )
+    # The entry to name is that directory, since it is the one the user removes.
+    for parent in reversed(Path(relative).parents):
+        if parent == Path():
+            continue
+        ancestor = base_dir / parent
+        if ancestor.exists(follow_symlinks=False) and not ancestor.is_dir():
+            return parent.as_posix()
+    return None
 
 
 def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
-    """The requested artifact paths a non-regular file occupies or cuts off.
+    """The entries that occupy or cut off a requested artifact path.
 
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
@@ -229,8 +232,9 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
         request: The user choices that decide which artifacts are written.
 
     Returns:
-        Each requested path holding a symlink, directory, or other non-regular
-        file, or lying under a non-directory, in write order.
+        In write order, each requested path holding a symlink, directory, or
+        other non-regular file, and, for a requested path lying under a
+        non-directory, that non-directory instead.
     """
     requested = [
         (CONFIG_FILENAME, True),
@@ -238,7 +242,9 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
         (SKILL_RELATIVE_PATH, request.install_skill),
     ]
     return [
-        relative for relative, wanted in requested if wanted and _is_blocked(base_dir, relative)
+        blocking
+        for relative, wanted in requested
+        if wanted and (blocking := _blocking_path(base_dir, relative)) is not None
     ]
 
 
