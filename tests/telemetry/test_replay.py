@@ -58,7 +58,6 @@ from tests.telemetry._replay_logs import (
     replay_launch_event,
     replay_turn_end,
     write_lines,
-    write_measure_command_run,
     write_records_log,
     write_standard_run,
     write_supervisor_log,
@@ -66,6 +65,8 @@ from tests.telemetry._replay_logs import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from gymrat.session.records import SessionLogRecord
 
 
 def _replay(session_log: str, sup_log: str) -> tuple[Any, ...]:
@@ -149,7 +150,9 @@ def test_replay_session_when_command_record_present_does_create_command_span(
     log_paths: tuple[str, str],
 ):
     session_log, sup_log = log_paths
-    write_measure_command_run(session_log, sup_log)
+    command = replay_command("measure", at=T2, duration_ms=500)
+    write_records_log(session_log, [session_record(at=T0), command])
+    write_standard_run(sup_log)
 
     spans = _replay(session_log, sup_log)
 
@@ -240,32 +243,36 @@ def _event_carriers(spans: tuple[Any, ...], event_names: tuple[str, ...]) -> dic
     }
 
 
-def test_replay_session_when_records_precede_a_command_does_add_them_as_events_on_that_command_only(
+@pytest.mark.parametrize(
+    ("records", "turn_end_at", "carrier"),
+    [
+        pytest.param(
+            [baseline_record(at=T1), replay_command("measure", duration_ms=100)],
+            T4,
+            "gymrat.command.measure",
+            id="records-precede-a-command",
+        ),
+        pytest.param(
+            [replay_command("measure", at=T1, duration_ms=100), baseline_record(at=T2)],
+            T3,
+            SESSION_SPAN,
+            id="records-follow-every-command",
+        ),
+    ],
+)
+def test_replay_session_when_records_surround_commands_does_add_each_to_one_span(
     log_paths: tuple[str, str],
+    records: list[SessionLogRecord],
+    turn_end_at: int,
+    carrier: str,
 ):
     session_log, sup_log = log_paths
-    records = [baseline_record(at=T1), replay_command("measure", duration_ms=100)]
     write_records_log(session_log, [session_record(at=T0), *records])
-    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T4)])
+    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=turn_end_at)])
 
     spans = _replay(session_log, sup_log)
 
-    assert _event_carriers(spans, ("gymrat.baseline",)) == {
-        "gymrat.baseline": ["gymrat.command.measure"]
-    }
-
-
-def test_replay_session_when_records_follow_every_command_does_add_them_as_events_on_session_span_only(
-    log_paths: tuple[str, str],
-):
-    session_log, sup_log = log_paths
-    records = [replay_command("measure", at=T1, duration_ms=100), baseline_record(at=T2)]
-    write_records_log(session_log, [session_record(at=T0), *records])
-    write_supervisor_log(sup_log, [replay_launch_event(at=T0), replay_turn_end(at=T3)])
-
-    spans = _replay(session_log, sup_log)
-
-    assert _event_carriers(spans, ("gymrat.baseline",)) == {"gymrat.baseline": [SESSION_SPAN]}
+    assert _event_carriers(spans, ("gymrat.baseline",)) == {"gymrat.baseline": [carrier]}
 
 
 # ---------------------------------------------------------------------------
@@ -371,18 +378,28 @@ def test_replay_session_when_supervisor_log_cannot_be_read_does_skip_it_with_a_w
 _ITERATION_LINE = record_line(iteration_record(at=T1))
 
 
+_ITERATE_WIRE = record_to_wire(replay_command("iterate"))
+
+
 @pytest.mark.parametrize(
-    "bad_line",
+    ("bad_line", "inserted"),
     [
-        pytest.param(_ITERATION_LINE[:-1].encode(), id="malformed-json-middle"),
-        pytest.param(TORN_UTF8_LINE, id="torn-utf8-middle"),
+        pytest.param(_ITERATION_LINE[:-1].encode(), (), id="malformed-json-middle"),
+        pytest.param(TORN_UTF8_LINE, (), id="torn-utf8-middle"),
+        pytest.param(
+            json.dumps({**_ITERATE_WIRE, "unknown_future_field": "banana"}).encode(),
+            ("command",),
+            id="command-fails-validation",
+        ),
+        pytest.param(b"[1, 2]", (), id="json-that-is-not-an-object"),
     ],
 )
-def test_replay_session_when_session_line_undecodable_does_skip_it_with_stderr_warning(
+def test_replay_session_when_session_line_unreadable_does_skip_it_with_stderr_warning(
     *,
     log_paths: tuple[str, str],
     capsys: pytest.CaptureFixture[str],
     bad_line: bytes,
+    inserted: tuple[str, ...],
 ):
     session_log, sup_log = log_paths
     header = record_line(session_record(at=T0)).encode()
@@ -392,54 +409,7 @@ def test_replay_session_when_session_line_undecodable_does_skip_it_with_stderr_w
 
     spans = _replay(session_log, sup_log)
 
-    _assert_one_stderr_warning_naming(
-        capsys.readouterr().err,
-        session_log,
-        line=2,
-    )
-    assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
-
-
-_ITERATE_WIRE = record_to_wire(replay_command("iterate"))
-
-
-@pytest.mark.parametrize(
-    ("bad_line", "inserted"),
-    [
-        pytest.param(
-            json.dumps({**_ITERATE_WIRE, "unknown_future_field": "banana"}),
-            ("command",),
-            id="command-fails-validation",
-        ),
-        pytest.param("[1, 2]", (), id="json-that-is-not-an-object"),
-    ],
-)
-def test_replay_session_when_session_line_fails_validation_does_skip_it_with_stderr_warning(
-    *,
-    log_paths: tuple[str, str],
-    capsys: pytest.CaptureFixture[str],
-    bad_line: str,
-    inserted: tuple[str, ...],
-):
-    session_log, sup_log = log_paths
-    write_lines(
-        session_log,
-        [
-            record_line(session_record(at=T0)),
-            bad_line,
-            record_line(replay_command("measure")),
-        ],
-    )
-    write_standard_run(sup_log)
-
-    spans = _replay(session_log, sup_log)
-
-    _assert_one_stderr_warning_naming(
-        capsys.readouterr().err,
-        session_log,
-        *inserted,
-        line=2,
-    )
+    _assert_one_stderr_warning_naming(capsys.readouterr().err, session_log, *inserted, line=2)
     assert [s.name for s in spans_by_prefix(spans, "gymrat.command.")] == ["gymrat.command.measure"]
 
 

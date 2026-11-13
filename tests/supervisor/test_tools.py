@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, create_autospec
@@ -81,7 +80,18 @@ async def test_probe_when_extra_env_names_a_fixed_key_does_let_the_extra_value_w
     opts: ExecOptions = fake_exec.call_args[0][1]
     assert opts.env is not None
     assert opts.env.get("NO_COLOR") == "0"
-    assert opts.env.get("PATH") == os.environ.get("PATH")
+
+
+async def test_probe_when_run_does_hand_the_child_the_supervisor_environment(
+    host: ToolHost, fake_exec: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GYMRAT_TEST_INHERITED", "banana")
+
+    await host.probe({})
+
+    opts: ExecOptions = fake_exec.call_args[0][1]
+    assert opts.env is not None
+    assert opts.env.get("GYMRAT_TEST_INHERITED") == "banana"
 
 
 # ---------------------------------------------------------------------------

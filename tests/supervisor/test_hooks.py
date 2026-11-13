@@ -542,7 +542,7 @@ def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(root: Path):
 
 
 # ---------------------------------------------------------------------------
-# PreToolUse hook registration
+# PreToolUse hook input builders
 # ---------------------------------------------------------------------------
 
 _CONTEXT: HookContext = {"signal": None}

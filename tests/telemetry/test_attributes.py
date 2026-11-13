@@ -72,7 +72,7 @@ from tests.telemetry._fixtures import memory_tracing, span_by_name
         ),
     ],
 )
-def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
+def test_command_attributes_when_record_varies_does_map_its_fields_keeping_only_scalar_args(
     record: CommandRecord, expected: dict[str, object]
 ):
     result = command_attributes(record, session_id=SESSION_ID)

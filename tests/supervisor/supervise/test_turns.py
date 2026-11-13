@@ -252,7 +252,8 @@ async def test_supervise_when_lock_retaken_during_the_poll_settle_does_wait_agai
 @pytest.mark.parametrize(
     ("delay_ms", "settle_window_ms", "lock_starts_held", "actions"),
     [
-        pytest.param(5, 50, False, ["ended"], id="settle-window"),
+        # The agent acts on the next loop turn, with no timer racing the window.
+        pytest.param(None, 50, False, ["ended"], id="settle-window"),
         pytest.param(30, 0, True, ["waiting", "ended"], id="lock-poll"),
     ],
 )
@@ -260,7 +261,7 @@ async def test_supervise_when_agent_acts_while_a_reply_is_pending_does_cancel_it
     root: str,
     caplog: pytest.LogCaptureFixture,
     *,
-    delay_ms: int,
+    delay_ms: int | None,
     settle_window_ms: int,
     lock_starts_held: bool,
     actions: list[str],
@@ -306,9 +307,10 @@ async def test_supervise_when_a_passive_event_arrives_during_settle_does_still_r
     root: str, event: SessionEvent
 ):
     probe = collecting_observer()
+    # The passive event lands on the next loop turn, inside the window by construction.
     driver = create_mock_driver([
         emit_turn_end(),
-        EmitStep(emit=event, delay_ms=5),
+        EmitStep(emit=event),
         append_step(root, stop_record(), delay_ms=200),
         TurnEndStep(cost_usd=0.01, origin="agent"),
     ])

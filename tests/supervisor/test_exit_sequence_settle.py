@@ -218,30 +218,51 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
     (left,) = run.report.steps
-    assert (left.kind, "iteration 1" in left.text, "checks failed" in left.text) == (
-        "left",
-        True,
-        True,
-    )
+    assert left.kind == "left"
+    assert "iteration 1" in left.text
+    assert "checks failed" in left.text
+
+
+async def test_run_exit_sequence_when_the_checks_fail_does_record_the_supervise_command_as_failed(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    improved_iteration(repo)
+    checks_fail(monkeypatch)
+
+    await run_sequence(session_context(repo, checks=CHECKS))
+
     command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
+
+
+def _commit_nothing(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measure iteration 1 on the tree as it stands, with checks that pass."""
+    start_with(repo)
+    append_records(repo, iteration_record(seq=1, measured_tree=fingerprint(repo)))
+    checks_pass(monkeypatch)
 
 
 async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it_settled(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo)
-    append_records(repo, iteration_record(seq=1, measured_tree=fingerprint(repo)))
-    checks_pass(monkeypatch)
+    _commit_nothing(repo, monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
     settled = run.report.steps[0]
-    assert (settled.kind, "iteration 1" in settled.text, "nothing to commit" in settled.text) == (
-        "settled",
-        True,
-        True,
-    )
+    assert settled.kind == "settled"
+    assert "iteration 1" in settled.text
+    assert "nothing to commit" in settled.text
+
+
+async def test_run_exit_sequence_when_the_agent_committed_nothing_does_record_the_supervise_command_as_clean(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _commit_nothing(repo, monkeypatch)
+
+    await run_sequence(session_context(repo, checks=CHECKS))
+
     command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (0, None, 1)
 

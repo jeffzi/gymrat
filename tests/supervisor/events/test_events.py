@@ -1,16 +1,13 @@
 """Behavioral tests for the supervisor event vocabulary and helpers.
 
 Events are frozen pydantic models whose base ``_EventModel`` carries a per-event
-``type`` discriminator and ``at: int`` (nanoseconds since epoch), with snake_case
-wire keys via ``validate_by_name`` / ``serialize_by_alias``. ``to_json_line``
-writes one compact JSON line with snake_case keys, omitting an unset optional
-field, keeping non-ASCII text raw except the Unicode line breaks (escaped, or
-every non-ASCII character when the event holds a lone surrogate), writing a NaN
-or infinite float nested in a free-form payload as ``null`` on either path,
-refusing a non-finite value in a typed float field at construction, and
-writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
-inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` sends every observer failure to its warn sink.
+``type`` discriminator and ``at: int`` (nanoseconds since epoch). The
+``to_json_line`` tests pin the escaped U+2028 line separator, the escape of every
+non-ASCII character when the event holds a lone surrogate, and a NaN or
+infinite float nested in a free-form payload written as ``null`` on that
+fallback path; ``event_from_wire`` inverts it and returns ``None`` for anything
+it cannot reconstruct; ``combine_observers`` sends every observer failure to its
+warn sink.
 
 The event-log writer, ``create_event_log_writer``, appends one ``to_json_line``
 line per event to a log file; its tests pin the file-writing side effects, the
@@ -49,7 +46,7 @@ from tests.supervisor._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# Event vocabulary — at: int (nanoseconds)
+# to_json_line — escaping and non-finite floats
 # ---------------------------------------------------------------------------
 
 #: Text holding a lone surrogate, which forces the ASCII-escaping fallback
@@ -61,11 +58,6 @@ class _Limit(BaseModel):
     """A model nested in a free-form payload: JSON mode keeps its float field's NaN/inf."""
 
     max: float
-
-
-# ---------------------------------------------------------------------------
-# to_json_line — escaping and non-finite floats
-# ---------------------------------------------------------------------------
 
 
 def test_to_json_line_when_text_holds_a_line_separator_does_escape_it():
@@ -95,9 +87,10 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
         input_summary=_SURROGATE_TEXT,
     )
 
-    decoded = loads_strict_json(to_json_line(event))
+    line = to_json_line(event)
 
-    assert decoded == {
+    assert line.isascii()
+    assert loads_strict_json(line) == {
         "type": "tool_start",
         "at": 2_000_000_000,
         "tool_use_id": "t1",

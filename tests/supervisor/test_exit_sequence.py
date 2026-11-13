@@ -1,10 +1,9 @@
 """Behavioral tests for ``run_exit_sequence`` — the frame around the settle decisions.
 
-The lock wait and the skip it ends in, the guarantees the ``with_repo_lock`` seam
-makes (a repaired log tail, a ``supervise`` command record, ``settling`` progress),
-the already-finalized and nothing-to-settle terminals, finalize, the ``FollowUpEvent``
-every step lands on the wire, and the error boundary that keeps the sequence from
-raising.
+The lock wait and the skip it ends in, the ``settling`` progress the
+``with_repo_lock`` seam reports, the already-finalized and nothing-to-settle
+terminals, finalize, the ``FollowUpEvent`` every step lands on the wire, and the
+error boundary that keeps the sequence from raising.
 
 The settle decisions themselves (what the sequence keeps, discards, or refuses to
 touch) are pinned in ``test_exit_sequence_settle.py``.
