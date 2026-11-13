@@ -365,9 +365,10 @@ def test_read_session_header_when_first_non_blank_line_is_session_does_return_it
     [
         pytest.param(None, id="log-absent"),
         pytest.param(b"\n \t\n\n", id="several-blank-lines"),
+        pytest.param(SESSION_LINE.rstrip(b"\n"), id="header-line-unterminated"),
     ],
 )
-def test_read_session_header_when_log_absent_or_holds_only_blank_lines_does_return_none(
+def test_read_session_header_when_log_holds_no_complete_header_line_does_return_none(
     fresh_root: str, raw: bytes | None
 ):
     if raw is not None:
@@ -402,6 +403,20 @@ def test_session_log_reader_when_first_line_unusable_does_raise_naming_line_one(
 
     assert f"{jsonl_path}:1" in str(excinfo.value)
     assert hint_marker in (excinfo.value.hint or "")
+
+
+def test_read_session_header_when_header_breaks_the_schema_does_raise_naming_the_line_and_key(
+    fresh_root: str,
+):
+    without_session_id = json.loads(_line(SESSION))
+    del without_session_id["session_id"]
+    jsonl_path = _jsonl_holding(fresh_root, [json.dumps(without_session_id)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert f"{jsonl_path}:1" in str(excinfo.value)
+    assert "session_id" in str(excinfo.value)
 
 
 def test_read_records_when_first_record_not_a_session_does_name_its_type(fresh_root: str):
