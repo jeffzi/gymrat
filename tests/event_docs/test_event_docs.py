@@ -153,6 +153,45 @@ def test_render_json_schemas_when_supervisor_payload_validated_does_agree_with_e
 
 
 # ---------------------------------------------------------------------------
+# property defaults — every published default passes its own property schema
+# ---------------------------------------------------------------------------
+
+
+def _rejected_defaults(node: Any, defs: dict[str, Any], path: str) -> list[str]:
+    if isinstance(node, list):
+        return [
+            hit
+            for index, item in enumerate(node)
+            for hit in _rejected_defaults(item, defs, f"{path}/{index}")
+        ]
+    if not isinstance(node, dict):
+        return []
+    hits = [
+        f"{path}/properties/{name}"
+        for name, prop in node.get("properties", {}).items()
+        if "default" in prop
+        and not Draft202012Validator({**prop, "$defs": defs}).is_valid(prop["default"])
+    ]
+    return hits + [
+        hit
+        for key, value in node.items()
+        for hit in _rejected_defaults(value, defs, f"{path}/{key}")
+    ]
+
+
+def test_render_json_schemas_when_property_has_default_does_accept_it_under_its_own_schema():
+    schemas = render_json_schemas()
+
+    rejected = [
+        hit
+        for schema in schemas
+        for hit in _rejected_defaults(schema, schema["$defs"], schema["title"])
+    ]
+
+    assert rejected == []
+
+
+# ---------------------------------------------------------------------------
 # render_asyncapi — helpers
 # ---------------------------------------------------------------------------
 
@@ -179,6 +218,14 @@ def test_render_asyncapi_when_called_does_list_each_channel_in_union_order():
         [(wt, {"$ref": f"#/components/messages/{wt}"}) for wt in map(_wire_type, channel.members)]
         for channel in _CHANNELS
     ]
+
+
+def test_render_asyncapi_when_called_does_show_each_channel_address_as_a_code_span():
+    doc = _render_asyncapi_doc()
+
+    description = doc["info"]["description"]
+    addresses = [spec["address"] for spec in doc["channels"].values()]
+    assert [address for address in addresses if f"`{address}`" not in description] == []
 
 
 def test_render_asyncapi_when_called_does_list_component_messages_in_union_order():

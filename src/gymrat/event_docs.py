@@ -256,9 +256,9 @@ def render_asyncapi(
             "version": importlib.metadata.version("gymrat"),
             "description": (
                 "gymrat writes two append-only JSONL log files during a session: "
-                f"the session log ({SESSION_LOG_ADDRESS}) records high-level "
+                f"the session log (`{SESSION_LOG_ADDRESS}`) records high-level "
                 "session lifecycle events, and the supervisor log "
-                f"({SUPERVISOR_LOG_ADDRESS}) captures fine-grained agent "
+                f"(`{SUPERVISOR_LOG_ADDRESS}`) captures fine-grained agent "
                 "activity. Both files are strictly append-only; each line is a "
                 "self-contained JSON object discriminated by a type field."
             ),
@@ -550,9 +550,35 @@ def _require_discriminator(schema_def: dict[str, Any]) -> None:
     schema_def["required"] = [name for name in schema_def["properties"] if name in required]
 
 
+def _admits_null(prop: dict[str, Any], defs: dict[str, dict[str, Any]]) -> bool:
+    if "$ref" in prop:
+        return _admits_null(defs[_ref_name(str(prop["$ref"]))], defs)
+    if "anyOf" in prop:
+        return any(_admits_null(variant, defs) for variant in prop["anyOf"])
+    if "const" in prop:
+        return prop["const"] is None
+    if "enum" in prop:
+        return None in prop["enum"]
+    if "type" in prop:
+        types = prop["type"]
+        return "null" in (types if isinstance(types, list) else [types])
+    return True
+
+
+def _drop_rejected_null_defaults(defs: dict[str, dict[str, Any]]) -> None:
+    # An omit-when-None field keeps pydantic's ``default: null`` after its ``null`` branch is
+    # hidden from the schema, so the published default would fail its own property schema.
+    # The key is absent on the wire instead, which the field's optional status already says.
+    for schema_def in defs.values():
+        for prop in schema_def.get("properties", {}).values():
+            if "default" in prop and prop["default"] is None and not _admits_null(prop, defs):
+                del prop["default"]
+
+
 def _json_schema(log: _LogSpec) -> dict[str, Any]:
     """Render one log's JSON Schema with its draft, title, and ``$id`` metadata."""
     schema = log.adapter.json_schema()
+    _drop_rejected_null_defaults(schema["$defs"])
     for model in log.models:
         _require_discriminator(schema["$defs"][model.__name__])
     schema["$schema"] = _DRAFT_2020_12
