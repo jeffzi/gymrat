@@ -7,13 +7,15 @@ feasibility check.
 Everything after the warning runs as the ``supervise`` command's preflight
 stage, which appends its own ``command`` record to the session log.
 The module raises :class:`GymratError` for refusals and lets the command's
-boundary route them to exit 2, except the doctor gate, which renders its own
-report to stderr and leaves with code 2 itself.
+boundary route them to exit 2, except a met stop condition, raised as a
+:class:`LoopStopError` the boundary routes to exit 1, and the doctor gate,
+which renders its own report to stderr and leaves with code 2 itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -92,12 +94,14 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
         it was resumed.
 
     Raises:
+        LoopStopError: When a stop condition is already met (without
+            ``force``). It carries the agent-facing stop hint; the command
+            replaces it with one addressed to whoever launched ``supervise``.
         GymratError: When the main working tree is dirty (without
             ``allow_dirty``), the experiment worktree holds unsettled or
-            unmeasured changes, the session cannot be started or resumed, a
-            stop condition is met (without ``force``), the baseline cannot be
-            measured, the feasibility check refuses, or another process holds
-            the repository lock.
+            unmeasured changes, the session cannot be started or resumed, the
+            baseline cannot be measured, the feasibility check refuses, or
+            another process holds the repository lock.
         CommandError: When a prepare or bench command of the baseline
             measurement times out or exits non-zero, or a bench run's stdout
             overran the capture cap.
@@ -153,12 +157,10 @@ def _stop_condition_gate(
     if error is None:
         return
 
-    message = str(error)
-    hint = "Start a new session, or raise the limit in gymrat.toml."
     if force:
-        warn_to_stderr(f"warning: {message}")
+        warn_to_stderr(f"warning: {error}")
         return
-    raise GymratError(message, hint=hint)
+    raise error
 
 
 async def _baseline_step(
@@ -210,9 +212,11 @@ def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
     if needed_ms <= cap_ms or force:
         return
 
+    # Rounding away from each other keeps a refused launch from printing a
+    # needed figure that reads as fitting inside the cap.
     source_minutes = round(ms_to_minutes(estimate.source_duration_ms))
-    needed_minutes = round(ms_to_minutes(needed_ms))
-    cap_minutes = round(ms_to_minutes(cap_ms))
+    needed_minutes = math.ceil(ms_to_minutes(needed_ms))
+    cap_minutes = math.floor(ms_to_minutes(cap_ms))
     message = (
         f"the {estimate.source} took {source_minutes}m; "
         f"one iterate needs about {needed_minutes}m; "

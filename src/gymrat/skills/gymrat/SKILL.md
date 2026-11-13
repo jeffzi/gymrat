@@ -325,14 +325,15 @@ further measurement and report what the probes measured.
 
 ## Exit codes
 
-| Code    | Meaning                                                                                                                                                                                       |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0       | Success (report produced, no gate tripped)                                                                                                                                                    |
-| 1       | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` ended on a cap (wall-clock, spend), a guard (follow-up ceiling, no progress, consecutive discards), or a hook failure |
-| 2       | Operational error: no session, finalized session, lock contention, bad config, timeout                                                                                                        |
-| 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                                                                                                                        |
+| Code    | Meaning                                                                                                                                                                                                                                            |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0       | Success (report produced, no gate tripped)                                                                                                                                                                                                         |
+| 1       | Gate tripped: `keep` refused, `iterate` hit stop condition, `supervise` refused at launch by a stop condition already met or ended on a cap (wall-clock, spend), a guard (follow-up ceiling, no progress, consecutive discards), or a hook failure |
+| 2       | Operational error: no session, finalized session, lock contention, bad config, timeout                                                                                                                                                             |
+| 128 + N | Killed by signal N (e.g. 130 after Ctrl-C); cleanup ran before exiting                                                                                                                                                                             |
 
-Exit 1 is information: read the output. A `supervise` run that ends on its stop condition exits 0,
-the same as one whose session finished on its own. Exit 2 is a real error: diagnose before
+Exit 1 is information: read the output. A `supervise` run whose stop condition fires during the
+run exits 0, the same as one whose session finished on its own; one already met at launch refuses
+with exit 1 unless `--force` is passed. Exit 2 is a real error: diagnose before
 retrying. An exit above 128 means the run was interrupted. The iteration may be unsettled; check
 `gymrat status`.

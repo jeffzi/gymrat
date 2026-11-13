@@ -19,8 +19,10 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from gymrat.cli.supervise.preflight import run_preflight
 from gymrat.config import Effort, StopConfig, SuperviseConfig
 from gymrat.errors import GymratError
+from gymrat.loop.stop_condition import LoopStopError, stop_condition
 from gymrat.session.budget import write_budget
 from gymrat.session.paths import SESSION_DIR_NAME, budget_path, lockfile_path, session_dir
 from gymrat.supervisor.hooks import supervise_hooks_factory
@@ -29,6 +31,7 @@ from gymrat.telemetry.run_spans import setup_tracing
 from gymrat.utils import abbreviate_home
 from tests._ansi import strip_ansi
 from tests._cli import stderr_text
+from tests._config import resolved_config
 from tests._git import git_exclude_path
 from tests._process_helpers import track_cleanups
 from tests.cli._command_stubs import (
@@ -40,6 +43,7 @@ from tests.cli.commands.supervise._seams import (
     install_seams,
     run,
 )
+from tests.session.records._fixtures import session_state
 
 _BUDGET_FAILURE = "budget write failed"
 _TRACING_FAILURE = "tracing exporter unreachable"
@@ -197,6 +201,84 @@ def test_supervise_when_run_ends_does_uninstall_its_cleanup_once(monkeypatch: py
     run()
 
     assert registry.uninstall_counts() == [1]
+
+
+# ---------------------------------------------------------------------------
+# pre-flight refusals
+# ---------------------------------------------------------------------------
+
+
+def _met_stop_error() -> LoopStopError:
+    """The stop error a session that already met its iteration cap raises."""
+    error = stop_condition(resolved_config(stop=StopConfig(max_iterations=0)), session_state())
+    assert error is not None
+    return error
+
+
+def _one_line(text: str) -> str:
+    """*text* with every run of whitespace, line wraps included, collapsed to one space."""
+    return " ".join(text.split())
+
+
+def _refuse_preflight(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+    """Make the faked pre-flight raise *error*."""
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.run_preflight",
+        create_autospec(run_preflight, side_effect=error),
+    )
+
+
+@pytest.mark.usefixtures("session_repo")
+def test_supervise_when_preflight_meets_a_stop_condition_does_exit_one(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_seams(monkeypatch)
+    _refuse_preflight(monkeypatch, _met_stop_error())
+
+    result = run()
+
+    assert result.exit_code == 1
+
+
+@pytest.mark.usefixtures("session_repo")
+def test_supervise_when_preflight_meets_a_stop_condition_does_not_show_the_agent_hint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_seams(monkeypatch)
+    error = _met_stop_error()
+    _refuse_preflight(monkeypatch, error)
+
+    result = run()
+
+    shown = _one_line(stderr_text(result))
+    assert str(error) in shown
+    assert error.hint is not None
+    assert _one_line(error.hint) not in shown
+
+
+@pytest.mark.usefixtures("session_repo")
+def test_supervise_when_preflight_raises_another_error_does_exit_two(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_seams(monkeypatch)
+    _refuse_preflight(monkeypatch, GymratError("banana"))
+
+    result = run()
+
+    assert result.exit_code == 2
+
+
+@pytest.mark.usefixtures("session_repo")
+def test_supervise_when_supervise_run_raises_a_stop_error_does_keep_its_own_hint(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    error = _met_stop_error()
+    install_seams(monkeypatch, raises=error)
+
+    result = run()
+
+    assert error.hint is not None
+    assert _one_line(error.hint) in _one_line(stderr_text(result))
 
 
 # ---------------------------------------------------------------------------

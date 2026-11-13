@@ -40,6 +40,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     finalize_record,
     iteration_record,
+    last_command_record,
     records_of_type,
 )
 
@@ -177,6 +178,18 @@ _REFUSALS = [
 ]
 
 
+def test_preflight_when_stop_condition_met_does_record_a_stop_condition_supervise_command(
+    repo: str,
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+
+    with pytest.raises(GymratError):
+        _run_preflight(repo, config=_met_stop_condition(repo))
+
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("supervise", 1, "stop-condition")
+
+
 @pytest.mark.parametrize(("refusal", "named"), _REFUSALS)
 def test_preflight_when_it_refuses_does_fail_the_supervise_command_with_the_refusal(
     repo: str,
@@ -307,7 +320,28 @@ def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmet
     with pytest.raises(GymratError) as exc:
         _run_preflight(repo, max_minutes=30)
 
-    assert all(part in str(exc.value) for part in ("baseline", "24m", "48m", "30m"))
+    message = str(exc.value)
+    assert "24m" in message
+    assert "48m" in message
+    assert "30m" in message
+
+
+@pytest.mark.parametrize(
+    ("baseline_duration_ms", "max_minutes", "shown"),
+    [
+        pytest.param(906_000, 30, "31m", id="needed-rounds-up"),
+        pytest.param(924_000, 30.7, "30m", id="cap-rounds-down"),
+    ],
+)
+def test_preflight_when_needed_time_barely_exceeds_the_cap_does_not_show_it_as_fitting(
+    repo: str, baseline_duration_ms: float, max_minutes: float, shown: str
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=baseline_duration_ms)
+
+    with pytest.raises(GymratError) as exc:
+        _run_preflight(repo, max_minutes=max_minutes)
+
+    assert shown in str(exc.value)
 
 
 def test_preflight_when_force_passed_does_bypass_feasibility_check(repo: str):

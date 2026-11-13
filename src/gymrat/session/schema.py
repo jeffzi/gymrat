@@ -117,7 +117,8 @@ CommandReason = Literal[
 
 Each value is produced by the command named after the dash-prefix:
 
-- ``stop-condition``    — iterate (the stop condition fired)
+- ``stop-condition``    — iterate (the stop condition fired) / supervise (one was
+  already met at launch)
 - ``budget-exceeded``   — iterate (the iteration budget ran out)
 - ``unsettled``         — iterate (unsettled iterations remain)
 - ``gating-block``      — iterate (a gating metric regressed and blocked)

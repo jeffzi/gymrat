@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from gymrat.cli.supervise.progress import SuperviseReporter
+    from gymrat.loop.start import StartResult
     from gymrat.session.budget import Budget
     from gymrat.session.store import ReadSessionResult
     from gymrat.supervisor.events import SessionObserver
@@ -53,6 +54,7 @@ from gymrat.config import (
 )
 from gymrat.errors import GATE_EXIT_CODE, TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.exec import kill_live_process_groups
+from gymrat.loop.stop_condition import LoopStopError
 from gymrat.metric_meta import primary_direction
 from gymrat.report.style import render_lines
 from gymrat.session.budget import arm_budget
@@ -501,6 +503,28 @@ def _run_session(ctx: _SessionContext) -> None:
 # Command entry point
 # ---------------------------------------------------------------------------
 
+_STOP_CONDITION_HINT = "Start a new session, or raise the limit in gymrat.toml."
+
+
+def _preflight(root: str, config: ResolvedConfig, options: Options) -> StartResult:
+    """Run the pre-flight, refusing a stop condition already met with the gate code."""
+    try:
+        return run_preflight(
+            root=root,
+            config=config,
+            flags=PreflightFlags(
+                baseline_ref=options.baseline,
+                max_minutes=options.max_minutes,
+                force=options.force,
+                allow_dirty=options.allow_dirty,
+            ),
+        )
+    except LoopStopError as error:
+        # The pre-flight's stop error carries the hint written for the agent
+        # inside a session; whoever launched supervise needs this one.
+        refusal = LoopStopError(str(error), hint=_STOP_CONDITION_HINT, reason=error.reason)
+        exit_with_error(refusal, GATE_EXIT_CODE)
+
 
 def _execute(options: Options) -> None:
     """Run the full supervised-session pipeline.
@@ -514,8 +538,9 @@ def _execute(options: Options) -> None:
         options: The parsed ``supervise`` flags.
 
     Raises:
-        typer.Exit: When the doctor gate refuses the run, or with the run's own
-            exit code once the session has run.
+        typer.Exit: When the doctor gate refuses the run, with the gate code
+            when the pre-flight finds a stop condition already met, or with the
+            run's own exit code once the session has run.
         LockContentionError: When another supervise run already holds the
             supervise lock.
         GymratError: When the lock file cannot be opened, the config or
@@ -527,16 +552,7 @@ def _execute(options: Options) -> None:
     release = acquire_lock(supervise_lockfile_path(root), "supervise")
     try:
         resolved = resolve_config(CliFlags(), root)
-        preflight = run_preflight(
-            root=root,
-            config=resolved,
-            flags=PreflightFlags(
-                baseline_ref=options.baseline,
-                max_minutes=options.max_minutes,
-                force=options.force,
-                allow_dirty=options.allow_dirty,
-            ),
-        )
+        preflight = _preflight(root, resolved, options)
         dirty_count = dirty_file_count(root)
 
         log_path = _resolve_log_path(root, options.log)
