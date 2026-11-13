@@ -441,7 +441,7 @@ def test_write_text_atomic_when_target_absent_does_create_it_with_the_umask_mode
 
 @pytest.fixture
 def stripping_umask() -> Iterator[None]:
-    """A umask that strips the group and other bits a rewritten file would otherwise lose."""
+    """A umask that strips the other bits a rewritten file would otherwise lose."""
     previous = os.umask(0o007)
     yield
     os.umask(previous)
