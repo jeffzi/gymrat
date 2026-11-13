@@ -14,7 +14,7 @@ import pytest
 from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.compare import compare
 from gymrat.config import ResolvedConfig, resolve_config
-from gymrat.measure import MeasureOptions
+from gymrat.loop.baseline import MeasureOptions
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from tests._config import resolved_config
 from tests.loop._probe import install_measure

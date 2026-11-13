@@ -13,8 +13,8 @@ prove the package itself stayed clean.
 
 The guard extends to the CLI entry module: importing ``gymrat.__main__`` and
 ``gymrat.cli.app`` and rendering ``--help`` must stay just as cheap as importing
-the package, so the command bodies (comparison, measurement, the telemetry
-provider and replay) and the heavy stack they pull are imported lazily at call
+the package, so the command bodies (comparison, the telemetry provider and
+replay) and the heavy stack they pull are imported lazily at call
 time, never when the app is assembled. ``gymrat.scaffold`` loads in the same
 probe and must stay off ``tomli_w``, which only the config writer needs.
 
@@ -81,7 +81,6 @@ if result.exit_code != 0:
             loaded
             & {
                 "gymrat.compare",
-                "gymrat.measure",
                 "gymrat.telemetry.provider",
                 "gymrat.telemetry.replay",
             }

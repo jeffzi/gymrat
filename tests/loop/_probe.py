@@ -10,13 +10,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import create_autospec
 
-from gymrat.measure import measure
+from gymrat.loop.baseline import measure
 from tests.report._measurements import create_measurement_result, measured_metric
 
 if TYPE_CHECKING:
     import pytest
 
-    from gymrat.measure import MeasureOptions
+    from gymrat.loop.baseline import MeasureOptions
     from gymrat.report.types import MeasurementResult
 
 #: The rounds the recorded baseline reports, whose ``total_ms`` median is 100.
@@ -58,7 +58,7 @@ def install_measure(
     monkeypatch: pytest.MonkeyPatch,
     result: MeasurementResult,
 ) -> MeasureRecorder:
-    """Replace ``gymrat.measure.measure`` with a recorder answering ``result``.
+    """Replace ``gymrat.loop.baseline.measure`` with a recorder answering ``result``.
 
     The stand-in keeps the real engine's signature, so a call the real
     ``measure`` would reject fails the test.
@@ -72,6 +72,6 @@ def install_measure(
     """
     recorder = MeasureRecorder(result)
     monkeypatch.setattr(
-        "gymrat.measure.measure", create_autospec(measure, side_effect=recorder.__call__)
+        "gymrat.loop.baseline.measure", create_autospec(measure, side_effect=recorder.__call__)
     )
     return recorder
