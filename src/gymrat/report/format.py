@@ -50,6 +50,8 @@ _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYT
 
 _RELATIVE_SPREAD_CAP_PCT = 100
 
+_UNITLESS_INTEGER_FLOOR = 100
+
 
 def _non_finite_token(value: float) -> str:
     """The token the text report prints for a non-finite reading (JSON writes ``null``)."""
@@ -86,19 +88,30 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
 def format_value(value: float, unit: MetricUnit | None = None) -> str:
     """Scale a measurement into its unit's tier, or round it when the metric has no unit.
 
+    A unitless value keeps three significant figures so that a sub-1 median does
+    not collapse to ``0``. The integer cut-over is decided on the figure *as
+    rounded*, since three significant figures of a magnitude past 999 print in
+    exponent form (``"1.23e+03"``) and ``99.96`` rounds onto ``100``.
+
     Args:
         value: The measurement to format.
         unit: The metric's unit, or ``None`` for a unitless figure.
 
     Returns:
-        The scaled, suffixed figure (``"1.7µs"``), the rounded integer for a
-        unitless value, or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"`` for a
-        non-finite reading.
+        The scaled, suffixed figure (``"1.7µs"``); for a unitless value, the
+        rounded integer at 100 or more (``"1200"``), otherwise three significant
+        figures with trailing zeros dropped (``"12.3"``, ``"0.0042"``), in
+        exponent form below ``1e-4`` (``"4.2e-05"``) and ``"0"`` for either
+        zero; or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"`` for a non-finite
+        reading.
     """
     if not math.isfinite(value):
         return _non_finite_token(value)
     if unit is None:
-        return str(round(value))
+        figure = format(value, ".3g")
+        if abs(float(figure)) >= _UNITLESS_INTEGER_FLOOR:
+            return str(round(value))
+        return "0" if value == 0 else figure
     return _scale_tier(value, _TIER_MAP[unit])
 
 
