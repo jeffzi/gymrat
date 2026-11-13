@@ -427,7 +427,7 @@ def render_doctor_report(report: DoctorReport, *, color: bool | None = None) -> 
             continue
         word = singular if count == 1 else plural
         colored_count = markup(str(count), _STATUS_STYLES[status])
-        parts.append(f"{colored_count} {escape(word)}")
+        parts.append(f"{colored_count} {word}")
     lines.append(" · ".join(parts))
 
     return render_lines(*lines, color=color)

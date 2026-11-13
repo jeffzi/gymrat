@@ -29,8 +29,6 @@ from gymrat.adapters.payload_entry import (
 )
 from gymrat.utils import NS_PER_MS, Number, WarnSink
 
-_KEY = "tinybench"
-
 _COLLISION_ADVICE = "give the tasks distinct names"
 
 
@@ -117,8 +115,7 @@ def _extract_task_metric(entry: object, metrics: dict[str, float], warn: WarnSin
         return
 
     wording = NameWording(skipped="task", label="Task name", origin=quoted_name)
-    prefix = task.name
-    if not accepts_metric_prefix(prefix, warn, wording):
+    if not accepts_metric_prefix(task.name, warn, wording):
         return
 
     if p50_ns == 0:
@@ -127,12 +124,12 @@ def _extract_task_metric(entry: object, metrics: dict[str, float], warn: WarnSin
             "timer can resolve, so a comparison cannot see a change in it (have the task "
             "batch its calls and return the time per call as overriddenDuration)"
         )
-    record_metric(metrics, f"{prefix}{TIME_SUFFIX}", p50_ns, warn, _COLLISION_ADVICE)
+    record_metric(metrics, f"{task.name}{TIME_SUFFIX}", p50_ns, warn, _COLLISION_ADVICE)
 
 
 tinybench_adapter = JsonArrayAdapter(
     name="tinybench",
-    key=_KEY,
+    key="tinybench",
     last=True,
     extract=_extract_task_metric,
     empty_msg="No valid tinybench tasks found",

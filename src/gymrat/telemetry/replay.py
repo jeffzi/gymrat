@@ -89,17 +89,12 @@ def replay_session(
     return 1 + len(run_spans) + cmd_count
 
 
-def _add_events(span: Span, events: list[_EventTuple]) -> None:
-    """Add each ``(name, attributes, timestamp)`` event tuple to *span*, in order."""
-    for ev_name, ev_attrs, ev_at in events:
-        span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
-
-
 def _create_run_span(run: _ParsedRun, session_span: Span) -> Span:
     """Open and close the ``gymrat.run`` span of one parsed supervisor run."""
     run_span = start_run_span(run.launch, parent=session_span, start_time=run.launch.at)
 
-    _add_events(run_span, run.events)
+    for ev_name, ev_attrs, ev_at in run.events:
+        run_span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
 
     if run.cost_usd is not None:
         run_span.set_attribute(RUN_COST_USD, run.cost_usd)
@@ -135,6 +130,8 @@ def _create_command_spans(
     Returns:
         The number of command spans created.
     """
+    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
+
     pending_records: list[SessionLogRecord] = []
     cmd_count = 0
 
@@ -144,37 +141,21 @@ def _create_command_spans(
 
         if isinstance(rec, CommandRecord):
             cmd_count += 1
-            _emit_command_span(rec, position, session_id, session_span, run_spans, pending_records)
+            cmd_span = start_command_span(
+                rec,
+                session_id=session_id,
+                position=position,
+                context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
+                start_time=rec.at - rec.duration_ms * NS_PER_MS,
+            )
+            add_record_events(cmd_span, pending_records)
+            pending_records.clear()
+            cmd_span.end(end_time=rec.at)
         else:
             pending_records.append(rec)
 
     add_record_events(session_span, pending_records)
     return cmd_count
-
-
-def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay context
-    rec: CommandRecord,
-    position: int,
-    session_id: str,
-    session_span: Span,
-    run_spans: list[_RunSpan],
-    pending_records: list[SessionLogRecord],
-) -> None:
-    """Create one command span, drain the pending records onto it as events, and close it."""
-    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
-
-    cmd_span = start_command_span(
-        rec,
-        session_id=session_id,
-        position=position,
-        context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
-        start_time=rec.at - rec.duration_ms * NS_PER_MS,
-    )
-
-    add_record_events(cmd_span, pending_records)
-    pending_records.clear()
-
-    cmd_span.end(end_time=rec.at)
 
 
 @dataclass(slots=True)
@@ -187,46 +168,7 @@ class _ParsedRun:
     events: list[_EventTuple] = field(default_factory=list)
 
 
-def _decode_object_line(raw: bytes) -> dict[str, object] | None:
-    """Decode one raw UTF-8 log line as a JSON object.
-
-    Args:
-        raw: The line's bytes; a trailing line feed is ignored like any other
-            JSON whitespace.
-
-    Returns:
-        The decoded object, or ``None`` when the line is not valid UTF-8, is not
-        strict JSON (non-finite numbers included), or decodes to something other
-        than an object.
-    """
-    try:
-        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
-        parsed = loads_strict_json(raw.decode("utf-8"))
-    except ValueError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _read_first_line(path: Path) -> bytes | None:
-    """Read the raw bytes of the first line of ``path``, never past it.
-
-    Args:
-        path: The file to read.
-
-    Returns:
-        The first line's bytes, its line feed included when it has one, or
-        ``None`` when the file does not exist.
-    """
-    # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
-    # on later lines could fail the read of a first line that is itself valid.
-    try:
-        with path.open("rb") as handle:
-            return handle.readline()
-    except FileNotFoundError:
-        return None
-
-
-def first_line_json(path: Path) -> dict[str, object] | None:
+def _first_line_object(path: Path) -> dict[str, object] | None:
     """Parse only the first line of ``path`` as a JSON object.
 
     Args:
@@ -241,10 +183,20 @@ def first_line_json(path: Path) -> dict[str, object] | None:
         OSError: When the file exists but cannot be read, such as a directory
             or a file without read permission.
     """
-    first_line = _read_first_line(path)
-    if first_line is None:
+    # Binary read of the first line alone: a text-mode readline decodes a whole
+    # buffered chunk, so bytes on later lines could fail the read of a first
+    # line that is itself valid.
+    try:
+        with path.open("rb") as handle:
+            first_line = handle.readline()
+    except FileNotFoundError:
         return None
-    return _decode_object_line(first_line)
+    try:
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = loads_strict_json(first_line.decode("utf-8"))
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _read_bytes(path: str) -> bytes:
@@ -329,7 +281,7 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
         The parsed run, or ``None`` when the log does not belong to the session.
     """
     try:
-        first_obj = first_line_json(Path(log_path))
+        first_obj = _first_line_object(Path(log_path))
     except OSError as error:
         warn_to_stderr(f"warning: skipped {log_path}: {os_error_reason(error)}")
         return None

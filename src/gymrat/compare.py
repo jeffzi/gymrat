@@ -142,23 +142,20 @@ def _measure_candidates(
     warn: WarnSink,
 ) -> list[CandidateMeasurement]:
     """Judge every candidate against the same baseline samples, one comparison each."""
-    measured: list[CandidateMeasurement] = []
-    for candidate in candidates:
-        verdicts = compute_verdicts(
-            baseline_samples,
-            candidate.samples,
-            metric_meta,
-            unstable_noise_pct=unstable_noise_pct,
-            warn=warn,
+    return [
+        CandidateMeasurement(
+            label=candidate.ctx.label,
+            samples=candidate.samples,
+            verdicts=compute_verdicts(
+                baseline_samples,
+                candidate.samples,
+                metric_meta,
+                unstable_noise_pct=unstable_noise_pct,
+                warn=warn,
+            ),
         )
-        measured.append(
-            CandidateMeasurement(
-                label=candidate.ctx.label,
-                samples=candidate.samples,
-                verdicts=verdicts,
-            )
-        )
-    return measured
+        for candidate in candidates
+    ]
 
 
 def build_comparison_result(

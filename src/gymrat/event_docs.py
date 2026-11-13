@@ -216,16 +216,6 @@ def _build_messages(
     }
 
 
-def _build_channel(
-    wire_to_class: dict[str, str],
-    address: str,
-) -> dict[str, object]:
-    return {
-        "address": address,
-        "messages": {wire: {"$ref": f"#/components/messages/{wire}"} for wire in wire_to_class},
-    }
-
-
 def _build_operation(reader: ReaderSpec) -> dict[str, object]:
     op: dict[str, object] = {
         "action": "receive",
@@ -274,7 +264,12 @@ def render_asyncapi(
             ),
         },
         "channels": {
-            log.channel: _build_channel(wire_to_class, log.address)
+            log.channel: {
+                "address": log.address,
+                "messages": {
+                    wire: {"$ref": f"#/components/messages/{wire}"} for wire in wire_to_class
+                },
+            }
             for log, wire_to_class in zip(_LOGS, wire_maps, strict=True)
         },
         "operations": {name: _build_operation(reader) for name, reader in READERS.items()},
@@ -291,29 +286,6 @@ def render_asyncapi(
             },
         },
     }
-
-
-def render_asyncapi_yaml(document: dict[str, object]) -> str:
-    """Serialize an AsyncAPI document dict to YAML.
-
-    Note:
-        ``yaml`` is imported inside this function so that importing the
-        module does not pull in PyYAML at load time.
-
-    Args:
-        document: The AsyncAPI document dict to serialize.
-
-    Returns:
-        The YAML string.
-    """
-    import yaml  # noqa: PLC0415
-
-    return yaml.safe_dump(
-        document,
-        sort_keys=False,
-        allow_unicode=True,
-        width=_YAML_WIDTH,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -603,13 +575,19 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
 
 def render_all() -> dict[str, str]:
     """Return a dict mapping repo-relative path to rendered text for each artifact."""
+    # Imported here so that importing the module does not pull in PyYAML at load time.
+    import yaml  # noqa: PLC0415
+
     schemas = render_json_schemas()
+    asyncapi_yaml = yaml.safe_dump(
+        render_asyncapi(schemas), sort_keys=False, allow_unicode=True, width=_YAML_WIDTH
+    )
     return {
         **{
             f"schemas/{log.schema_file}": json.dumps(schema, indent=2, sort_keys=True) + "\n"
             for log, schema in zip(_LOGS, schemas, strict=True)
         },
-        "schemas/asyncapi.yaml": render_asyncapi_yaml(render_asyncapi(schemas)),
+        "schemas/asyncapi.yaml": asyncapi_yaml,
         "docs/event-reference.md": render_reference(schemas),
     }
 

@@ -57,8 +57,7 @@ class CleanupResult:
 # prune must collect. ``None`` leaves nothing to count or sweep: a worktree git
 # never put on disk, or a vanished one whose entry git cleared. A
 # :class:`WorktreeRemovalFailure` is a directory git refused to remove.
-type _RemovalStatus = Literal["removed", "stale"] | None
-type _RemovalOutcome = _RemovalStatus | WorktreeRemovalFailure
+type _RemovalOutcome = Literal["removed", "stale"] | WorktreeRemovalFailure | None
 
 
 def _remove_worktree(worktree: WorktreeInfo, repo_dir: str) -> _RemovalOutcome:

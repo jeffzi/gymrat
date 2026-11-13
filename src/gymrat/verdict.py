@@ -172,10 +172,6 @@ def _determine_verdict(delta: float, direction: Direction, *, has_signal: bool =
     return "improved" if is_improvement(delta, direction) else "regressed"
 
 
-def _largest_term(*fractions: float | None) -> float:
-    return max((f for f in fractions if f is not None), default=0.0)
-
-
 def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     """The percentage and absolute noise thresholds a paired delta must clear.
 
@@ -230,7 +226,12 @@ def _compute_noise(samples: _PairedSamples, resolution: float | None) -> _Noise:
     )
 
     return _Noise(
-        pct=max(_largest_term(noise_pct_a, noise_pct_b), NOISE_FLOOR_PCT, step_floor_pct),
+        # A side with no finite percentage contributes no term.
+        pct=max(
+            *(term for term in (noise_pct_a, noise_pct_b) if term is not None),
+            NOISE_FLOOR_PCT,
+            step_floor_pct,
+        ),
         abs=NOISE_K * max(half_range_a, half_range_b),
         step_floor_pct=step_floor_pct,
         step_floor_overflows=step_floor_overflows,
@@ -574,26 +575,22 @@ class KindAggregate:
     gated_geomean: GeomeanResult | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _KindBucket:
-    """A kind's metrics, and the groups their short names sort them into."""
-
-    metrics: dict[str, ResolvedMetricMeta]
-    groups: dict[str, dict[str, ResolvedMetricMeta]]
+type _MetaByName = dict[str, ResolvedMetricMeta]
 
 
 def _bucket_by_kind(
     metric_meta: Mapping[str, ResolvedMetricMeta],
-) -> dict[str, _KindBucket]:
+) -> dict[str, tuple[_MetaByName, dict[str, _MetaByName]]]:
+    """Each kind's metrics, and the groups their short names sort them into."""
     sections = section_metrics((name, meta.kind) for name, meta in metric_meta.items())
-    buckets: dict[str, _KindBucket] = {}
+    buckets: dict[str, tuple[_MetaByName, dict[str, _MetaByName]]] = {}
     for kind, members in sections.items():
         groups: dict[str, dict[str, ResolvedMetricMeta]] = {}
         for name, group in members:
             if group is not None:
                 groups.setdefault(group, {})[name] = metric_meta[name]
         metrics = {name: metric_meta[name] for name, _ in members}
-        buckets[kind] = _KindBucket(metrics=metrics, groups=groups)
+        buckets[kind] = (metrics, groups)
     return buckets
 
 
@@ -627,15 +624,15 @@ def compute_kind_aggregates(
     """
     aggregates: list[KindAggregate] = []
 
-    for kind, bucket in _bucket_by_kind(metric_meta).items():
-        gating = {name: meta for name, meta in bucket.metrics.items() if meta.gating}
+    for kind, (metrics, groups) in _bucket_by_kind(metric_meta).items():
+        gating = {name: meta for name, meta in metrics.items() if meta.gating}
         aggregates.append(
             KindAggregate(
                 kind=kind,
-                geomean=compute_geomean(verdicts, bucket.metrics),
+                geomean=compute_geomean(verdicts, metrics),
                 groups=tuple(
                     GroupAggregate(group=group, geomean=compute_geomean(verdicts, members))
-                    for group, members in bucket.groups.items()
+                    for group, members in groups.items()
                 ),
                 gated_geomean=compute_geomean(verdicts, gating) if gating else None,
             ),
