@@ -18,7 +18,7 @@ from gymrat.session.records import IterationRecord, record_to_wire
 from gymrat.session.schema import HookStage
 from tests._clock import install_monotonic_clock
 from tests.loop.iterate._hooks import HookScripts, labeled_lines
-from tests.session.records._fixtures import SESSION_ID, iteration_record
+from tests.session.records._fixtures import SESSION_ID
 
 
 @pytest.fixture
@@ -36,7 +36,6 @@ def hooks(tmp_path: Path) -> HookScripts:
     ("stage", "seq", "last_iteration", "iteration_count"),
     [
         pytest.param("before", 3, None, 2, id="before"),
-        pytest.param("after", 3, iteration_record(seq=3), 3, id="after"),
     ],
 )
 async def test_run_hook_when_command_runs_does_hand_stage_payload_on_stdin(

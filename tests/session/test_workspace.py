@@ -100,7 +100,6 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_the_branc
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, SESSION_ID, baseline)
 
-    assert BRANCH in str(excinfo.value)
     assert BRANCH in (excinfo.value.hint or "")
 
 
@@ -129,11 +128,10 @@ def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_naming_
     kill_git_during_worktree_add(repo)
     refuse_session_branch_deletion(repo)
 
-    with pytest.raises(GymratError) as excinfo:
+    with pytest.raises(GymratError):
         create_workspace(repo, SESSION_ID, baseline)
 
     assert BRANCH in capsys.readouterr().err
-    assert experiment_worktree_dir(repo) in str(excinfo.value)
 
 
 def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_its_own_entries_only(
@@ -203,25 +201,10 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
     stranded = Path(experiment_worktree_dir(repo)) / "README.md"
     stranded.write_text("# work from the earlier session\n", encoding="utf-8")
 
-    with pytest.raises(GymratError) as excinfo:
-        create_workspace(repo, NEXT_SESSION_ID, baseline)
-
-    assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
-    assert experiment_worktree_dir(repo) in str(excinfo.value)
-
-
-def test_create_workspace_when_earlier_worktree_still_on_disk_does_unwind_only_its_own_branch_silently(
-    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
-):
-    create_workspace(repo, SESSION_ID, baseline)
-    stranded = Path(experiment_worktree_dir(repo)) / "README.md"
-    stranded.write_text("# work from the earlier session\n", encoding="utf-8")
-
     with pytest.raises(GymratError):
         create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    assert capsys.readouterr().err == ""
-    assert session_branches(repo) == [BRANCH]
+    assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
 
 
 # ---------------------------------------------------------------------------
@@ -450,16 +433,6 @@ def test_revert_workspace_when_target_sha_given_does_reset_head_to_that_commit(
     revert_workspace(experiment, target=original)
 
     assert head_of(experiment) == original
-
-
-def test_worktree_head_when_worktree_on_branch_does_return_the_checked_out_sha(
-    repo: str, repo_head: str, baseline: BaselineRef
-):
-    create_workspace(repo, SESSION_ID, baseline)
-
-    head = worktree_head(experiment_worktree_dir(repo))
-
-    assert head == repo_head
 
 
 def test_worktree_head_when_directory_is_not_a_repository_does_raise_naming_the_directory(

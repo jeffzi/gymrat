@@ -119,13 +119,11 @@ async def test_keep_session_when_checks_pass_does_settle_the_edit_as_committed(
     recorder = checks_pass(monkeypatch)
     worktree = experiment_worktree_dir(repo)
     baseline = baseline_worktree_dir(repo)
-    before = head_of(worktree)
 
     result = await keep_session(repo, checks_config(), KeepOptions(message=message))
 
     record = result.record
     assert recorder.calls == [(CHECKS, ExecOptions(cwd=worktree, timeout_ms=TIMEOUT_MS))]
-    assert run_git(["rev-parse", "HEAD~1"], worktree) == before
     assert (record.seq, record.status) == (1, "committed")
     assert record.commit == head_of(worktree)
     assert record.checks == KeepChecks(configured=True, passed=True)

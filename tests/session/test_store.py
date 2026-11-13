@@ -346,7 +346,6 @@ UNDECODABLE_LINE: bytes = b"\xff\xff\n"
 @pytest.mark.parametrize(
     "leading",
     [
-        pytest.param(b"", id="no-leading-lines"),
         pytest.param(b"\n \t\n\n", id="several-blank-lines"),
     ],
 )

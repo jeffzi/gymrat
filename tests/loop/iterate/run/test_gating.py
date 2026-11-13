@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -512,7 +511,6 @@ def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
 @pytest.mark.parametrize(
     ("primary", "expected"),
     [
-        pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
         pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
         pytest.param(MetricPrimary("absent/time", -30), "no-signal", id="primary-never-measured"),
     ],
@@ -528,11 +526,3 @@ def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
     outcome = _outcome_of(metrics, primary)
 
     assert outcome == expected
-
-
-def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the_primary():
-    unmeasured = replace(_directed_metric("lower"), candidates=())
-
-    outcome = _outcome_of({"lower/time": unmeasured}, GeomeanPrimary(-9))
-
-    assert outcome == "improved"

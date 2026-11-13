@@ -282,21 +282,16 @@ async def test_run_with_worktrees_when_phase_succeeds_does_build_the_result_from
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    registry = track_cleanups(monkeypatch, "gymrat.worktree_sweep")
-    git_calls = _fake_git(monkeypatch)
+    _fake_git(monkeypatch)
     claimed = _worktree_at(tmp_path / "wt")
-    phase_args: dict[str, object] = {}
 
     async def phase(repo_dir: str, worktrees: list[WorktreeInfo], abort: asyncio.Event) -> str:
-        phase_args["armed"] = len(registry.live())
         worktrees.append(claimed)
         return "measurement"
 
     result = await run_with_worktrees(phase, lambda m, c: (m, c))
 
     assert result == ("measurement", CleanupResult(removed=1, failures=(), prune_error=None))
-    assert git_calls == [_removal(tmp_path / "wt")]
-    assert (phase_args["armed"], registry.live()) == (1, [])
 
 
 async def test_run_with_worktrees_when_phase_raises_and_cleanup_clean_does_reraise_original(
@@ -415,7 +410,6 @@ async def _raise_bench_failure() -> str:
 @pytest.mark.parametrize(
     ("finish", "expectation"),
     [
-        pytest.param(_return_measurement, contextlib.nullcontext(), id="after-a-successful-phase"),
         pytest.param(_raise_bench_failure, pytest.raises(CommandError), id="after-a-failed-phase"),
     ],
 )

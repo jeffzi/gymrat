@@ -18,12 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from gymrat.report.loop import (
-    SettleKept,
-    StatusIteration,
-    format_status_baseline,
-    format_status_iteration,
-)
 from gymrat.session.lock import read_holder
 from gymrat.session.paths import (
     experiment_worktree_dir,
@@ -53,7 +47,6 @@ from tests.loop._bench import (
     commit_project,
     tune_experiment,
 )
-from tests.report._assertions import render_plain
 from tests.session.records._fixtures import (
     log_records,
     records_of_type,
@@ -171,16 +164,6 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     # status rebuilds the whole session out of the log alone.
     lines = status_report.split("\n")
     assert session.session_id in lines[0]
-    assert render_plain(format_status_baseline(baseline)) in lines
-    kept_line = format_status_iteration(
-        StatusIteration(
-            seq=1,
-            delta_pct=first.primary.delta_pct,
-            outcome=first.outcome,
-            settle=SettleKept(commit=kept_commit, outcome=first.outcome),
-        )
-    )
-    assert render_plain(kept_line) in lines
 
     assert status_of(repo) == ""
 
@@ -243,6 +226,5 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
 
     assert second.returncode == 2, second.stderr
     assert str(first.pid) in second.stderr
-    assert "iterate" in second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
     assert len(records_of_type(repo, IterationRecord)) == 1

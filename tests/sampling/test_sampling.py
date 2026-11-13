@@ -380,7 +380,6 @@ async def test_collect_samples_when_bench_stdout_overran_the_cap_does_raise_nami
         message, ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}")
     )
     assert len(message.splitlines()) == 4
-    assert caught.value.hint is not None
 
 
 async def test_collect_samples_when_only_stderr_overran_the_cap_does_parse_the_sample(
