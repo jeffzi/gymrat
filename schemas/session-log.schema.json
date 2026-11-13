@@ -108,7 +108,7 @@
         },
         "name": {
           "description": "CLI command name.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Name",
           "type": "string"
         },
@@ -789,13 +789,13 @@
       "properties": {
         "after": {
           "description": "Command to run after each iteration.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "After",
           "type": "string"
         },
         "before": {
           "description": "Command to run before each iteration.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Before",
           "type": "string"
         }
@@ -871,7 +871,7 @@
         },
         "message": {
           "description": "Reason the stop was requested.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Message",
           "type": "string"
         },

@@ -55,6 +55,7 @@ from gymrat.utils import (
     drop_prefix_errors,
     expected_got,
     first_set,
+    is_blank,
     os_error_reason,
     parse_bounded_positive_int,
     phrase_for_error,
@@ -87,7 +88,7 @@ def _env_string(env_var: str, problems: list[str]) -> str | None:
     raw = os.environ.get(env_var)
     if raw is None:
         return None
-    if raw.strip() == "":
+    if is_blank(raw):
         problems.append(_env_problem(env_var, "a non-empty string", raw))
         return None
     return raw
@@ -671,7 +672,7 @@ def _collect_flag_problems(flags: CliFlags) -> list[str]:
     return [
         invalid_value_message(f"--{field_name}", "a non-empty string", value)
         for field_name in ("bench", "prepare", "adapter", "config")
-        if (value := getattr(flags, field_name)) is not None and not value.strip()
+        if (value := getattr(flags, field_name)) is not None and is_blank(value)
     ]
 
 
@@ -745,7 +746,7 @@ def _resolve_config_source(
         explicit_config = _env_string("GYMRAT_CONFIG", env_problems)
         if env_problems:
             return None, ConfigFile(), env_problems
-    elif not explicit_config.strip():
+    elif is_blank(explicit_config):
         # A whitespace-only --config is as blank as an empty one, and
         # `_collect_flag_problems` has already reported it; probing it on disk would
         # add a second problem for a path the user never named.

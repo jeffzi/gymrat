@@ -30,7 +30,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.event_docs import (
     READERS,
     main,
@@ -41,7 +41,7 @@ from gymrat.event_docs import (
     write_all,
 )
 from gymrat.session.paths import repository_lookup_error
-from gymrat.session.records import IterationRecord, SessionLogRecord
+from gymrat.session.records import IterationRecord, SessionLogRecord, parse_record, record_to_wire
 from gymrat.supervisor.events import (
     LaunchEvent,
     SessionEvent,
@@ -52,6 +52,8 @@ from tests._cli import no_color_env
 from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
 from tests._markdown import md_section
+from tests.session.records._fixtures import command_record, stop_record
+from tests.session.records._wire import SESSION_RECORD, nested_with, patching
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -150,6 +152,50 @@ def test_render_json_schemas_when_supervisor_payload_validated_does_agree_with_e
     schema_accepts = validator.is_valid(payload)
 
     assert schema_accepts == (event_from_wire(payload) is not None)
+
+
+# ---------------------------------------------------------------------------
+# blank strings — the session-log schema rejects what parse_record rejects
+# ---------------------------------------------------------------------------
+
+
+def _parses(record: object) -> bool:
+    try:
+        parse_record(record)
+    except GymratError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            nested_with(SESSION_RECORD, "config", hooks={"before": "  "}), id="hook-spaces"
+        ),
+        pytest.param(
+            nested_with(SESSION_RECORD, "config", hooks={"after": "\x1c\x1f"}),
+            id="hook-information-separators",
+        ),
+        pytest.param(
+            patching(record_to_wire(stop_record()), {"message": "\x1d"}),
+            id="stop-message-information-separator",
+        ),
+        pytest.param(
+            patching(record_to_wire(command_record()), {"name": " "}),
+            id="command-name-space",
+        ),
+    ],
+)
+def test_render_json_schemas_when_record_field_blank_does_agree_with_parse_record(
+    record: dict[str, object],
+):
+    session_log = render_json_schemas()[_SESSION_LOG.schema_index]
+    validator = Draft202012Validator(session_log)
+
+    schema_accepts = validator.is_valid(record)
+
+    assert schema_accepts == _parses(record)
 
 
 # ---------------------------------------------------------------------------

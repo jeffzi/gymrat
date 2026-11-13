@@ -21,7 +21,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Annotated, NamedTuple, NoReturn, Protocol, Self
 
-from pydantic import BaseModel, Strict, ValidationError, ValidatorFunctionWrapHandler, WrapValidator
+from pydantic import (
+    BaseModel,
+    Field,
+    Strict,
+    TypeAdapter,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    WrapValidator,
+)
 from pydantic_core import ErrorDetails
 
 SECONDS_PER_MINUTE = 60
@@ -989,8 +997,34 @@ def remove_sidecar(path: Path, label: str, warn: WarnSink) -> None:
 # pruned of parent errors whose only fault is a failing child, and the expected-shape
 # phrase an error's ``type`` and ``ctx`` imply.
 
-NON_BLANK_PATTERN = r"\S"
-"""String ``pattern`` constraint that rejects a whitespace-only value."""
+NON_BLANK_PATTERN = r"[^\s\x1c-\x1f]"
+"""String ``pattern`` constraint that rejects a blank value: empty or whitespace-only.
+
+pydantic's regex engine reads ``\\s`` as the Unicode ``White_Space`` property, which
+leaves out the information separators U+001C-U+001F that ``str.strip`` removes as
+whitespace; the pattern names them so a string of them is blank too. Check a value
+outside a pydantic model with :func:`is_blank`, which runs this same pattern, never
+with ``str.strip``.
+"""
+
+_NON_BLANK_STR: TypeAdapter[str] = TypeAdapter(Annotated[str, Field(pattern=NON_BLANK_PATTERN)])
+
+
+def is_blank(value: str) -> bool:
+    """Tell whether ``value`` is blank, as a :data:`NON_BLANK_PATTERN` field would judge it.
+
+    Args:
+        value: The string to check.
+
+    Returns:
+        Whether ``value`` is empty or holds only whitespace.
+    """
+    try:
+        _NON_BLANK_STR.validate_python(value)
+    except ValidationError:
+        return True
+    return False
+
 
 VALUE_ERROR_PREFIX = "Value error, "
 """Prefix pydantic prepends to a model validator's ``ValueError`` message."""

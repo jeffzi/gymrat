@@ -64,6 +64,7 @@ from gymrat.session.schema import (
 )
 from gymrat.session.workspace import RECORD_CONFIG, BaselineRef, Worktrees
 from gymrat.utils import (
+    NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
     coerce_integer,
     describe_key,
@@ -122,7 +123,11 @@ def _not_null(member: Any) -> BeforeValidator:  # noqa: ANN401 -- any type form 
 _Number = float | int
 
 _OptStr = Annotated[str | SkipJsonSchema[None], _not_null(str)]
-_OptNonEmptyStr = Annotated[str | SkipJsonSchema[None], _not_null(str), Field(min_length=1)]
+# Blank by the same pattern the config file, flags and env vars are judged by. The
+# pattern sits on the ``str`` itself, not on an optional wrapping it: pydantic
+# leaves a constraint on the union out of the published JSON schema.
+_NonEmptyStr = Annotated[str, Field(pattern=NON_BLANK_PATTERN)]
+_OptNonEmptyStr = Annotated[_NonEmptyStr | SkipJsonSchema[None], _not_null(_NonEmptyStr)]
 _OptBool = Annotated[bool | SkipJsonSchema[None], _not_null(bool)]
 _OptNumber = Annotated[
     _Number | SkipJsonSchema[None],
@@ -467,7 +472,7 @@ class StopRecord(_RecordEnvelope):
     """A user-requested stop: halts the loop without finalizing the session."""
 
     type: Literal["stop"] = Field(description="Record type discriminator.")
-    message: Annotated[str, Field(min_length=1, description="Reason the stop was requested.")]
+    message: Annotated[_NonEmptyStr, Field(description="Reason the stop was requested.")]
 
 
 class CommandRecord(_SequencedEnvelope):
@@ -478,7 +483,7 @@ class CommandRecord(_SequencedEnvelope):
     """
 
     type: Literal["command"] = Field(description="Record type discriminator.")
-    name: Annotated[str, Field(min_length=1, description="CLI command name.")]
+    name: Annotated[_NonEmptyStr, Field(description="CLI command name.")]
     args: dict[str, object] = Field(description="Arguments the command was invoked with.")
     exit_code: Literal[0, 1, 2] = Field(
         description="Process-style exit code: 0 success, 1 or 2 failure."

@@ -56,6 +56,12 @@ def test_phrase_for_error_when_constraint_fails_does_insert_the_bound(
             id="no-break-space",
         ),
         pytest.param(
+            Annotated[str, Field(pattern=NON_BLANK_PATTERN)],
+            "\x1c\x1d\x1e\x1f",
+            "a non-empty string",
+            id="information-separators",
+        ),
+        pytest.param(
             Annotated[str, Field(min_length=2)], "a", "a valid value", id="longer-min-length"
         ),
     ],

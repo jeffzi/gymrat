@@ -445,6 +445,48 @@ def test_inspect_config_when_flag_holds_blank_string_does_report_the_flag(
     )
 
 
+#: Only the information separators U+001C-U+001F, which ``str.strip`` treats as whitespace.
+_SEPARATORS_ONLY = "\x1c\x1d\x1e\x1f"
+
+
+def _bench_in_file(tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> CliFlags:
+    write_config(tmp_path, {"bench": _SEPARATORS_ONLY})
+    return CliFlags()
+
+
+def _bench_by_flag(_tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> CliFlags:
+    return CliFlags(bench=_SEPARATORS_ONLY)
+
+
+def _bench_by_env_var(_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CliFlags:
+    monkeypatch.setenv("GYMRAT_BENCH", _SEPARATORS_ONLY)
+    return CliFlags()
+
+
+@pytest.mark.parametrize(
+    ("set_bench", "name"),
+    [
+        pytest.param(_bench_in_file, "bench", id="gymrat-toml"),
+        pytest.param(_bench_by_flag, "--bench", id="flag"),
+        pytest.param(_bench_by_env_var, "GYMRAT_BENCH", id="env-var"),
+    ],
+)
+def test_inspect_config_when_bench_only_information_separators_does_reject_as_blank(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    set_bench: Callable[[Path, pytest.MonkeyPatch], CliFlags],
+    name: str,
+):
+    flags = set_bench(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = inspect_config(flags)
+
+    assert len(result.problems) == 1
+    assert name in result.problems[0]
+    assert "a non-empty string" in result.problems[0]
+
+
 def test_inspect_config_when_config_flag_blank_does_not_load_implicit_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

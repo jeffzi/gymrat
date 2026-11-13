@@ -28,6 +28,7 @@ from tests.session.records._fixtures import (
     committed_keep,
     hook_record,
     iteration_record,
+    stop_record,
 )
 from tests.session.records._wire import (
     BASELINE_RECORD,
@@ -175,6 +176,29 @@ def test_parse_record_when_key_is_field_name_instead_of_alias_does_reject_naming
             "a number",
             '"15200"',
             id="baseline-sample-string",
+        ),
+        # a hook command made only of information separators is as blank as one
+        # made of spaces
+        pytest.param(
+            nested_with(SESSION_RECORD, "config", hooks={"before": "\x1c\x1d\x1e\x1f"}),
+            "config.hooks.before",
+            "a non-empty string",
+            '"\\u001c\\u001d\\u001e\\u001f"',
+            id="hook-only-information-separators",
+        ),
+        pytest.param(
+            patching(record_to_wire(stop_record()), {"message": "\x1d"}),
+            "message",
+            "a non-empty string",
+            '"\\u001d"',
+            id="stop-message-only-information-separator",
+        ),
+        pytest.param(
+            patching(COMMAND_RECORD_SUCCESS, {"name": " "}),
+            "name",
+            "a non-empty string",
+            '" "',
+            id="command-name-only-space",
         ),
     ],
 )
