@@ -123,17 +123,15 @@ An alternative to the manual iteration cycle (steps 3-6): an agent drives `itera
 on its own instead of you running them by hand.
 
 ```sh
-gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] \
-  [--baseline <ref>] [--force] [--log <path>] [--model <name>] [--no-finalize]
+gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--baseline <ref>] \
+  [--force] [--allow-dirty] [--log <path>] [--model <name>] [--no-finalize]
 ```
 
 Requires `runbook` in `gymrat.toml` and `--max-minutes`. Under supervised mode the session is already
 open and the baseline already recorded when the first turn starts, so steps 1 and 2 are done — begin
 with the runbook.
 
-`--baseline <ref>` pins the git ref for a freshly opened session (defaults to HEAD; ignored when
-resuming). `--force` launches even when the cap cannot fit one iteration or a stop condition is
-already met. `--allow-dirty` permits uncommitted changes in the main working tree only.
+`--allow-dirty` permits uncommitted changes in the main working tree only.
 `supervise` always refuses to launch when the experiment worktree has uncommitted changes: settle
 an unsettled iteration with `keep` or `discard`, and measure or `discard` any unmeasured edit
 first.
@@ -290,12 +288,10 @@ further measurement and report what the probes measured.
 
 2. **When a hook fails outside supervise, report the failure and pause for the user to decide.**
    `iterate` succeeds even when a hook fails, so a silently-ignored failure reaches `keep` unnoticed.
-   Under supervise, the supervisor ends the run on a failed hook.
 
 3. **Never run concurrent sessions.** Every command that runs the bench — `measure` and `compare`
    included — or mutates the session holds a per-repository lock, and a second gymrat process
-   exits 2. `supervise` holds a separate lock, so a nested `supervise` on the same repository is
-   refused and exits 2. See Supervised mode.
+   exits 2.
 
 4. **Discard decisively.** A NO-SIGNAL or REGRESSED iteration that cannot be salvaged gets discarded
    immediately — reworking without discarding first conflates the changes.
@@ -334,6 +330,7 @@ further measurement and report what the probes measured.
 
 Exit 1 is information: read the output. A `supervise` run whose stop condition fires during the
 run exits 0, the same as one whose session finished on its own; one already met at launch refuses
-with exit 1 unless `--force` is passed. Exit 2 is a real error: diagnose before
+with exit 1 unless `--force` is passed. A `supervise` launch whose cap cannot fit one iteration
+refuses with exit 2, also unless `--force` is passed. Exit 2 is a real error: diagnose before
 retrying. An exit above 128 means the run was interrupted. The iteration may be unsettled; check
 `gymrat status`.
