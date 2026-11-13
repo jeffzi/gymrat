@@ -477,6 +477,36 @@ def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_
     assert DEFAULT_RUNBOOK_PATH in (_check(report, "Workflow", "runbook").hint or "")
 
 
+def test_build_doctor_report_when_runbook_unset_does_hint_the_config_file_doctor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_raw(tmp_path, "samples = 5\n", name="custom.toml")
+    monkeypatch.chdir(tmp_path)
+
+    report = build_doctor_report(CliFlags(config="custom.toml"), str(tmp_path))
+
+    assert "custom.toml" in (_check(report, "Workflow", "runbook").hint or "")
+
+
+def test_build_doctor_report_when_runbook_unset_in_another_config_file_does_not_send_to_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_raw(tmp_path, "samples = 5\n", name="custom.toml")
+    monkeypatch.chdir(tmp_path)
+
+    report = build_doctor_report(CliFlags(config="custom.toml"), str(tmp_path))
+
+    assert "gymrat init" not in (_check(report, "Workflow", "runbook").hint or "")
+
+
+def test_build_doctor_report_when_runbook_unset_and_no_config_file_does_name_no_config_path(
+    tmp_path: Path,
+):
+    report = build_doctor_report(CliFlags(), str(tmp_path))
+
+    assert str(tmp_path) not in (_check(report, "Workflow", "runbook").hint or "")
+
+
 # ---------------------------------------------------------------------------
 # bench executable — path-shaped token, run from a subdirectory
 # ---------------------------------------------------------------------------

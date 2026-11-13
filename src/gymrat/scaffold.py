@@ -222,12 +222,27 @@ def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
     return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
 
 
+def _is_blocked(base_dir: Path, relative: str) -> bool:
+    full = base_dir / relative
+    if full.is_symlink() or (full.exists() and not full.is_file()):
+        return True
+    # A file or dangling symlink where a directory of the path belongs leaves
+    # nowhere to write; ``is_file`` reports such a path as missing, not blocked.
+    return any(
+        (ancestor := base_dir / parent).exists(follow_symlinks=False) and not ancestor.is_dir()
+        for parent in Path(relative).parents
+        if parent != Path()
+    )
+
+
 def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
-    """The requested artifact paths a non-regular file occupies.
+    """The requested artifact paths a non-regular file occupies or cuts off.
 
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
-    Directories are blocked because they cannot be opened as regular files.
+    Directories are blocked because they cannot be opened as regular files. A
+    path is also blocked when one of its directories below ``base_dir`` is a
+    file or a symlink that does not lead to a directory.
 
     Args:
         base_dir: The base directory the artifact paths are resolved against.
@@ -235,7 +250,7 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
 
     Returns:
         Each requested path holding a symlink, directory, or other non-regular
-        file, in write order.
+        file, or lying under a non-directory, in write order.
     """
     requested = [
         (CONFIG_FILENAME, True),
@@ -243,10 +258,7 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
         (SKILL_RELATIVE_PATH, request.install_skill),
     ]
     return [
-        relative
-        for relative, wanted in requested
-        if wanted
-        and ((full := base_dir / relative).is_symlink() or (full.exists() and not full.is_file()))
+        relative for relative, wanted in requested if wanted and _is_blocked(base_dir, relative)
     ]
 
 
@@ -295,8 +307,9 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
     Raises:
         GymratError: When no config exists and ``request.bench`` is None, the
             config fails validation, the bundled skill cannot be read, a
-            non-regular file (directory, symlink) occupies an artifact path, or
-            a filesystem error prevents writing.
+            non-regular file (directory, symlink) occupies an artifact path, a
+            file or dangling symlink stands where one of its directories
+            belongs, or a filesystem error prevents writing.
     """
     base_dir = Path(base_dir)
     config_path = base_dir / CONFIG_FILENAME

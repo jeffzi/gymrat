@@ -204,6 +204,13 @@ def _symlink_at(relative: str, *, dangling: bool = False) -> Callable[[Path], No
     return plant
 
 
+def _file_at(relative: str) -> Callable[[Path], None]:
+    def plant(base: Path) -> None:
+        (base / relative).write_text("not a directory\n", encoding="utf-8")
+
+    return plant
+
+
 @pytest.mark.parametrize(
     ("plant", "blocked"),
     [
@@ -218,6 +225,12 @@ def _symlink_at(relative: str, *, dangling: bool = False) -> Callable[[Path], No
             "gymrat-runbook.md",
             id="runbook-dangling-symlink",
         ),
+        pytest.param(_file_at(".claude"), SKILL_RELATIVE_PATH, id="skill-ancestor-a-file"),
+        pytest.param(
+            _symlink_at(".claude", dangling=True),
+            SKILL_RELATIVE_PATH,
+            id="skill-ancestor-a-dangling-symlink",
+        ),
     ],
 )
 def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it(
@@ -229,6 +242,25 @@ def test_scaffold_when_an_artifact_path_is_blocked_does_raise_naming_it(
         scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
 
     assert str(caught.value).endswith(blocked)
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        pytest.param(_file_at(".claude"), id="file"),
+        pytest.param(_symlink_at(".claude", dangling=True), id="dangling-symlink"),
+    ],
+)
+def test_scaffold_when_a_skill_ancestor_is_not_a_directory_does_write_nothing(
+    tmp_path: Path, plant: Callable[[Path], None]
+):
+    plant(tmp_path)
+    before = _tree(tmp_path)
+
+    with pytest.raises(GymratError):
+        scaffold(str(tmp_path), ScaffoldRequest(bench="npm run bench", install_skill=True))
+
+    assert _tree(tmp_path) == before
 
 
 def test_scaffold_when_skipped_artifact_paths_are_directories_does_write_the_config(

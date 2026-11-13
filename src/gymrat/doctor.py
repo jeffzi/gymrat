@@ -43,6 +43,7 @@ from rich.markup import escape
 
 from gymrat.adapters.registry import get_adapter
 from gymrat.config import (
+    CONFIG_FILENAME,
     BenchlessConfig,
     CliFlags,
     ConfigInspection,
@@ -217,6 +218,8 @@ def build_workflow_section(
     *,
     skill_file_exists: bool,
     config_file_exists: bool,
+    config_path: str | None = None,
+    init_reaches_config: bool = True,
 ) -> CheckSection:
     """WARN for each missing workflow piece (skill file, checks, stop, runbook) with a fix hint.
 
@@ -232,7 +235,14 @@ def build_workflow_section(
         skill_file_exists: Whether the project's skill file is installed.
         config_file_exists: Whether a config file was found. It picks the runbook
             fix: ``gymrat init`` leaves an existing config file as it is, so the
-            key has to be added to that file by hand.
+            stub comes from ``gymrat init`` and the key has to be added to that
+            file by hand.
+        config_path: The config file doctor read, named in the runbook fix when
+            ``config_file_exists``; ``None`` names the default ``gymrat.toml``.
+        init_reaches_config: Whether ``gymrat init`` writes its runbook stub
+            beside ``config_path``, where the runbook key resolves. When it does
+            not (a config file named by ``--config`` or ``GYMRAT_CONFIG``), the
+            fix asks for a runbook next to that file instead.
 
     Returns:
         The assembled workflow check section.
@@ -240,11 +250,19 @@ def build_workflow_section(
     if config is None:
         return _skipped_section(_WORKFLOW_SECTION_TITLE, _WORKFLOW_SKIP_CHECK_NAME)
 
-    runbook_fix = (
-        f'Add `runbook = "{DEFAULT_RUNBOOK_PATH}"` to gymrat.toml.'
-        if config_file_exists
-        else "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml."
-    )
+    named_config = config_path or CONFIG_FILENAME
+    if not config_file_exists:
+        runbook_fix = "Run `gymrat init` to create a runbook, or add `runbook` to gymrat.toml."
+    elif init_reaches_config:
+        runbook_fix = (
+            "Run `gymrat init` to create the runbook stub, then add "
+            f'`runbook = "{DEFAULT_RUNBOOK_PATH}"` to {named_config}.'
+        )
+    else:
+        runbook_fix = (
+            f"Write a runbook next to {named_config}, then add "
+            f'`runbook = "{DEFAULT_RUNBOOK_PATH}"` to it.'
+        )
     checks = [
         _presence_check(
             Check(
@@ -621,6 +639,10 @@ def build_doctor_report(flags: CliFlags, cwd: str) -> DoctorReport:
         settled,
         skill_file_exists=(Path(base_dir) / SKILL_RELATIVE_PATH).is_file(),
         config_file_exists=inspection.config_path is not None,
+        config_path=inspection.config_path,
+        # init writes its stub into base_dir, beside the implicit gymrat.toml only.
+        init_reaches_config=inspection.config_path is None
+        or Path(inspection.config_path).resolve() == (Path(base_dir) / CONFIG_FILENAME).resolve(),
     )
     bench_section = build_bench_section(
         bench=inspection.bench,
