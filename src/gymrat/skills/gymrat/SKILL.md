@@ -124,7 +124,7 @@ on its own instead of you running them by hand.
 
 ```sh
 gymrat supervise [prompt] --max-minutes <n> [--max-usd <n>] [--baseline <ref>] \
-  [--force] [--allow-dirty] [--log <path>] [--model <name>] [--no-finalize]
+  [--force] [--allow-dirty] [--log <path>] [--model <name>] [--effort <level>] [--no-finalize]
 ```
 
 Requires `runbook` in `gymrat.toml` and `--max-minutes`. Under supervised mode the session is already
