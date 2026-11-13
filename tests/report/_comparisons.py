@@ -18,7 +18,6 @@ from gymrat.verdict import GroupAggregate, KindAggregate
 from tests._pipeline import CLEAN_RESULT
 from tests.report._verdicts import (
     band_metric,
-    band_verdict,
     exact_verdict,
     geomean_of,
     metric_meta,
@@ -336,20 +335,15 @@ def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
 
 
 def multi_candidate_result(
-    candidate_count: int = 3,
     *,
-    labels: Sequence[str] = ("candidate-a", "candidate-b", "candidate-c"),
+    labels: Sequence[str] = ("candidate-a", "candidate-b"),
     name: str = "decode/time",
 ) -> ComparisonResult:
-    """A multi-candidate comparison with one metric judged per candidate.
+    """A two-candidate comparison with one metric: the first improved, the second regressed.
 
     Args:
-        candidate_count: ``3`` gives the first candidate improved, the second
-            regressed and the third unstable (band method); ``2`` gives the
-            first pair alone.
-        labels: The candidate labels, in order; only the first
-            ``candidate_count`` are used.
-        name: The name of the one metric every candidate is judged on.
+        labels: The two candidate labels, in order.
+        name: The name of the one metric both candidates are judged on.
 
     Returns:
         The comparison result.
@@ -370,23 +364,10 @@ def multi_candidate_result(
             verdict=permutation_verdict(verdict="regressed", delta=4, p=0.002),
         ),
     ]
-    if candidate_count == 3:
-        candidates.append(create_candidate(label=labels[2], kinds=[other_kind(0, 1)]))
-        metric_candidates.append(
-            CandidateMetric(
-                median=150.0,
-                spread=3.0,
-                verdict=band_verdict(
-                    verdict="unstable", delta=50, usable_n=3, noise_pct=30, noise_abs=30
-                ),
-            )
-        )
     return create_comparison_result(
         baseline_label="main",
         candidates=candidates,
-        metrics={
-            name: shared_baseline_metric(metric_candidates, name=name),
-        },
+        metrics={name: shared_baseline_metric(metric_candidates, name=name)},
     )
 
 

@@ -76,8 +76,8 @@ def test_render_json_when_band_verdict_does_serialize_the_band_width():
     assert candidate["band_pct"] == 4.0
 
 
-def test_render_json_when_approximate_verdict_withheld_does_serialize_its_reason():
-    verdict = permutation_verdict(delta=0.4, reason="resolution")
+def test_render_json_when_approximate_verdict_withheld_does_serialize_its_reason_and_detectable_change():
+    verdict = replace(permutation_verdict(delta=0.4, reason="resolution"), detectable_pct=2.1)
     metric = shared_baseline_metric(
         [CandidateMetric(median=100.4, spread=1.0, verdict=verdict)], name="decode/time"
     )
@@ -85,19 +85,7 @@ def test_render_json_when_approximate_verdict_withheld_does_serialize_its_reason
 
     candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
 
-    assert candidate["reason"] == "resolution"
-
-
-def test_render_json_when_approximate_verdict_carries_a_detectable_change_does_serialize_it():
-    verdict = replace(permutation_verdict(delta=0.4), detectable_pct=2.1)
-    metric = shared_baseline_metric(
-        [CandidateMetric(median=100.4, spread=1.0, verdict=verdict)], name="decode/time"
-    )
-    result = create_comparison_result(metrics={"decode/time": metric})
-
-    candidate = json.loads(render_json(result))["metrics"]["decode/time"]["candidates"][0]
-
-    assert candidate["detectable_pct"] == 2.1
+    assert (candidate["reason"], candidate["detectable_pct"]) == ("resolution", 2.1)
 
 
 # ---------------------------------------------------------------------------

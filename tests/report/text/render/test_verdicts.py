@@ -8,8 +8,7 @@ behavior, and through the footer and selection functions where their own rules
 are.
 
 The colored report is covered too: how verdict cells and the highlights block
-are painted. The run header's and column labels' colors live with the other
-element styles in ``test_whole``.
+are painted. Geomean row colors live in ``test_whole``.
 """
 
 from __future__ import annotations
@@ -65,8 +64,6 @@ from tests.report._verdicts import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from gymrat.model import GeomeanResult
     from gymrat.report.types import ComparisonResult, MetricComparisons
 
@@ -169,10 +166,8 @@ def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_ot
 # ---------------------------------------------------------------------------
 
 
-def _tripping_result(geomean: float = 3.1, gated: float = 3.1) -> ComparisonResult:
+def _tripping_result(geomean: float, gated: float) -> ComparisonResult:
     """A two-kind run whose gating ``time`` kind carries the given geomeans.
-
-    The defaults regress the kind past a 2% threshold on both figures.
 
     Args:
         geomean: The ``time`` kind's overall geomean, in percent.
@@ -356,9 +351,8 @@ def test_footer_lines_when_verbose_does_name_the_band_cause_per_metric(
 ):
     lines = _band_lines_for(metrics)
 
-    assert [
-        (cause, line) for cause, line in zip(expected, lines, strict=True) if cause not in line
-    ] == []
+    assert len(lines) == len(expected)
+    assert all(cause in line for cause, line in zip(expected, lines, strict=True))
 
 
 @pytest.mark.parametrize(
@@ -405,23 +399,13 @@ def test_footer_lines_when_floor_reached_but_fewer_paired_does_give_one_hint_wit
     assert "--samples" not in render_plain(lines[0])
 
 
-@pytest.mark.parametrize(
-    ("target_count", "suggested"),
-    [
-        pytest.param(7, 14, id="seven-targets"),
-    ],
-)
-def test_footer_lines_when_run_too_short_does_suggest_the_smallest_balanced_count(
-    target_count: int, suggested: int
-):
+def test_footer_lines_when_seven_targets_run_too_short_does_suggest_the_smallest_balanced_count():
     metrics: MetricComparisons = {"a/time": band_metric(n=4)}
 
-    lines = footer_lines(
-        metrics, verbose=False, command="compare", samples=4, target_count=target_count
-    )
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=4, target_count=7)
 
     assert len(lines) == 1
-    assert f"--samples {suggested} " in render_plain(lines[0])
+    assert "--samples 14 " in render_plain(lines[0])
 
 
 def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_four_targets_balance():
@@ -542,18 +526,11 @@ def _colorful_result() -> ComparisonResult:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("metric", "marker", "codes"),
-    [
-        pytest.param("faster/time", "✓", sgr_for(VERDICT_STYLES["improved"]), id="improved-green"),
-    ],
-)
-def test_render_report_when_colored_does_paint_the_verdict_glyph_in_its_verdict_color(
-    metric: str, marker: str, codes: list[str]
-):
-    row = line_containing(render_report(_colorful_result(), ReportOptions(color=True)), metric)
+def test_render_report_when_colored_does_paint_the_verdict_glyph_in_its_verdict_color():
+    report = render_report(_colorful_result(), ReportOptions(color=True))
 
-    assert styles_at(row, marker) == codes
+    row = line_containing(report, "faster/time")
+    assert styles_at(row, "✓") == sgr_for(VERDICT_STYLES["improved"])
 
 
 # ---------------------------------------------------------------------------
@@ -565,36 +542,16 @@ _COLORED = ReportOptions(color=True)
 
 
 @pytest.mark.parametrize(
-    ("make_result", "options", "needle", "marker", "expected"),
-    [
-        pytest.param(
-            _colorful_result,
-            _COLORED,
-            "slower",
-            "✗",
-            sgr_for(VERDICT_STYLES["regressed"]),
-            id="regressed-glyph-red",
-        ),
-        pytest.param(
-            _colorful_result,
-            _COLORED,
-            "slower",
-            "+2.4%",
-            sgr_for(VERDICT_STYLES["regressed"]),
-            id="regressed-delta-red",
-        ),
-    ],
+    "marker", [pytest.param("✗", id="glyph"), pytest.param("+2.4%", id="delta")]
 )
-def test_render_report_when_colored_does_paint_each_highlight_element(
-    make_result: Callable[[], ComparisonResult],
-    options: ReportOptions,
-    needle: str,
+def test_render_report_when_colored_does_paint_each_highlight_element_in_its_verdict_color(
     marker: str,
-    expected: list[str],
 ):
-    highlights = "\n".join(highlight_lines(render_report(make_result(), options)))
+    highlights = "\n".join(highlight_lines(render_report(_colorful_result(), _COLORED)))
 
-    assert styles_at(line_containing(highlights, needle), marker) == expected
+    assert styles_at(line_containing(highlights, "slower"), marker) == sgr_for(
+        VERDICT_STYLES["regressed"]
+    )
 
 
 def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_name():

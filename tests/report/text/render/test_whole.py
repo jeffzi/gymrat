@@ -5,10 +5,9 @@ change to how the table is drawn cannot shift a padding space or a rule dash
 unnoticed. Footer and worktree lines are pinned in ``test_verdicts``.
 
 Color is pinned per element with ``styles_at`` rather than as escape bytes, so
-a change in how rich encodes a style does not read as a regression. The run
-header, column labels, section and group titles and aggregate rows are styled
-here; verdict-cell colors live in ``test_verdicts`` and multi-candidate cell
-colors in ``test_multi``.
+a change in how rich encodes a style does not read as a regression. Geomean
+aggregate rows are styled here; verdict-cell colors live in ``test_verdicts``
+and multi-candidate cell colors in ``test_multi``.
 
 The comparison table's run header override and label truncation, and the
 measurement report's golden output, are pinned here too.

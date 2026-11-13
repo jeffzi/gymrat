@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 
 def test_render_report_when_candidate_labels_carry_brackets_does_print_them_literally():
-    result = multi_candidate_result(2, labels=("[bold]fast", "[dim]slow"))
+    result = multi_candidate_result(labels=("[bold]fast", "[dim]slow"))
 
     report = strip_ansi(render_report(result))
 
@@ -59,7 +59,7 @@ def test_render_report_when_candidate_labels_carry_brackets_does_print_them_lite
 
 
 def test_render_report_when_metric_name_carries_brackets_does_print_it_literally():
-    result = multi_candidate_result(2, name="[italic]decode/time")
+    result = multi_candidate_result(name="[italic]decode/time")
 
     report = strip_ansi(render_report(result))
 
@@ -116,20 +116,13 @@ def test_render_report_when_colored_does_style_each_cell_verdict_on_its_own(
     assert styles_at(line, token) == codes
 
 
-@pytest.mark.parametrize(
-    ("labels", "summary_column"),
-    [
-        pytest.param(("fast", "测试指标"), 10, id="cjk-label-widest"),
-    ],
-)
-def test_render_report_when_candidate_labels_differ_in_width_does_start_every_summary_at_one_column(
-    labels: tuple[str, str],
-    summary_column: int,
-):
-    report = strip_ansi(render_report(multi_candidate_result(2, labels=labels)))
+def test_render_report_when_cjk_label_is_widest_does_start_every_summary_at_one_column():
+    labels = ("fast", "测试指标")
+
+    report = strip_ansi(render_report(multi_candidate_result(labels=labels)))
 
     summaries = [line_starting_with(report, label) for label in labels]
-    assert [cell_len(line[: line.index("✓")]) for line in summaries] == [summary_column] * 2
+    assert [cell_len(line[: line.index("✓")]) for line in summaries] == [10, 10]
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +136,7 @@ def test_render_report_when_a_candidate_geomean_covers_no_metric_does_show_the_n
         Exclusion(metric="encode/time", reason="unstable"),
     ]
     result = create_comparison_result(
-        metrics=multi_candidate_result(2).metrics,
+        metrics=multi_candidate_result().metrics,
         candidates=[
             create_candidate(label="candidate-a", kinds=[other_kind(-10, 2)]),
             create_candidate(label="candidate-b", kinds=[other_kind(0, 0, excluded=excluded)]),

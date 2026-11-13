@@ -1,4 +1,4 @@
-"""Tests for mapping a metric verdict to the class and glyph a report shows."""
+"""Tests for mapping a metric verdict to the display class a report shows."""
 
 from __future__ import annotations
 

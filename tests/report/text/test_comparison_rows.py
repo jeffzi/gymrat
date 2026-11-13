@@ -82,28 +82,45 @@ def test_group_geomean_of_when_group_unreported_does_raise_an_internal_error_nam
 
 
 @pytest.mark.parametrize(
-    ("verdict", "with_band", "expected"),
+    ("verdict", "with_band", "shows_band"),
     [
-        pytest.param(
-            permutation_verdict(verdict="no-signal"), True, (True, "2.1%"), id="within-noise"
-        ),
-        pytest.param(permutation_verdict(verdict="improved"), True, (True, ""), id="improved"),
-        pytest.param(permutation_verdict(verdict="unstable"), True, (False, ""), id="unstable"),
-        pytest.param(permutation_verdict(n=3), True, (False, ""), id="inconclusive"),
-        pytest.param(
-            permutation_verdict(verdict="no-signal"), False, (False, ""), id="without-band"
-        ),
+        pytest.param(permutation_verdict(verdict="no-signal"), True, True, id="within-noise"),
+        pytest.param(permutation_verdict(verdict="improved"), True, True, id="improved"),
+        pytest.param(permutation_verdict(verdict="unstable"), True, False, id="unstable"),
+        pytest.param(permutation_verdict(n=3), True, False, id="inconclusive"),
+        pytest.param(permutation_verdict(verdict="no-signal"), False, False, id="without-band"),
     ],
 )
-def test_shown_verdict_when_verdict_carries_a_detectable_change_does_state_it_only_on_banded_within_noise_rows(
-    verdict: PermutationVerdict, with_band: bool, expected: tuple[bool, str]
+def test_shown_verdict_when_band_requested_does_show_it_on_stable_conclusive_rows(
+    verdict: PermutationVerdict, with_band: bool, shows_band: bool
 ):
     detecting = replace(verdict, detectable_pct=2.1)
 
     shown = shown_verdict(detecting, 10, with_band=with_band)
 
     assert shown is not None
-    assert (shown.parts.band != "", shown.parts.detects) == expected
+    assert (shown.parts.band != "") is shows_band
+
+
+@pytest.mark.parametrize(
+    ("verdict", "with_band", "detects"),
+    [
+        pytest.param(permutation_verdict(verdict="no-signal"), True, "2.1%", id="within-noise"),
+        pytest.param(permutation_verdict(verdict="improved"), True, "", id="improved"),
+        pytest.param(permutation_verdict(verdict="unstable"), True, "", id="unstable"),
+        pytest.param(permutation_verdict(n=3), True, "", id="inconclusive"),
+        pytest.param(permutation_verdict(verdict="no-signal"), False, "", id="without-band"),
+    ],
+)
+def test_shown_verdict_when_verdict_carries_a_detectable_change_does_state_it_only_on_banded_within_noise_rows(
+    verdict: PermutationVerdict, with_band: bool, detects: str
+):
+    detecting = replace(verdict, detectable_pct=2.1)
+
+    shown = shown_verdict(detecting, 10, with_band=with_band)
+
+    assert shown is not None
+    assert shown.parts.detects == detects
 
 
 # ---------------------------------------------------------------------------

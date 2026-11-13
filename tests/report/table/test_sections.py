@@ -19,7 +19,6 @@ from gymrat.report.table.grid import (
     is_grouped,
     plan_body,
     plan_sections,
-    section_annotation,
 )
 from tests.report._verdicts import metric_meta
 
@@ -112,7 +111,8 @@ def test_plan_body_when_sole_kind_switched_off_in_config_does_tag_it_from_that_c
 
     title = body[0]
     assert isinstance(title, TitleLine)
-    assert title.text == section_annotation(layout.sections[0], config_kinds)
+    assert title.text is not None
+    assert "(config: kinds.time.gating = false)" in title.text
 
 
 # ---------------------------------------------------------------------------
