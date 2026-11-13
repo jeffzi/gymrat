@@ -27,7 +27,7 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     session_jsonl_path,
 )
-from gymrat.session.records import SessionConfig, SessionHooks
+from gymrat.session.records import SessionConfig, SessionHooks, SessionLogRecord
 from gymrat.session.store import fold_session, read_records
 from gymrat.session.workspace import BaselineRef, remove_worktrees
 from gymrat.utils import now_ns
@@ -305,6 +305,38 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
     assert not Path(archived_session_path(repo, closed)).exists()
 
 
+def test_start_session_when_finalized_and_failing_after_the_new_header_reached_the_log_does_keep_both_logs_warning_with_the_archive(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    closed_log = log_records(repo)
+    archived = archived_session_path(repo, closed)
+    jsonl = session_jsonl_path(repo)
+    real_fsync = os.fsync
+
+    def fail_syncing_the_new_log(descriptor: int) -> None:
+        # Only the fresh log, written once the closed one is archived, refuses to sync.
+        new_log_written = Path(archived).exists() and Path(jsonl).exists()
+        if new_log_written and os.path.samestat(os.fstat(descriptor), Path(jsonl).stat()):
+            raise OSError(5, "sync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        os, "fsync", create_autospec(os.fsync, side_effect=fail_syncing_the_new_log)
+    )
+    warnings: list[str] = []
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG, warn=warnings.append)
+
+    header = session_header_of(repo)
+    assert header.session_id != closed
+    assert log_records(repo) == [header]
+    assert read_records(archived) == closed_log
+    assert any(archived in warning for warning in warnings), warnings
+
+
 @needs_posix_kill
 def test_start_session_when_putting_the_closed_log_back_fails_does_warn_naming_both_paths_raising_the_start_failure(
     repo: str,
@@ -451,3 +483,38 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
         start_session(repo, target_dir, CONFIG)
 
     assert target_dir in str(excinfo.value)
+
+
+def test_start_session_when_finalized_failing_and_the_new_log_unreadable_does_keep_the_archive(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    closed_log = log_records(repo)
+    archived = archived_session_path(repo, closed)
+    real_fsync = os.fsync
+    real_read_records = read_records
+
+    def fail_once_archived(descriptor: int) -> None:
+        if Path(archived).exists():
+            raise OSError(5, "sync failed")
+        real_fsync(descriptor)
+
+    def unreadable_once_archived(path: str) -> list[SessionLogRecord]:
+        if Path(archived).exists() and path == session_jsonl_path(repo):
+            msg = "log unreadable"
+            raise GymratError(msg)
+        return real_read_records(path)
+
+    monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=fail_once_archived))
+    monkeypatch.setattr(
+        "gymrat.loop.start.read_records",
+        create_autospec(read_records, side_effect=unreadable_once_archived),
+    )
+    warnings: list[str] = []
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG, warn=warnings.append)
+
+    assert read_records(archived) == closed_log
+    assert any(archived in warning for warning in warnings), warnings

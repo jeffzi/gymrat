@@ -81,7 +81,8 @@ def start_session(
         config: The resolved run settings the header snapshots as provenance.
         warn: Where every warning the start emits goes: an ignored ``ref``, a
             stale worktree entry git would not prune, a closed log that could not
-            be put back, and each leftover of a failed start.
+            be put back or stays archived behind a new header, and each leftover
+            of a failed start.
 
     Returns:
         The session record, folded state, and whether the session was resumed.
@@ -104,24 +105,15 @@ def start_session(
     if state.finalized is not None:
         # Renamed rather than copied: the new log must not exist until the closed
         # one is out of the way, or a start interrupted mid-archive would leave two
-        # sessions claiming the same file. A start that then fails renames it back,
-        # so the closed session stays where ``status`` reads it — safe because the
-        # new header lands last, leaving nothing at ``jsonl_path`` to collide with.
+        # sessions claiming the same file. A start that then fails renames it back
+        # unless the new header reached the log (see ``_restore_closed_log``), so
+        # the closed session stays where ``status`` reads it.
         archived_path = archived_session_path(root, session.session_id)
         Path(jsonl_path).rename(archived_path)
         try:
             created = _create_session(root, jsonl_path, baseline_ref, config, warn)
         except BaseException:
-            # Best-effort: the failure being re-raised is what broke the start, and
-            # a rename that cannot run must not speak in its place. The closed
-            # session's records stay on disk under its own id either way.
-            try:
-                Path(archived_path).rename(jsonl_path)
-            except OSError as error:
-                warn(
-                    f"Could not put the closed session's log back at {jsonl_path}: {error}\n"
-                    f"  its records stay at {archived_path}"
-                )
+            _restore_closed_log(jsonl_path, archived_path, warn)
             raise
         return replace(created, archived=session.session_id, archived_path=archived_path)
 
@@ -203,6 +195,36 @@ def _create_session(
         raise
 
     return StartResult(session=session, state=fold_session([session]), resumed=False)
+
+
+def _restore_closed_log(jsonl_path: str, archived_path: str, warn: WarnSink) -> None:
+    """Put a finalized session's log back after the start that archived it failed.
+
+    A new header that reached the log before the failure names a workspace the
+    next start resumes in, so renaming the closed log back would overwrite it: the
+    closed log stays archived instead. A log that will not read back may hold that
+    header too, so it is kept the same way. Best-effort: the failure being
+    re-raised is what broke the start, and a rename that cannot run must not
+    speak in its place. The closed session's records stay on disk under its own
+    id either way.
+    """
+    try:
+        landed = _header_landed(jsonl_path)
+    except GymratError:
+        landed = True
+    if landed:
+        warn(
+            f"The new session's log at {jsonl_path} was kept after the start failed;\n"
+            f"  the closed session's records stay archived at {archived_path}"
+        )
+        return
+    try:
+        Path(archived_path).rename(jsonl_path)
+    except OSError as error:
+        warn(
+            f"Could not put the closed session's log back at {jsonl_path}: {error}\n"
+            f"  its records stay at {archived_path}"
+        )
 
 
 def _header_landed(jsonl_path: str) -> bool:
