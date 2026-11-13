@@ -104,9 +104,13 @@ class FakeProcess:
     state: str
     comm: bytes = b"bench"
     group_id: int = _FAKE_GROUP
+    readable: bool = True
 
     def write(self, proc_root: Path) -> None:
         """Write this process's ``stat`` file, laid out as Linux lays it out.
+
+        An unreadable process stands for another user's: its ``stat`` file is
+        left with no permissions, so reading it fails.
 
         Args:
             proc_root: Directory standing in for ``/proc``; the process's entry
@@ -116,8 +120,15 @@ class FakeProcess:
         entry.mkdir(exist_ok=True)
         head = f"{self.pid} (".encode()
         tail = f") {self.state} 1 {self.group_id} {_STAT_TAIL}\n".encode()
-        (entry / "stat").write_bytes(head + self.comm + tail)
+        stat = entry / "stat"
+        stat.write_bytes(head + self.comm + tail)
+        if not self.readable:
+            stat.chmod(0)
 
+
+# Root reads a file whatever its permissions, so an unreadable fake ``stat``
+# file cannot be made for it.
+_RUNS_AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 # The exited, not yet reaped, leader every fake group below starts from.
 _ZOMBIE_LEADER = FakeProcess(_FAKE_GROUP, state="Z")
@@ -403,6 +414,18 @@ async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_wit
             ],
             _TIMED_OUT,
             id="unrelated-name-cut-mid-character",
+        ),
+        pytest.param(
+            [
+                _ZOMBIE_LEADER,
+                FakeProcess(_FAKE_MEMBER, state="S"),
+                FakeProcess(_FAKE_MEMBER + 1, state="S", group_id=_FAKE_GROUP + 10, readable=False),
+            ],
+            _TIMED_OUT,
+            id="foreign-stat-unreadable",
+            marks=pytest.mark.skipif(
+                _RUNS_AS_ROOT, reason="root reads a file whatever its permissions"
+            ),
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="Z")],

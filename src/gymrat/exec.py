@@ -707,9 +707,18 @@ async def spawn_contained(
 
 
 def _spawn_failure(message: str) -> ExecResult:
-    """Build the failed :class:`ExecResult` a spawn error resolves to."""
-    stderr = f"{message}\n"
-    return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
+    """Build the failed :class:`ExecResult` a spawn error resolves to.
+
+    The diagnostic is not command output, so it counts toward neither byte
+    count, as :meth:`OutputBuffer.append_failure` leaves them.
+
+    Args:
+        message: The spawn error to report on standard error.
+
+    Returns:
+        A failed result whose standard error holds ``message``.
+    """
+    return ExecResult("", f"{message}\n", FAILURE_EXIT_CODE, 0, 0)
 
 
 async def _settle(

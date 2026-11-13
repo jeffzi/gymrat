@@ -550,7 +550,10 @@ def _linux_group_states(group_id: int) -> list[str]:
     """List the ``/proc/<pid>/stat`` state of every member of group ``group_id``, zombies included.
 
     Linux has no call listing one group, so every process is scanned. A process
-    that exits between the scan and the read of its ``stat`` file is skipped.
+    that exits between the scan and the read of its ``stat`` file is skipped, as
+    is one whose ``stat`` file the caller may not read: a hardened ``/proc``
+    hides other users' processes that way, and such a process is never in a
+    group the caller started.
 
     Args:
         group_id: The process group to list.
@@ -568,7 +571,7 @@ def _linux_group_states(group_id: int) -> list[str]:
             continue
         try:
             stat = (entry / "stat").read_bytes()
-        except (FileNotFoundError, ProcessLookupError):
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
         # The command name before the state is parenthesized and may itself
         # hold spaces and parentheses, so the fields start after the last ")".

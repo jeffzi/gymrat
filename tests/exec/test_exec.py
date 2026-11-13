@@ -218,7 +218,9 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
 ) -> None:
     result = await run(args, ExecOptions(cwd=cwd(tmp_path)))
 
-    assert result == expected_result("", result.stderr, exit_code=1)
+    assert result == ExecResult(
+        stdout="", stderr=result.stderr, exit_code=1, stdout_bytes=0, stderr_bytes=0
+    )
     assert result.stderr.strip() != ""
 
 
