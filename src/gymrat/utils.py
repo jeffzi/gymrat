@@ -787,11 +787,10 @@ def _synced_temp_sibling(path: Path, text: str, mode: int) -> Path:
 # Durations and ETAs
 # ---------------------------------------------------------------------------
 
-# The formatters are deliberately not unified. format_duration reports elapsed
-# time and floors to whole seconds while always keeping a zero remainder
-# ("1m 0s"); format_clock renders the media-player clock a progress bar ticks
-# through ("07:45", "1:07:45"). Both build on the tier splits below, which the
-# CLI's timestamp and ETA formatters share.
+# format_duration reports elapsed time and floors to whole seconds while always
+# keeping a zero remainder ("1m 0s"). It and the progress bar's media-player
+# clock ("07:45", "1:07:45") build on the tier splits below, which the CLI's
+# timestamp and ETA formatters share.
 
 
 @dataclass(frozen=True, slots=True)
@@ -904,25 +903,6 @@ def format_time_left(remaining_ms: float, max_minutes: float) -> str:
         The ``"<remaining> left of <total>m"`` line.
     """
     return f"{format_duration(remaining_ms)} left of {max_minutes:g}m"
-
-
-def format_clock(ms: float) -> str:
-    """Format a duration as a media-player clock, flooring to whole seconds.
-
-    Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
-    appears only when there are whole hours (``"1:07:45"``).
-
-    Args:
-        ms: The duration in milliseconds.
-
-    Returns:
-        The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
-    """
-    hours, minutes, seconds = floored_clock_tiers(ms)
-
-    if hours == 0:
-        return f"{minutes:02d}:{seconds:02d}"
-    return f"{hours}:{minutes:02d}:{seconds:02d}"
 
 
 def now_ns() -> int:

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.progress import ProgressReporter, ProgressState, advance
+from gymrat.cli.progress import ProgressReporter, ProgressState, advance, format_clock
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
@@ -315,3 +315,22 @@ def test_stop_when_compare_done_does_print_summary():
     reporter.stop()
 
     assert _summary_line(console) == "compared in 45s"
+
+
+# ---------------------------------------------------------------------------
+# format_clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        pytest.param(9_999, "00:09", id="floors-partial-second"),
+        pytest.param(465_000, "07:45", id="minutes"),
+        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
+    ],
+)
+def test_format_clock_when_given_milliseconds_does_show_the_hour_tier_only_when_nonzero(
+    ms: float, expected: str
+) -> None:
+    assert format_clock(ms) == expected

@@ -13,7 +13,7 @@ trip an exit-code gate. Conditions are OR-ed: any one that trips fails the run.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, assert_never
+from typing import Annotated, assert_never
 
 import typer
 
@@ -42,7 +42,6 @@ from gymrat.report.json_doc import render_json
 from gymrat.report.tally import count_verdicts
 from gymrat.report.text.render import gated_geomean_trips, render_report
 from gymrat.report.types import (
-    CandidateComparison,
     ComparisonResult,
     FailOnCondition,
     GeomeanFailOn,
@@ -50,10 +49,7 @@ from gymrat.report.types import (
     ReportOptions,
 )
 from gymrat.sampling import RunOptions, TargetSpec
-from gymrat.utils import WarnSink, warn_to_stderr
-
-if TYPE_CHECKING:
-    from gymrat.model import GeomeanResult
+from gymrat.utils import warn_to_stderr
 
 _BaselineArgument = Annotated[
     TargetSpec,
@@ -99,11 +95,6 @@ def _serialize_fail_on(conditions: tuple[FailOnCondition, ...]) -> str:
     return ",".join(str(condition) for condition in conditions)
 
 
-def _gated_geomeans_of(candidate: CandidateComparison) -> list[GeomeanResult]:
-    """The gated geomean of every kind that gates, one entry per such kind."""
-    return [kind.gated_geomean for kind in candidate.kinds if kind.gated_geomean is not None]
-
-
 def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: ComparisonResult) -> bool:
     """Decide whether the ``--fail-on`` gate fails this run, so the process exits non-zero.
 
@@ -140,8 +131,6 @@ def should_fail_gate(conditions: tuple[FailOnCondition, ...], result: Comparison
 def warn_empty_geomean_gates(
     conditions: tuple[FailOnCondition, ...],
     result: ComparisonResult,
-    *,
-    warn: WarnSink = warn_to_stderr,
 ) -> None:
     """Warn once per candidate whose geomean gate had nothing stable to judge.
 
@@ -151,14 +140,14 @@ def warn_empty_geomean_gates(
     Args:
         conditions: The fail-on conditions in effect.
         result: The comparison result to inspect for inert gates.
-        warn: Where each warning goes.
     """
     if not any(isinstance(condition, GeomeanFailOn) for condition in conditions):
         return
 
     for candidate in result.candidates:
-        if all(geomean.n == 0 for geomean in _gated_geomeans_of(candidate)):
-            warn(
+        gated = [kind.gated_geomean for kind in candidate.kinds if kind.gated_geomean is not None]
+        if all(geomean.n == 0 for geomean in gated):
+            warn_to_stderr(
                 f'warning: geomean gate for "{candidate.label}" '
                 "had no stable gating metrics to measure"
             )

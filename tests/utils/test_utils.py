@@ -42,7 +42,6 @@ from gymrat.utils import (
     fan_out,
     finite_or_none,
     first_line,
-    format_clock,
     format_duration,
     fraction_of_median,
     is_balanced,
@@ -608,25 +607,6 @@ def test_format_duration_when_given_milliseconds_does_floor_to_two_tiers_keeping
     ms: float, expected: str
 ) -> None:
     assert format_duration(ms) == expected
-
-
-# ---------------------------------------------------------------------------
-# format_clock
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("ms", "expected"),
-    [
-        pytest.param(9_999, "00:09", id="floors-partial-second"),
-        pytest.param(465_000, "07:45", id="minutes"),
-        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
-    ],
-)
-def test_format_clock_when_given_milliseconds_does_show_the_hour_tier_only_when_nonzero(
-    ms: float, expected: str
-) -> None:
-    assert format_clock(ms) == expected
 
 
 # ---------------------------------------------------------------------------

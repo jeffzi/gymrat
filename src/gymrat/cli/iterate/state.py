@@ -489,25 +489,6 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
             return None
 
 
-def format_primary_delta(primary_delta_pct: float | None) -> str:
-    """Format the judge's primary delta the way the report prints it.
-
-    Both checklist modes print the delta through this, so the live row, the
-    plain line, and the report agree on sign and rounding.
-
-    Args:
-        primary_delta_pct: Percentage delta on the primary metric, or ``None``
-            when no delta is available.
-
-    Returns:
-        The report's signed percentage (``"+2.2%"``, an unsigned ``"0.0%"``
-        for a value that rounds to zero), or
-        :data:`~gymrat.cli.missing_delta.MISSING_DELTA` for a missing or
-        non-finite delta.
-    """
-    return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
-
-
 def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
     """Split the judge's verdict into the segments both checklist modes print.
 
@@ -521,11 +502,12 @@ def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
         The verdict's segments in print order. A ``"name"`` segment is one
         regressed metric's name; every other segment is ``"meta"`` wording.
         At most :data:`REGRESSED_NAME_CAP` regressed names are spelled out and
-        the rest collapse to ``"…"``; the delta renders through
-        :func:`format_primary_delta`, and the primary metric's name appears
-        only beside a printable delta.
+        the rest collapse to ``"…"``; the delta renders as the report prints
+        it, and the primary metric's name appears only beside a printable delta.
     """
-    delta = format_primary_delta(detail.primary_delta_pct)
+    # Both checklist modes print the delta through here, so the live row, the
+    # plain line, and the report agree on sign and rounding.
+    delta = format_percent_delta(detail.primary_delta_pct, missing=MISSING_DELTA)
     primary = delta if delta == MISSING_DELTA else f"{delta} on {detail.primary_metric}"
     regressed = detail.regressed_names
     if not regressed:

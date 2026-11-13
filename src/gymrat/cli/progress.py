@@ -61,7 +61,7 @@ from gymrat.progress_events import (
 from gymrat.utils import (
     MS_PER_SECOND,
     SamplingEta,
-    format_clock,
+    floored_clock_tiers,
     format_duration,
 )
 
@@ -221,19 +221,41 @@ def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent
 # ---------------------------------------------------------------------------
 
 
-def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
+def format_clock(ms: float) -> str:
+    """Format a duration as a media-player clock, flooring to whole seconds.
+
+    Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
+    appears only when there are whole hours (``"1:07:45"``).
+
+    Args:
+        ms: The duration in milliseconds.
+
+    Returns:
+        The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
+    """
+    hours, minutes, seconds = floored_clock_tiers(ms)
+
+    if hours == 0:
+        return f"{minutes:02d}:{seconds:02d}"
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def clock_text(elapsed_ms: float, remaining_ms: float | None) -> Text:
     """The media-player clock: elapsed time over the projected total.
 
     Args:
         elapsed_ms: Time the run has taken so far.
-        remaining_ms: The estimate of the time left.
+        remaining_ms: The estimate of the time left, or ``None`` before any
+            estimate exists.
 
     Returns:
-        The running clock, then a dimmed ``/total`` projected from the estimate.
+        The running clock, then a dimmed ``/total`` projected from the
+        estimate, or ``/--:--`` without one.
     """
+    total = "--:--" if remaining_ms is None else format_clock(elapsed_ms + remaining_ms)
     text = Text()
     text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-    text.append(f"/{format_clock(elapsed_ms + remaining_ms)}", style=STYLE_META)
+    text.append(f"/{total}", style=STYLE_META)
     return text
 
 
@@ -254,13 +276,7 @@ class ClockColumn(ProgressColumn):
 
     @override
     def render(self, task: Task) -> Text:
-        elapsed_ms = (task.elapsed or 0.0) * MS_PER_SECOND
-        if self._remaining_ms is not None:
-            return clock_text(elapsed_ms, self._remaining_ms)
-        text = Text()
-        text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-        text.append("/--:--", style=STYLE_META)
-        return text
+        return clock_text((task.elapsed or 0.0) * MS_PER_SECOND, self._remaining_ms)
 
 
 class _TargetColumn(ProgressColumn):
