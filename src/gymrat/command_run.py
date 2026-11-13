@@ -39,7 +39,7 @@ from gymrat.session.store import (
     recover_torn_tail,
     session_header,
 )
-from gymrat.utils import otlp_endpoint_from_env, warn_to_stderr
+from gymrat.utils import otlp_traces_url, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -289,7 +289,7 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
         endpoint) and its record count: ``0`` without an endpoint or a log,
         ``None`` when the log could not be read.
     """
-    if otlp_endpoint_from_env() is None:
+    if otlp_traces_url() is None:
         return "", 0
     header = session_header(root)
     session_id = header.session_id if header is not None else ""
@@ -317,7 +317,7 @@ def _maybe_configure_tracing(root: str) -> bool:
     Raises:
         ValueError: When tracing is already configured for another session.
     """
-    if otlp_endpoint_from_env() is None:
+    if otlp_traces_url() is None:
         return False
     header = session_header(root)
     if header is None:

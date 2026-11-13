@@ -17,7 +17,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
 from gymrat.errors import GymratError
 from gymrat.session.paths import repo_root, session_jsonl_path, supervisor_log_name
 from gymrat.session.store import read_session_header
-from gymrat.utils import ENDPOINT_ENV, otlp_endpoint, otlp_endpoint_from_env, write_and_flush
+from gymrat.utils import ENDPOINT_ENV, TRACES_ENDPOINT_ENV, otlp_traces_url, write_and_flush
 
 _SessionLogArgument = Annotated[
     str | None, typer.Argument(metavar="[SESSION_LOG]", help="path to session.jsonl")
@@ -87,21 +87,18 @@ def _export(session_log: str | None, endpoint: str | None) -> None:
         exported_span_count,
         flush_tracing,
         session_span_dropped,
-        traces_url,
     )
     from gymrat.telemetry.replay import (  # noqa: PLC0415 -- lazy import keeps CLI startup off the telemetry stack
         replay_session,
     )
 
-    explicit_endpoint = endpoint
-    endpoint = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
-    if endpoint is None:
-        msg = f"No endpoint: pass --endpoint or set {ENDPOINT_ENV}"
+    destination = otlp_traces_url(endpoint)
+    if destination is None:
+        msg = f"No endpoint: pass --endpoint or set {ENDPOINT_ENV} or {TRACES_ENDPOINT_ENV}"
         raise GymratError(msg)
 
-    if not configure_tracing(session_id, endpoint=explicit_endpoint):
+    if not configure_tracing(session_id, endpoint=endpoint):
         raise GymratError(_OTEL_MISSING)
-    destination = traces_url(endpoint, explicit=explicit_endpoint is not None)
 
     session_dir = Path(session_log).parent
     supervisor_logs = [str(path) for path in sorted(session_dir.glob(supervisor_log_name("*")))]

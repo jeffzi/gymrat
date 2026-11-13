@@ -369,8 +369,9 @@ uv tool install 'gymrat[otel] @ git+https://github.com/jeffzi/gymrat'
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-With both in place, gymrat exports spans as they happen: for every command that appends a `command`
-record and for every supervised run. One trace covers the whole session:
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, the full URL spans are posted to, works too and wins over the
+base endpoint. With both in place, gymrat exports spans as they happen: for every command that
+appends a `command` record and for every supervised run. One trace covers the whole session:
 
 - **`gymrat.session`** — the root span, carrying the session identity.
 - **`gymrat.run`** — one per supervised run, a child of the session span, with cost, duration, and

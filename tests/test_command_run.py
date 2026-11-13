@@ -775,16 +775,25 @@ async def test_with_repo_lock_when_start_cannot_append_its_record_does_emit_no_c
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("variable", "path"),
+    [
+        pytest.param("OTEL_EXPORTER_OTLP_ENDPOINT", "", id="base-endpoint"),
+        pytest.param("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "/v1/traces", id="traces-endpoint"),
+    ],
+)
 async def test_with_repo_lock_when_first_start_traced_only_by_endpoint_does_export_its_span_keyed_on_the_new_session(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    path: str,
 ):
     async def first_start(trace: CommandTrace) -> str:
         write_session_log(repo_root(), session_record(session_id=FRESH_SESSION_ID))
         return "started"
 
     with otlp_collector() as collector:
-        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.endpoint)
+        monkeypatch.setenv(variable, f"{collector.endpoint}{path}")
         await with_repo_lock("start", first_start)
 
     start_sessions = [

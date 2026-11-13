@@ -164,6 +164,21 @@ def test_export_when_spans_are_dropped_before_the_exporter_does_exit_two_naming_
     assert collector.endpoint in output
 
 
+def test_export_when_only_traces_variable_set_does_post_to_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    session_log = _populate_session_dir(str(tmp_path))
+
+    with otlp_collector() as collector:
+        monkeypatch.delenv(ENDPOINT_ENV, raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", f"{collector.endpoint}/custom")
+
+        result = runner.invoke(app, ["export", session_log])
+
+    assert result.exit_code == 0, combined_output(result)
+    assert {export.path for export in collector.received} == {"/custom"}
+
+
 def test_export_when_base_and_traces_variables_set_without_flag_does_post_to_the_traces_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

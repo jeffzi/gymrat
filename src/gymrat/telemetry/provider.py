@@ -14,7 +14,7 @@ import warnings
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, override
 
-from gymrat.utils import otlp_endpoint, otlp_endpoint_from_env
+from gymrat.utils import otlp_traces_url
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -129,9 +129,6 @@ def parse_traceparent(value: str) -> SpanContext | None:
     return span_context if span_context.is_valid else None
 
 
-_TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-_TRACES_PATH = "v1/traces"
-
 _session_id: str = ""
 _provider: TracerProvider | None = None
 _tracer: Tracer | None = None
@@ -140,25 +137,6 @@ _exported_span_count: int = 0
 _session_span_dropped: bool = False
 
 _queued_span_id: ContextVar[int | None] = ContextVar("_queued_span_id", default=None)
-
-
-def traces_url(endpoint: str, *, explicit: bool) -> str:
-    """Build the URL spans are posted to, as the OTLP exporter's environment precedence does.
-
-    Args:
-        endpoint: The OTLP base endpoint.
-        explicit: Whether ``endpoint`` was passed in rather than read from
-            ``OTEL_EXPORTER_OTLP_ENDPOINT``.
-
-    Returns:
-        ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` when it is set and ``endpoint``
-        is not explicit, otherwise ``endpoint`` joined with the traces path.
-    """
-    traces_endpoint = None if explicit else otlp_endpoint_from_env(_TRACES_ENDPOINT_ENV)
-    if traces_endpoint is not None:
-        return traces_endpoint
-    separator = "" if endpoint.endswith("/") else "/"
-    return f"{endpoint}{separator}{_TRACES_PATH}"
 
 
 def configure_tracing(
@@ -208,9 +186,8 @@ def configure_tracing(
             raise ValueError(msg)
         return True
 
-    explicit = endpoint is not None
-    endpoint = otlp_endpoint(endpoint) if explicit else otlp_endpoint_from_env()
-    if endpoint is None:
+    url = otlp_traces_url(endpoint)
+    if url is None:
         return False
 
     try:
@@ -220,7 +197,7 @@ def configure_tracing(
         )
 
         if span_processor is None:
-            span_processor = _otlp_span_processor(traces_url(endpoint, explicit=explicit))
+            span_processor = _otlp_span_processor(url)
     except ImportError:
         return False
 

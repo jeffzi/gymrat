@@ -46,6 +46,9 @@ _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
 _MINUTES_PER_HOUR = 60
 
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+# The path the OTLP exporter appends to a base endpoint for spans.
+_OTLP_TRACES_PATH = "v1/traces"
 """Environment variable every tracing entry point reads the OTLP endpoint from."""
 
 # The budget is measured in bytes, not characters: downstream consumers size
@@ -524,6 +527,31 @@ def otlp_endpoint_from_env(name: str = ENDPOINT_ENV) -> str | None:
         The trimmed endpoint, or ``None`` when the variable is unset or blank.
     """
     return otlp_endpoint(os.environ.get(name))
+
+
+def otlp_traces_url(endpoint: str | None = None) -> str | None:
+    """Resolve the URL spans are posted to, as the OTLP exporter's environment precedence does.
+
+    An explicit endpoint wins, then ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` as
+    written, then ``OTEL_EXPORTER_OTLP_ENDPOINT``; a base endpoint is joined
+    with the traces path.
+
+    Args:
+        endpoint: The OTLP base endpoint passed in, or ``None`` to read the
+            environment.
+
+    Returns:
+        The traces URL, or ``None`` when no endpoint is configured.
+    """
+    if endpoint is None:
+        traces_endpoint = otlp_endpoint_from_env(TRACES_ENDPOINT_ENV)
+        if traces_endpoint is not None:
+            return traces_endpoint
+    base = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
+    if base is None:
+        return None
+    separator = "" if base.endswith("/") else "/"
+    return f"{base}{separator}{_OTLP_TRACES_PATH}"
 
 
 def color_from_env() -> bool | None:
