@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +71,10 @@ _STOPPED_WINDOW_S = 0.75
 # interpreters and import gymrat on the way.
 _BEAT_TIMEOUT_S = 20.0
 
-# Timeout given to the outer run of the cross-platform teardown test. It fires
-# well after the bench is beating, so the timeout case always lands mid-bench.
-_OUTER_TIMEOUT_MS = 5000
+# Timeout given to the outer run of the cross-platform teardown test. Its clock
+# starts only once the bench and its grandchild are beating (see
+# _hold_timeouts_until), so the timeout case always lands mid-bench.
+_OUTER_TIMEOUT_MS = 500
 
 # Upper bound for a torn-down outer run to settle, including its grace.
 _SETTLE_TIMEOUT_S = 15.0
@@ -387,6 +388,31 @@ def reap_beats() -> Iterator[list[Path]]:
 # ---------------------------------------------------------------------------
 
 
+def _hold_timeouts_until(monkeypatch: pytest.MonkeyPatch, started: asyncio.Event) -> None:
+    """Start the clock of every timed ``asyncio.wait`` only once ``started`` is set.
+
+    The run's timeout is the timed wait ``exec`` makes, so it cannot fire before
+    the tree it is meant to tear down is running, however slowly the host starts it.
+
+    Args:
+        monkeypatch: The fixture that wraps ``asyncio.wait``.
+        started: Set by the test once the whole tree is running.
+    """
+    real_wait = asyncio.wait
+
+    async def wait(
+        fs: Iterable[asyncio.Future[Any]],
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109 -- mirrors the asyncio.wait signature it stands in for
+        return_when: str = asyncio.ALL_COMPLETED,
+    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+        if timeout is not None:
+            await started.wait()
+        return await real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+
+
 @pytest.mark.parametrize(
     "teardown",
     [
@@ -396,11 +422,14 @@ def reap_beats() -> Iterator[list[Path]]:
 )
 async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     scripts: dict[str, Path],
     reap_beats: list[Path],
     teardown: Teardown,
 ) -> None:
     bench_beat, grandchild_beat = bench_beat_paths(tmp_path, reap_beats)
+    tree_started = asyncio.Event()
+    _hold_timeouts_until(monkeypatch, tree_started)
     abort = asyncio.Event()
     task = asyncio.create_task(
         exec_argv(
@@ -414,6 +443,7 @@ async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     )
     await asyncio.to_thread(wait_for_beat, bench_beat)
     await asyncio.to_thread(wait_for_beat, grandchild_beat)
+    tree_started.set()
 
     teardown.trigger(task, None, abort)
 

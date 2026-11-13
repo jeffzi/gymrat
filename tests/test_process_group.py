@@ -41,8 +41,8 @@ from tests._process_helpers import (
     win32_process_group,
 )
 
-# The win32 Job Object tests at the end fake the platform and run everywhere;
-# every test before them needs real POSIX process groups.
+# The taskkill-fallback test and the win32 Job Object tests at the end fake the
+# platform and run everywhere; every other test needs real POSIX process groups.
 
 # The C signature of ``sysctl``, so a stand-in receives real pointers to write through.
 _SysctlFunction = ctypes.CFUNCTYPE(
@@ -330,11 +330,11 @@ def exiting_child() -> Iterator[subprocess.Popen[bytes]]:
 
 
 @needs_posix_process_groups
+@pytest.mark.usefixtures("linux_proc_root")
 def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return_without_sleeping(
     monkeypatch: pytest.MonkeyPatch,
     wait_clock: WaitClock,
 ) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(process_group, "os", ReapedMidProbe())
 
     with within_hang_guard(_HANG_GUARD_S):
@@ -721,7 +721,6 @@ def _taskkill_raises(error: Exception) -> Callable[..., subprocess.CompletedProc
     return fake_run
 
 
-@needs_posix_process_groups
 @pytest.mark.parametrize(
     ("error", "warned"),
     [

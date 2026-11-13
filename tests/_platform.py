@@ -33,3 +33,5 @@ needs_posix_process_groups = pytest.mark.skipif(
 needs_posix_signals = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only shell and signals"
 )
+
+needs_pty = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only pty")

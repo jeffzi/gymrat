@@ -33,17 +33,19 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
-    OVERRUN_WITH_INVALID_KEPT,
-    SHORT_WITH_INVALID,
+    OVERRUN_KEPT_BYTES,
     SMALL_CAP,
     Teardown,
     cancel_and_settle,
     cancel_task,
     expected_result,
+    open_gate_after_reading,
     run_shell,
     set_abort,
     settle,
     shell_leaving_a_descendant,
+    stderr_overruns,
+    stdout_overruns,
     wait_for_spawned,
 )
 from tests._process_helpers import (
@@ -122,6 +124,13 @@ class HeldReaper:
     Each hold is recorded under the pid it holds back for as long as it runs, on
     either path; :meth:`is_holding` reads that record. Holds of different
     processes overlap, so each is tracked on its own.
+
+    Attributes:
+        release: Set to end every hold at once.
+        hold_s: The longest any one hold lasts when ``release`` is never set.
+        via_pidfd: Whether ``pidfd_open`` hands out a held pidfd; when false it
+            refuses the call, so the watcher reaps on a waitpid thread whose
+            ``waitpid``/``waitid`` is held instead.
     """
 
     release: threading.Event
@@ -321,7 +330,7 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
     ("command", "expected"),
     [
         pytest.param(
-            f"{SHORT_WITH_INVALID} >&2; {OVERRUN_WITH_INVALID_KEPT}; sleep 30",
+            stdout_overruns,
             ExecTimeoutError(
                 stdout="\N{REPLACEMENT CHARACTER}" * 3,
                 stderr="\N{REPLACEMENT CHARACTER}",
@@ -333,7 +342,7 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
             id="stdout-overran",
         ),
         pytest.param(
-            f"{SHORT_WITH_INVALID}; {{ {OVERRUN_WITH_INVALID_KEPT}; }} >&2; sleep 30",
+            stderr_overruns,
             ExecTimeoutError(
                 stdout="\N{REPLACEMENT CHARACTER}",
                 stderr="\N{REPLACEMENT CHARACTER}" * 3,
@@ -349,13 +358,16 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
 async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
+    tmp_path: Path,
     *,
-    command: str,
+    command: Callable[[Path], str],
     expected: ExecTimeoutError,
 ) -> None:
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
+    gate = tmp_path / "kept-bytes-read"
+    open_gate_after_reading(monkeypatch, gate, OVERRUN_KEPT_BYTES)
 
-    result = await run_shell(command, make_opts(timeout_ms=1000))
+    result = await run_shell(f"{command(gate)}; sleep 30", make_opts(timeout_ms=1000))
 
     assert result == expected
 

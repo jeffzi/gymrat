@@ -1,14 +1,12 @@
-"""Contention-hardening tests for the single-flight lock and its command wiring.
+"""Contention-hardening test for the single-flight lock across real processes.
 
 Where :mod:`tests.session.test_lock` drives the lock through patched system
-calls in one process, these tests pin the guarantees that only surface under
-genuine pressure:
+calls in one process, this test pins the guarantee that only surfaces under
+genuine pressure: a burst of real processes racing for one lockfile grants
+exactly one holder and hands every loser the contention error, with the
+lockfile never torn.
 
-- a burst of real processes racing for one lockfile grants exactly one holder
-  and hands every loser the contention error, with the lockfile never torn.
-
-The multi-process tests are POSIX-only: they rendezvous children on a named
-pipe.
+The test is POSIX-only: it rendezvouses its children on a named pipe.
 """
 
 import json

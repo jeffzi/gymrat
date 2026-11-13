@@ -71,10 +71,86 @@ SAMPLING_EXEC = "gymrat.sampling.exec"
 #: An output cap small enough that a few bytes overrun it.
 SMALL_CAP = 2
 
-#: Three invalid bytes, read before the cap is reached and so kept whole, decode
-#: to three U+FFFD that re-encode to nine bytes; the later "ab" is dropped. The
-#: kept text re-encodes longer than the five bytes written, yet the stream overran.
-OVERRUN_WITH_INVALID_KEPT = "printf '\\377\\377\\377'; sleep 0.2; printf ab"
+#: The three invalid bytes :func:`overrun_with_invalid_kept` writes before it waits.
+OVERRUN_KEPT_BYTES = b"\xff\xff\xff"
+
+
+def wait_for_gate(gate: Path) -> str:
+    """A shell snippet that blocks until ``gate`` exists.
+
+    Args:
+        gate: The file the test creates to let the command go on.
+
+    Returns:
+        The shell snippet.
+    """
+    return f"until [ -e {shlex.quote(str(gate))} ]; do sleep 0.01; done"
+
+
+def open_gate_after_reading(monkeypatch: pytest.MonkeyPatch, gate: Path, marker: bytes) -> None:
+    """Create ``gate`` once a stream read hands the reader a chunk ending in ``marker``.
+
+    A command that writes ``marker`` and then waits on the gate puts its next
+    bytes in a later read, so the chunk boundary comes from the reader, not
+    from a sleep in the child.
+
+    Args:
+        monkeypatch: The fixture that wraps ``asyncio.StreamReader.read``.
+        gate: The file to create.
+        marker: The bytes that end the chunk the command waits to be read.
+    """
+    real_read = asyncio.StreamReader.read
+
+    async def read(self: asyncio.StreamReader, n: int = -1) -> bytes:
+        chunk = await real_read(self, n)
+        if chunk.endswith(marker):
+            await asyncio.to_thread(gate.touch)
+        return chunk
+
+    monkeypatch.setattr(asyncio.StreamReader, "read", read)
+
+
+def overrun_with_invalid_kept(gate: Path) -> str:
+    """Write three invalid bytes, wait on ``gate``, then write ``ab``.
+
+    The three bytes, read before the cap is reached and so kept whole, decode to
+    three U+FFFD that re-encode to nine bytes; the later ``ab`` is dropped. The
+    kept text re-encodes longer than the five bytes written, yet the stream
+    overran.
+
+    Args:
+        gate: The file :func:`open_gate_after_reading` creates once the three
+            bytes are read.
+
+    Returns:
+        The shell command.
+    """
+    return f"printf '\\377\\377\\377'; {wait_for_gate(gate)}; printf ab"
+
+
+def stdout_overruns(gate: Path) -> str:
+    """Write one short invalid byte to stderr, then overrun the cap on stdout.
+
+    Args:
+        gate: The gate :func:`overrun_with_invalid_kept` waits on.
+
+    Returns:
+        The shell command.
+    """
+    return f"{SHORT_WITH_INVALID} >&2; {overrun_with_invalid_kept(gate)}"
+
+
+def stderr_overruns(gate: Path) -> str:
+    """Write one short invalid byte to stdout, then overrun the cap on stderr.
+
+    Args:
+        gate: The gate :func:`overrun_with_invalid_kept` waits on.
+
+    Returns:
+        The shell command.
+    """
+    return f"{SHORT_WITH_INVALID}; {{ {overrun_with_invalid_kept(gate)}; }} >&2"
+
 
 #: One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
 #: three bytes: longer than the one byte written, yet nothing was dropped.

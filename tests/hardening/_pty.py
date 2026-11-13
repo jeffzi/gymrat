@@ -92,6 +92,10 @@ def pty_capture(size: tuple[int, int]) -> Generator[PtyCapture]:
 
     Yields:
         The capture, whose ``slave`` the caller hands to the child.
+
+    Raises:
+        AssertionError: A process still held the pty when the join bound ran
+            out, so ``output`` would be missing what it drew after that.
     """
     master, slave = pty.openpty()
     rows, columns = size
@@ -104,8 +108,15 @@ def pty_capture(size: tuple[int, int]) -> Generator[PtyCapture]:
     finally:
         os.close(slave)
         reader.join(timeout=_READER_JOIN_S)
+        still_held = reader.is_alive()
         os.close(master)
         capture.output = b"".join(capture.chunks).decode("utf-8", "replace")
+    if still_held:
+        msg = (
+            f"a process still holds the pty after {_READER_JOIN_S}s; "
+            "the captured output would be truncated"
+        )
+        raise AssertionError(msg)
 
 
 def on_pty_kwargs(

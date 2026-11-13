@@ -30,15 +30,18 @@ from gymrat import exec as exec_mod
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
-    OVERRUN_WITH_INVALID_KEPT,
-    SHORT_WITH_INVALID,
+    OVERRUN_KEPT_BYTES,
     SMALL_CAP,
     ExecRun,
     ExecTask,
     expected_result,
+    open_gate_after_reading,
     run_argv,
     run_shell,
     shell_leaving_a_descendant,
+    stderr_overruns,
+    stdout_overruns,
+    wait_for_gate,
     wait_for_spawned,
 )
 from tests._process_helpers import (
@@ -54,12 +57,15 @@ from tests._process_helpers import (
 
 
 async def test_exec_when_multi_byte_char_split_across_reads_does_decode_single_char(
-    make_opts: Callable[..., ExecOptions],
+    make_opts: Callable[..., ExecOptions], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The two bytes of U+00B5 are flushed by separate printf processes, so they
-    # land in separate pipe reads; one incremental decoder joins them.
+    # The second byte of U+00B5 is written only once the first has been read,
+    # so they land in separate reads; one incremental decoder joins them.
+    gate = tmp_path / "first-byte-read"
+    open_gate_after_reading(monkeypatch, gate, b"\xc2")
+
     result = await run_exec(
-        "printf '\\302'; sleep 0.2; printf '\\265'",
+        f"printf '\\302'; {wait_for_gate(gate)}; printf '\\265'",
         make_opts(),
     )
 
@@ -241,7 +247,7 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 ) -> None:
     # A cap shorter than the diagnostic, so its length alone cannot pass for truncation.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 4)
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts()))
+    task = asyncio.create_task(run_exec("sleep 30", make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     assert proc.stdout is not None
 
@@ -284,12 +290,15 @@ async def test_exec_when_output_past_cap_is_dropped_does_still_count_its_bytes(
 async def test_exec_when_chunk_crosses_cap_does_keep_it_whole(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
+    tmp_path: Path,
 ) -> None:
     # The prior total (5) is still under the cap, so the chunk that crosses it
     # is kept whole rather than cut at the cap.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 10)
+    gate = tmp_path / "plums-read"
+    open_gate_after_reading(monkeypatch, gate, b"plums")
 
-    result = await run_exec("printf plums; sleep 0.2; printf cherries", make_opts())
+    result = await run_exec(f"printf plums; {wait_for_gate(gate)}; printf cherries", make_opts())
 
     assert result == expected_result("plums" + "cherries")
 
@@ -298,12 +307,12 @@ async def test_exec_when_chunk_crosses_cap_does_keep_it_whole(
     ("command", "expected"),
     [
         pytest.param(
-            f"{SHORT_WITH_INVALID} >&2; {OVERRUN_WITH_INVALID_KEPT}",
+            stdout_overruns,
             (True, False),
             id="stdout-overran",
         ),
         pytest.param(
-            f"{SHORT_WITH_INVALID}; {{ {OVERRUN_WITH_INVALID_KEPT}; }} >&2",
+            stderr_overruns,
             (False, True),
             id="stderr-overran",
         ),
@@ -313,12 +322,15 @@ async def test_exec_when_run_finishes_does_flag_each_stream_that_overran_the_cap
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
     *,
-    command: str,
+    tmp_path: Path,
+    command: Callable[[Path], str],
     expected: tuple[bool, bool],
 ) -> None:
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
+    gate = tmp_path / "kept-bytes-read"
+    open_gate_after_reading(monkeypatch, gate, OVERRUN_KEPT_BYTES)
 
-    result = await run_exec(command, make_opts())
+    result = await run_exec(command(gate), make_opts())
 
     assert (result.stdout_truncated, result.stderr_truncated) == expected
 

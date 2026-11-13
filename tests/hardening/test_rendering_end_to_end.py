@@ -18,8 +18,11 @@ from tests._ansi import SGR_RE
 from tests._cli import run_cli
 from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
 from tests._git import write_committed_bench as _write_committed_bench
+from tests._platform import needs_pty
 from tests.cli._signalled_cli import spawned_gymrat
 from tests.hardening._pty import PTY_SIZE, on_pty_kwargs, pty_capture, pty_env
+
+pytestmark = needs_pty
 
 if TYPE_CHECKING:
     from collections.abc import Callable

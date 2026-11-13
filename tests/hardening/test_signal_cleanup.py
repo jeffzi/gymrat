@@ -36,6 +36,7 @@ from tests._git import (
     wait_for_worktrees,
 )
 from tests._git import write_committed_bench as _write_committed_bench
+from tests._platform import needs_pty
 from tests._process_helpers import poll_until_blocking
 from tests._process_helpers import read_pid_file as _read_pid_file
 from tests._process_helpers import (
@@ -52,6 +53,8 @@ from tests.cli._signalled_cli import (
     stop_by_signal,
 )
 from tests.hardening._pty import PTY_SIZE, on_pty_kwargs, pty_capture, pty_env
+
+pytestmark = needs_pty
 
 if TYPE_CHECKING:
     import subprocess
