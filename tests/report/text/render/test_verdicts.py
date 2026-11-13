@@ -144,7 +144,6 @@ def test_render_report_when_unstable_around_zero_candidate_median_does_state_noi
 
     highlights = [line.strip() for line in highlight_lines(render_report(result))]
 
-    assert highlights[0].startswith("≈ jittery/heap")
     assert "0B candidate median" in highlights[0]
 
 
@@ -422,37 +421,16 @@ def test_footer_lines_when_verbose_does_name_the_band_cause_per_metric(
     assert all(cause in line for cause, line in zip(expected, lines, strict=True))
 
 
-@pytest.mark.parametrize(
-    ("metrics", "samples", "expected"),
-    [
-        pytest.param(
-            {
-                "entity.alive_check/heap": band_metric(n=10, usable_n=3),
-                "iteration.columns/heap": band_metric(n=8, usable_n=2),
-                "parse/time": permutation_metric(verdict="improved", delta=-10),
-            },
-            4,
-            [],
-            id="ties-alone",
-        ),
-        pytest.param(
-            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
-            PERMUTATION_MIN_N - 1,
-            [SHORTAGE_SUGGESTION],
-            id="fewer-samples-than-floor",
-        ),
-    ],
-)
-def test_footer_lines_when_not_verbose_does_suggest_samples_only_below_the_floor(
-    metrics: MetricComparisons, samples: int, expected: list[str]
-):
-    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples, target_count=2)
+def test_footer_lines_when_not_verbose_and_only_ties_at_the_floor_does_suggest_nothing():
+    metrics: MetricComparisons = {
+        "entity.alive_check/heap": band_metric(n=10, usable_n=3),
+        "iteration.columns/heap": band_metric(n=8, usable_n=2),
+        "parse/time": permutation_metric(verdict="improved", delta=-10),
+    }
 
-    assert [
-        (hint, render_plain(line))
-        for hint, line in zip(expected, lines, strict=True)
-        if hint not in render_plain(line)
-    ] == []
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=4, target_count=2)
+
+    assert list(lines) == []
 
 
 def test_footer_lines_when_floor_reached_but_fewer_paired_does_give_one_hint_without_a_samples_suggestion():

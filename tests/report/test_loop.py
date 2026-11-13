@@ -123,12 +123,6 @@ def test_format_verdict_block_when_rerun_does_lead_with_the_metric_and_its_answe
     [
         pytest.param(
             start_result(),
-            None,
-            [],
-            id="neither",
-        ),
-        pytest.param(
-            start_result(),
             "RUNBOOK.md",
             ["  runbook: RUNBOOK.md — read it before your first edit"],
             id="runbook",

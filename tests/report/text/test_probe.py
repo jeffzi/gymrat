@@ -108,29 +108,20 @@ def _zero_reference_result(median: float, delta_pct: float | None) -> ProbeResul
     )
 
 
-@pytest.mark.parametrize(
-    ("median", "delta_pct", "rendered"),
-    [
-        pytest.param(90.0, None, "", id="zero-reference-leaves-the-delta-blank"),
-        pytest.param(0.0, 0.0, "0.0%", id="both-zero-is-no-change"),
-    ],
-)
-def test_render_probe_report_when_reference_zero_does_render_a_blank_or_zero_delta(
-    median: float, delta_pct: float | None, rendered: str
-):
-    result = _zero_reference_result(median, delta_pct)
+def test_render_probe_report_when_reference_zero_and_candidate_not_does_leave_the_delta_blank():
+    result = _zero_reference_result(90.0, None)
 
     row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 
-    assert strip_ansi(delta_cell(row)).strip() == rendered
+    assert strip_ansi(delta_cell(row)).strip() == ""
 
 
-def test_render_probe_report_when_reference_zero_does_leave_the_delta_unstyled():
+def test_render_probe_report_when_reference_and_candidate_zero_does_show_an_unstyled_zero_delta():
     result = _zero_reference_result(0.0, 0.0)
 
     row = line_containing(render_probe_report(result, ReportOptions(color=True)), "decode/time")
 
-    assert "\x1b[" not in delta_cell(row)
+    assert delta_cell(row).strip() == "0.0%"
 
 
 # ---------------------------------------------------------------------------

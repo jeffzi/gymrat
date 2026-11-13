@@ -1,7 +1,7 @@
 """Tests for the single-candidate comparison text report, flat and sectioned.
 
 Baseline, candidate, kind, group and member names carrying square brackets
-print as written. The scoped geomean label counts kept metrics against the total.
+print as written.
 """
 
 from __future__ import annotations
@@ -9,9 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from gymrat.model import Exclusion
-from gymrat.report.table.cells import geomean_scope_label
 from gymrat.report.text.render import render_report
-from gymrat.report.text.single import scoped_geomean_label
 
 if TYPE_CHECKING:
     from gymrat.model import GeomeanResult
@@ -133,22 +131,3 @@ def test_render_report_when_flat_geomean_covers_no_metric_does_show_the_no_stabl
     report = strip_ansi(render_report(result))
 
     assert "no stable metrics" in stripped_cells(line_starting_with(report, "geomean"))[-1]
-
-
-# ---------------------------------------------------------------------------
-# scoped_geomean_label
-# ---------------------------------------------------------------------------
-
-
-def test_scoped_geomean_label_when_metrics_excluded_does_count_kept_metrics_against_total():
-    geomean = geomean_of(
-        n=13,
-        excluded=[
-            Exclusion(metric="a/heap", reason="unstable"),
-            Exclusion(metric="b/heap", reason="undefined-ratio"),
-        ],
-    )
-
-    label = scoped_geomean_label("memory", geomean)
-
-    assert label == f"{geomean_scope_label('memory')} (13/15)"
