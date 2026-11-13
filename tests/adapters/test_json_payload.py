@@ -1,10 +1,13 @@
 import json
+import sys
 
 import pytest
 
 from gymrat.adapters.contract import AdapterError
 from gymrat.adapters.json_payload import JsonArrayAdapter, NameWording, accepts_metric_prefix
+from gymrat.adapters.registry import get_adapter
 from gymrat.utils import WarnSink
+from tests.adapters._inputs import VALID_BENCHMARK, VALID_TASK, build_stdout, build_tinybench_stdout
 
 
 def _copy_entry(entry: object, metrics: dict[str, float], _warn: WarnSink) -> None:
@@ -30,6 +33,9 @@ _WORDING = NameWording(
 
 def _payload(*entries: object) -> str:
     return json.dumps({"items": list(entries)})
+
+
+_OVERSIZED_INT = "1" * (sys.get_int_max_str_digits() + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +90,28 @@ def test_parse_when_truncated_json_has_nested_object_does_report_decode_failure(
         _FIRST.parse(truncated)
 
     assert str(decode_info.value) in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("adapter_name", "stdout"),
+    [
+        pytest.param("mitata", build_stdout([VALID_BENCHMARK]), id="mitata"),
+        pytest.param("tinybench", build_tinybench_stdout([VALID_TASK]), id="tinybench"),
+    ],
+)
+def test_parse_when_payload_holds_oversized_integer_does_raise_adapter_error(
+    adapter_name: str, stdout: str
+):
+    oversized = f'{stdout.removesuffix("}")}, "count": {_OVERSIZED_INT}}}'
+
+    with pytest.raises(AdapterError):
+        get_adapter(adapter_name).parse(oversized)
+
+
+def test_parse_when_decoy_holds_oversized_integer_does_skip_it():
+    stdout = f'{{"count": {_OVERSIZED_INT}}}\n{_PAYLOAD}'
+
+    assert _FIRST.parse(stdout) == {"a": 1}
 
 
 def test_parse_when_pathological_nesting_does_raise_adapter_error_not_recursion_error():

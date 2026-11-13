@@ -60,7 +60,9 @@ def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
             # Every attempt starts at a ``{``, so a successful raw_decode can only
             # have produced a JSON object — no non-dict shape check is needed.
             parsed, end = _JSON_DECODER.raw_decode(text, pos)
-        except json.JSONDecodeError as exc:
+        # ValueError, not just JSONDecodeError: an integer literal past the
+        # interpreter's int-string digit limit raises a bare ValueError mid-decode.
+        except ValueError as exc:
             failure = str(exc)
         except RecursionError:
             failure = f"Exceeded maximum recursion depth while parsing at position {pos}"
