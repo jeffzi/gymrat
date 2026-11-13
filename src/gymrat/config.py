@@ -4,10 +4,11 @@ The frozen dataclasses a ``gymrat.toml`` settles into carry their own validation
 annotations, so ``TypeAdapter(ConfigFile)`` validates a parsed file directly.
 Constructing one in code runs no validation.
 
-Each ``GYMRAT_*`` reader returns an :class:`EnvResult` rather than raising, so
-the pipeline decides whether a problem throws (the CLI path) or is collected. An
-unset variable yields an empty result so the next source in the precedence chain
--- config file, then built-in default -- can supply the value.
+Each ``GYMRAT_*`` reader appends a rejected value's problem to the pipeline's
+list rather than raising, so the pipeline decides whether a problem throws (the
+CLI path) or is collected. An unset variable yields ``None`` so the next source
+in the precedence chain -- config file, then built-in default -- can supply the
+value.
 
 The pipeline merges flags, env vars, config file, and defaults. One settlement
 pipeline serves every caller. :func:`inspect_config` runs it and never raises:
@@ -35,7 +36,6 @@ import json
 import os
 import stat
 import tomllib
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
@@ -76,66 +76,31 @@ is accepted or rejected no matter which one it arrives through.
 """
 
 
-@dataclass(frozen=True, slots=True)
-class EnvResult[T]:
-    """The outcome of reading one env var: a value, a problem, or neither.
-
-    Attributes:
-        value: The parsed value, or ``None`` when the variable is unset or
-            invalid. Never set together with ``problem``.
-        problem: Why the variable's value was rejected, or ``None`` when it is
-            unset or valid. Never set together with ``value``.
-    """
-
-    value: T | None = None
-    problem: str | None = None
-
-
 def _env_problem(env_var: str, phrase: str, raw: str) -> str:
     return f"Invalid value for {env_var}: {expected_got(phrase, raw)}"
 
 
-def env_string_result(env_var: str) -> EnvResult[str]:
-    """Read a ``GYMRAT_*`` string env var, returning its value or a problem.
-
-    A whitespace-only value is rejected alongside the empty string: these vars
-    name work to do -- a command to run, or a config path to load -- and a blank
-    value would run as a no-op shell or resolve to a meaningless path.
-
-    Args:
-        env_var: Name of the ``GYMRAT_*`` environment variable to read.
-
-    Returns:
-        An :class:`EnvResult` with the raw string value, a problem, or neither
-        when the variable is unset.
-    """
+def _env_string(env_var: str, problems: list[str]) -> str | None:
+    # A whitespace-only value is rejected alongside the empty string: these vars
+    # name work to do -- a command to run, or a config path to load -- and a blank
+    # value would run as a no-op shell or resolve to a meaningless path.
     raw = os.environ.get(env_var)
     if raw is None:
-        return EnvResult()
+        return None
     if raw.strip() == "":
-        return EnvResult(problem=_env_problem(env_var, "a non-empty string", raw))
-    return EnvResult(value=raw)
+        problems.append(_env_problem(env_var, "a non-empty string", raw))
+        return None
+    return raw
 
 
-def env_positive_int_result(env_var: str, maximum: int) -> EnvResult[int]:
-    """Read a ``GYMRAT_*`` positive-integer env var, returning its value or a problem.
-
-    Args:
-        env_var: Name of the ``GYMRAT_*`` environment variable to read.
-        maximum: Largest accepted value.
-
-    Returns:
-        An :class:`EnvResult` with the parsed integer, a problem when the value
-        fails :func:`~gymrat.utils.parse_bounded_positive_int`, or neither when
-        the variable is unset.
-    """
+def _env_positive_int(env_var: str, maximum: int, problems: list[str]) -> int | None:
     raw = os.environ.get(env_var)
     if raw is None:
-        return EnvResult()
+        return None
     value = parse_bounded_positive_int(raw, maximum)
     if value is None:
-        return EnvResult(problem=_env_problem(env_var, "a positive integer", raw))
-    return EnvResult(value=value)
+        problems.append(_env_problem(env_var, "a positive integer", raw))
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -599,8 +564,8 @@ def merge_config(flags: CliFlags, config_file: ConfigFile) -> BenchlessConfig:
         ),
         primary=config_file.primary or CONFIG_DEFAULTS.primary,
         prepare=first_set(flags.prepare, default=config_file.prepare),
-        metrics=dict(config_file.metrics) if config_file.metrics is not None else None,
-        kinds=dict(config_file.kinds) if config_file.kinds is not None else None,
+        metrics=config_file.metrics,
+        kinds=config_file.kinds,
         checks=config_file.checks,
         runbook=config_file.runbook,
         filter=config_file.filter,
@@ -725,35 +690,29 @@ def _collect_env_flags(flags: CliFlags) -> tuple[CliFlags, list[str]]:
         filled from its env var, and any validation problems encountered.
     """
     problems: list[str] = []
-    # Keyword arguments evaluate left to right, which fixes the problem order.
+    # Keyword arguments evaluate left to right, which fixes the problem order; a
+    # conditional expression reads the env var only when its flag is unset.
     effective = replace(
         flags,
-        bench=_flag_or_env(flags.bench, lambda: env_string_result("GYMRAT_BENCH"), problems),
-        prepare=_flag_or_env(flags.prepare, lambda: env_string_result("GYMRAT_PREPARE"), problems),
-        adapter=_flag_or_env(flags.adapter, lambda: env_string_result("GYMRAT_ADAPTER"), problems),
-        samples=_flag_or_env(
-            flags.samples,
-            lambda: env_positive_int_result("GYMRAT_SAMPLES", MAX_SAFE_INTEGER),
-            problems,
+        bench=flags.bench if flags.bench is not None else _env_string("GYMRAT_BENCH", problems),
+        prepare=(
+            flags.prepare if flags.prepare is not None else _env_string("GYMRAT_PREPARE", problems)
         ),
-        timeout=_flag_or_env(
-            flags.timeout,
-            lambda: env_positive_int_result("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS),
-            problems,
+        adapter=(
+            flags.adapter if flags.adapter is not None else _env_string("GYMRAT_ADAPTER", problems)
+        ),
+        samples=(
+            flags.samples
+            if flags.samples is not None
+            else _env_positive_int("GYMRAT_SAMPLES", MAX_SAFE_INTEGER, problems)
+        ),
+        timeout=(
+            flags.timeout
+            if flags.timeout is not None
+            else _env_positive_int("GYMRAT_TIMEOUT", MAX_TIMEOUT_SECONDS, problems)
         ),
     )
     return effective, problems
-
-
-def _flag_or_env[T](
-    flag: T | None, read_env: Callable[[], EnvResult[T]], problems: list[str]
-) -> T | None:
-    if flag is not None:
-        return flag
-    result = read_env()
-    if result.problem is not None:
-        problems.append(result.problem)
-    return result.value
 
 
 def _resolve_config_source(
@@ -782,10 +741,10 @@ def _resolve_config_source(
     """
     explicit_config = flags.config
     if explicit_config is None:
-        result = env_string_result("GYMRAT_CONFIG")
-        if result.problem is not None:
-            return None, ConfigFile(), [result.problem]
-        explicit_config = result.value
+        env_problems: list[str] = []
+        explicit_config = _env_string("GYMRAT_CONFIG", env_problems)
+        if env_problems:
+            return None, ConfigFile(), env_problems
     elif not explicit_config.strip():
         # A whitespace-only --config is as blank as an empty one, and
         # `_collect_flag_problems` has already reported it; probing it on disk would
@@ -801,7 +760,7 @@ def _resolve_config_source(
     file_result = load_config_file_collecting(resolved_path, required=required)
 
     config_path = resolved_path if (required or file_result.exists) else None
-    return config_path, file_result.config_file, list(file_result.problems)
+    return config_path, file_result.config_file, file_result.problems
 
 
 def _resolve_runbook(
