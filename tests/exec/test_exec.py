@@ -487,6 +487,9 @@ async def test_kill_live_process_groups_when_a_group_step_raises_does_warn_once_
     _fail_sweep_step(monkeypatch, step)
 
     exec_mod.kill_live_process_groups()
+    # The runs settle after the test, and a settling run kills its group: the
+    # refusal is for the sweep alone.
+    monkeypatch.undo()
 
     for proc in spawned_processes:
         [message] = killpg_warnings(recwarn, proc.pid)

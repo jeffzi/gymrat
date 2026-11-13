@@ -380,15 +380,20 @@ def resume_process_group(pid: int) -> bool:
 def release_process_group(pid: int) -> None:
     """Drop the container holding ``pid``, ending any descendant it left behind.
 
-    A no-op on POSIX. On Windows the job's kill-on-close limit turns this into
-    the last sweep of the tree, so a descendant that outlived the child does not
-    outlive the run.
+    This is the last sweep of the tree, so a descendant that outlived the child
+    does not outlive the run. On POSIX the group led by ``pid`` is killed at
+    once, with no stop request first, as :func:`kill_process_group` does; an
+    empty group is silent. A descendant that moved itself into a session of its
+    own has left the group and survives. On Windows the job's kill-on-close
+    limit ends the tree when its handle is closed.
 
     Args:
         pid: The process ID the run was spawned with.
     """
     if _release_job_impl is not None:
         _release_job_impl(pid)
+    elif sys.platform != "win32":
+        kill_process_group(pid)
 
 
 def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:

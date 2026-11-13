@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** On Linux and macOS, kill every process a `prepare`, `bench`, `checks` or hook
+  command leaves running in its process group when the command ends, so a server it started in the
+  background no longer outlives it.
 - **Breaking:** Raise the default `samples` from 10 to 12; set `samples` in `gymrat.toml` or pass
   `--samples` to choose another count.
 - **Breaking:** Refuse a sample count that cannot balance the run order before any bench or hook

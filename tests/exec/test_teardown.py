@@ -22,6 +22,7 @@ import os
 import shlex
 import sys
 import threading
+import time
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -30,6 +31,7 @@ from typing import ClassVar
 import pytest
 
 from gymrat import exec as exec_mod
+from gymrat import process_group
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
@@ -49,6 +51,7 @@ from tests._exec_fixtures import (
 )
 from tests._process_helpers import (
     is_zombie,
+    killpg_warnings,
     poll_until,
     wait_for_file,
     wait_for_pid_file,
@@ -533,21 +536,54 @@ async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendan
     wait_until_dead_blocking(descendant, timeout_s=3.0)
 
 
-async def test_exec_when_completed_with_a_detached_descendant_does_not_signal_its_group(
+# Far below the patched graces, so a settle that waited one out fails the bound.
+# The wall clock is read as well as the loop's timeout: a wait that blocks the
+# loop finishes before ``wait_for`` can fire.
+_SETTLE_BOUND_S = 5.0
+
+
+async def test_exec_when_completed_with_a_detached_descendant_does_kill_it_without_a_grace(
     tmp_path: Path,
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
-    record_killpg: Callable[[], list[int]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The descendant holds none of the run's pipes, so the run completes on its
     # own once the shell exits, with the descendant still in the shell's group.
+    # It ignores the stop request, so a run that asked first and waited out the
+    # grace would not settle within the bound.
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+    monkeypatch.setattr(process_group, "TERMINATE_GRACE_S", _LONG_GRACE_S)
     pid_file = tmp_path / "descendant.pid"
-    signalled = record_killpg()
+    command = f"trap '' TERM; {shell_leaving_a_descendant(pid_file, detached=True)}"
 
-    await run_exec(shell_leaving_a_descendant(pid_file, detached=True), make_opts())
-    stray_process_ids.append(await wait_for_pid_file(pid_file))
+    started = time.monotonic()
+    await asyncio.wait_for(run_exec(command, make_opts()), _SETTLE_BOUND_S)
+    elapsed = time.monotonic() - started
 
-    assert signalled == []
+    descendant = await wait_for_pid_file(pid_file)
+    stray_process_ids.append(descendant)
+    wait_until_dead_blocking(descendant, timeout_s=3.0)
+    assert elapsed < _SETTLE_BOUND_S
+
+
+async def test_exec_when_completed_with_an_empty_group_does_settle_without_warning(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+    monkeypatch.setattr(process_group, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(run_exec("exit 0", make_opts()), _SETTLE_BOUND_S)
+    elapsed = time.monotonic() - started
+
+    [proc] = spawned_processes
+    assert result == expected_result()
+    assert killpg_warnings(recwarn, proc.pid) == []
+    assert elapsed < _SETTLE_BOUND_S
 
 
 # ---------------------------------------------------------------------------

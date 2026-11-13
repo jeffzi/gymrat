@@ -167,6 +167,10 @@ The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` ov
 metrics), and `other` (every other metric). gymrat names any unknown key or invalid value when it
 reads the file; it ignores a `[kinds]` entry that matches no kind.
 
+On Linux and macOS, no process started by `prepare`, `bench`, `checks` or a hook outlives that
+command: when the command ends, gymrat kills whatever it left running in its process group, a
+detached server included. A process that starts its own session with `setsid` escapes this.
+
 - `gating`, per metric or per kind, decides whether a regression on that metric fails
   `--fail-on regressed` and blocks `keep`.
 - `unstable_noise_pct` (default 200, minimum 0.5) is the noise-band width, in percent, above which

@@ -23,7 +23,6 @@ import asyncio
 import codecs
 import contextlib
 import os
-import signal as _signal_module
 import sys
 import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -31,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from gymrat import process_group
+from gymrat.child_signal_mask import unblock_termination_signals
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
     attach_process_group,
@@ -42,10 +42,8 @@ from gymrat.process_group import (
     wait_for_process_group_exit_async,
 )
 from gymrat.signals import (
-    TERMINATION_SIGNALS,
     deferring_termination_signals,
     install_termination_escalation,
-    pthread_sigmask,
 )
 from gymrat.utils import MS_PER_SECOND
 
@@ -132,12 +130,6 @@ class SpawnError(Exception):
     host's rejection of the spawn, the resume failure of a win32 child, or the
     error that interrupted registering, containing, or resuming a spawned child.
     """
-
-
-def _child_reset_signal_mask() -> None:
-    """Unblock termination signals in the child, reversing the parent's mask."""
-    if pthread_sigmask is not None:
-        pthread_sigmask(_signal_module.SIG_UNBLOCK, TERMINATION_SIGNALS)
 
 
 def kill_live_process_groups() -> None:
@@ -567,21 +559,33 @@ def _containment_kwargs() -> dict[str, Any]:
         # POSIX rejects ``creationflags`` outright, so only win32 passes it.
         create_suspended = 0x4
         return {"creationflags": create_suspended}
-    return {"start_new_session": True, "preexec_fn": _child_reset_signal_mask}
+    return {"start_new_session": True, "preexec_fn": unblock_termination_signals}
 
 
 def release_contained(pid: int) -> None:
     """Forget a child :func:`spawn_contained` started, and drop its container.
 
-    Called once the child's owner has stopped and reaped it. On win32 dropping
-    the job is the last sweep of the tree, so a descendant that outlived the
-    child does not outlive its owner either.
+    Called once the child's owner has stopped and reaped it. Dropping the
+    container is the last sweep of the tree, so a descendant that outlived the
+    child does not outlive its owner either: on POSIX the group is killed, on
+    win32 the job is closed.
 
     Args:
         pid: The process ID :func:`spawn_contained` returned the child with.
     """
-    _live_process_groups.discard(pid)
-    release_process_group(pid)
+    if sys.platform == "win32":
+        # Losing this process closes the job handle, which ends the tree, so the
+        # sweep need not reach it. Dropping the pid after the release would leave a
+        # window where a sweep finds no job and runs taskkill on a reaped pid.
+        _live_process_groups.discard(pid)
+        release_process_group(pid)
+        return
+    # Nothing kills a POSIX group the sweep no longer lists, so the kill lands
+    # while the pid is still registered.
+    try:
+        release_process_group(pid)
+    finally:
+        _live_process_groups.discard(pid)
 
 
 async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
@@ -836,8 +840,9 @@ async def _run(
     finally:
         try:
             # A run that left _settle by raising may have a reaped shell and a
-            # descendant still running in its group; release_contained below
-            # drops the group from the live set, so nothing would kill it later.
+            # descendant still running in its group. It gets the full teardown,
+            # stop request and grace included, rather than only the bare group
+            # kill release_contained sends below.
             if not settled or proc.returncode is None:
                 await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
         finally:
