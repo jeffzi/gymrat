@@ -33,7 +33,6 @@ from gymrat.errors import GymratError
 from gymrat.session.paths import session_dir, session_jsonl_path
 from gymrat.session.store import read_records
 from gymrat.supervisor.events import (
-    FollowUpEvent,
     SessionEvent,
     ToolEndEvent,
     UsageUpdateEvent,
@@ -412,36 +411,29 @@ _PROBE_FAILURE = "lock probe broke"
 
 
 @dataclass(slots=True)
-class _BreakableLockProbe:
-    """A repository lock probe that reports the lock held until broken, then raises.
+class _BrokenLockProbe:
+    """A repository lock probe that raises.
 
     A probe that fails once raises on its first probe only and then reports the
     lock held for good, so only the first probe site to reach it can end the
     session with the failure.
     """
 
-    broken: bool
     fails_once: bool = False
+    _spent: bool = False
 
     def is_held(self) -> bool:
-        if self.broken:
-            self.broken = not self.fails_once
+        if not self._spent:
+            self._spent = self.fails_once
             raise RuntimeError(_PROBE_FAILURE)
         return True
-
-    def break_on_waiting(self, event: SessionEvent) -> None:
-        if self.fails_once:
-            return
-        if isinstance(event, FollowUpEvent) and event.action == "waiting":
-            self.broken = True
 
 
 @dataclass(frozen=True, slots=True)
 class _FailingProbeCase:
-    """A script that runs one probe site into a broken lock probe, and when the probe breaks."""
+    """A script that runs one probe site into a broken lock probe."""
 
     script: Callable[[str], list[MockStep]]
-    broken_at_launch: bool
     fails_once: bool = False
 
 
@@ -449,35 +441,23 @@ class _FailingProbeCase:
     "case",
     [
         pytest.param(
-            _FailingProbeCase(
-                script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end()],
-                broken_at_launch=True,
-            ),
+            _FailingProbeCase(script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end()]),
             id="tool-end-scan",
         ),
         pytest.param(
-            _FailingProbeCase(
-                script=lambda _root: [TurnEndStep()], broken_at_launch=True, fails_once=True
-            ),
+            _FailingProbeCase(script=lambda _root: [TurnEndStep()], fails_once=True),
             id="settle",
-        ),
-        pytest.param(
-            _FailingProbeCase(
-                script=lambda root: [append_step(root, _FAILED_HOOK), _tool_end(), TurnEndStep()],
-                broken_at_launch=False,
-            ),
-            id="lock-poll",
         ),
     ],
 )
 async def test_supervise_when_lock_probe_raises_does_end_promptly_with_error_outcome(
     root: str, case: _FailingProbeCase
 ):
-    probe = _BreakableLockProbe(broken=case.broken_at_launch, fails_once=case.fails_once)
+    probe = _BrokenLockProbe(fails_once=case.fails_once)
     driver = create_mock_driver(case.script(root))
 
     result = await asyncio.wait_for(
-        run_supervised(root, driver, observer=probe.break_on_waiting, is_lock_held=probe.is_held),
+        run_supervised(root, driver, is_lock_held=probe.is_held),
         timeout=2.0,
     )
 

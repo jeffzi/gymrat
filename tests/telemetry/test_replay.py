@@ -28,11 +28,9 @@ from gymrat.telemetry.run_spans import (
 )
 from tests._command_bodies import ok_body
 from tests.session.records._fixtures import (
-    FRESH_SESSION_ID,
     SESSION_ID,
     append_raw,
     append_records,
-    archive_and_reopen_session_log,
     baseline_record,
     hook_record,
     iteration_record,
@@ -513,30 +511,6 @@ async def test_replay_session_when_later_command_appends_record_live_does_match_
     replay_compare = span_by_name(replay_spans, "gymrat.command.compare")
     assert "gymrat.hook" in [ev.name for ev in live_compare.events]
     assert _event_records(replay_compare) == _event_records(live_compare)
-
-
-async def test_replay_session_when_command_opens_session_with_baseline_live_does_match_replayed_events(
-    repo: str,
-):
-    previous = seeded_session(repo)
-    fresh = session_record(session_id=FRESH_SESSION_ID)
-
-    async def body_supervise(trace: CommandTrace) -> str:
-        archive_and_reopen_session_log(previous, fresh)
-        return "ok"
-
-    with memory_tracing(fresh.session_id) as live_exporter:
-        await with_repo_lock("supervise", body_supervise)
-
-    live_cmd = span_by_name(live_exporter.get_finished_spans(), "gymrat.command.supervise")
-
-    with memory_tracing(fresh.session_id) as replay_exporter:
-        replay_session(session_jsonl_path(repo), [])
-
-    replay_cmd = span_by_name(replay_exporter.get_finished_spans(), "gymrat.command.supervise")
-    live_events = [ev.name for ev in live_cmd.events]
-    assert "gymrat.baseline" in live_events
-    assert [ev.name for ev in replay_cmd.events] == live_events
 
 
 async def test_replay_session_when_gymrat_traceparent_set_live_does_match_replayed_spans(

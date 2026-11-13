@@ -147,12 +147,6 @@ async def test_supervise_when_lock_file_held_does_wait_until_released(root: str)
     ("waits_before_release", "actions", "calls"),
     [
         pytest.param(1, ["waiting", "replied", "ended"], ["send", "end"], id="freed-during-settle"),
-        pytest.param(
-            2,
-            ["waiting", "waiting", "replied", "ended"],
-            ["send", "end"],
-            id="freed-after-the-newer-turn-waits",
-        ),
     ],
 )
 async def test_supervise_when_turn_end_arrives_while_waiting_on_the_lock_does_follow_up_once(

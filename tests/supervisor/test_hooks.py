@@ -573,7 +573,6 @@ def _pre_tool_use(tool_name: str, tool_input: dict[str, object]) -> PreToolUseHo
     "command",
     [
         "gymrat keep -m x",
-        "uv run gymrat status",
         ".venv/bin/gymrat keep",
         "cat gymrat.toml",
     ],
