@@ -725,15 +725,24 @@ def write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+# Errors a filesystem without hard links returns from link(2). They say nothing
+# about the target, so creation falls back to writing it directly.
+_HARD_LINKS_REFUSED = frozenset({errno.EPERM, errno.ENOTSUP, errno.ENOSYS})
+
+
 def create_text_atomic(path: Path, text: str) -> None:
     """Create *path* holding *text*, encoded as UTF-8, unless something is already there.
 
     The text goes to a temporary sibling that is flushed and fsynced, then
     hard-linked to *path*. Unlike a rename, the link never replaces an entry
     that appeared after the caller looked, so a reader sees either no file or
-    the full content, and a file someone else created keeps its content. The
-    new file gets ``0o666`` filtered by the umask. The temporary file is
-    removed whether or not the link succeeds.
+    the full content. The new file gets ``0o666`` filtered by the umask. The
+    temporary file is removed whether or not the link succeeds.
+
+    On a filesystem that refuses hard links, *path* is instead created
+    exclusively and written in place. It still never replaces an existing
+    entry, and a failed write removes the partial file, but a reader may see
+    *path* before it holds the full content.
 
     Args:
         path: The file to create. Its directory must already exist.
@@ -743,44 +752,55 @@ def create_text_atomic(path: Path, text: str) -> None:
         FileExistsError: When an entry already exists at *path*; it is left
             untouched.
         OSError: When the temporary file cannot be created, written, synced,
-            or linked to *path*.
+            or linked to *path*, or when the direct write fails.
     """
     tmp_path = _synced_temp_sibling(path, text, 0o666)
     try:
         os.link(tmp_path, path)
+    except OSError as error:
+        if error.errno not in _HARD_LINKS_REFUSED:
+            raise
+    else:
+        return
     finally:
         # Once linked, *path* already holds the full content: a stray temporary
         # file is a lesser harm than reporting a write that happened as failed.
         with contextlib.suppress(OSError):
             tmp_path.unlink()
+    _create_synced(path, text, 0o666)
 
 
 def _synced_temp_sibling(path: Path, text: str, mode: int) -> Path:
     tmp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    _create_synced(tmp_path, text, mode)
+    return tmp_path
 
+
+def _create_synced(path: Path, text: str, mode: int) -> None:
     # Opened directly rather than through tempfile, which forces 0o600: here the
     # kernel applies the umask to the requested mode, and reading the umask any
     # other way means changing it for the whole process. Requesting the target's
     # own mode at creation is what keeps the content out of a wider file; a
     # chmod after the write would leave it exposed until then.
-    def create_with_mode(name: str, flags: int) -> int:
-        return os.open(name, flags, mode)
-
-    # Exclusive creation stays outside the cleanup below: a file that already
-    # holds the temporary name is not this call's to remove.
-    with open(tmp_path, "xb", opener=create_with_mode):
-        pass
+    #
+    # The write goes through the handle that created the file: the umask may
+    # strip owner-write, so reopening the file by name can be refused.
+    #
+    # A file that already holds the name is not this call's to remove, so the
+    # cleanup below runs only once the exclusive creation has succeeded.
+    created = False
     try:
-        with tmp_path.open("wb") as tmp_file:
-            tmp_file.write(text.encode("utf-8"))
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
+        with open(path, "xb", opener=lambda name, flags: os.open(name, flags, mode)) as file:
+            created = True
+            file.write(text.encode("utf-8"))
+            file.flush()
+            os.fsync(file.fileno())
     except BaseException:
-        # The original error is what the caller needs; a failed cleanup must not mask it.
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
+        if created:
+            # The original error is what the caller needs; a failed cleanup must not mask it.
+            with contextlib.suppress(OSError):
+                path.unlink()
         raise
-    return tmp_path
 
 
 # ---------------------------------------------------------------------------

@@ -560,6 +560,138 @@ def test_create_text_atomic_when_write_fails_does_leave_directory_untouched(
 
 
 # ---------------------------------------------------------------------------
+# create_text_atomic: filesystem without hard links
+# ---------------------------------------------------------------------------
+
+
+def _refuse_hard_links(monkeypatch: pytest.MonkeyPatch, code: int) -> list[object]:
+    attempts: list[object] = []
+
+    def refusing_link(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        attempts.append(dst)
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr("os.link", refusing_link)
+    return attempts
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param(errno.EPERM, id="not-permitted"),
+        pytest.param(errno.ENOTSUP, id="not-supported"),
+        pytest.param(errno.ENOSYS, id="not-implemented"),
+    ],
+)
+def test_create_text_atomic_when_hard_links_refused_does_still_create_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+):
+    _refuse_hard_links(monkeypatch, code)
+    path = tmp_path / "state.json"
+
+    create_text_atomic(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(tmp_path) == ["state.json"]
+
+
+def test_create_text_atomic_when_link_fails_otherwise_does_raise_creating_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _refuse_hard_links(monkeypatch, errno.EACCES)
+
+    with pytest.raises(OSError, match=os.strerror(errno.EACCES)) as caught:
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert caught.value.errno == errno.EACCES
+    assert _entries(tmp_path) == []
+
+
+def test_create_text_atomic_when_hard_links_refused_and_target_exists_does_raise_keeping_it(
+    target: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _refuse_hard_links(monkeypatch, errno.EPERM)
+
+    with pytest.raises(FileExistsError):
+        create_text_atomic(target, NEW_TEXT)
+
+    assert target.read_text(encoding="utf-8") == OLD_TEXT
+    assert _entries(target.parent) == ["state.json"]
+
+
+def test_create_text_atomic_when_hard_links_refused_and_fallback_write_fails_does_leave_directory_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    link_attempts = _refuse_hard_links(monkeypatch, errno.EPERM)
+    real_fsync = os.fsync
+
+    def fsync_failing_after_link(fd: int) -> None:
+        if link_attempts:
+            msg = "disk full"
+            raise OSError(msg)
+        real_fsync(fd)
+
+    monkeypatch.setattr("os.fsync", fsync_failing_after_link)
+
+    with pytest.raises(OSError, match="disk full"):
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert _entries(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# write_text_atomic and create_text_atomic: umask without owner-write
+# ---------------------------------------------------------------------------
+
+needs_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores missing write permission"
+)
+
+_ATOMIC_WRITERS = [
+    pytest.param(write_text_atomic, id="write"),
+    pytest.param(create_text_atomic, id="create"),
+]
+
+
+@pytest.fixture
+def dir_under_read_only_umask(tmp_path: Path) -> Iterator[Path]:
+    """``tmp_path``, with a ``0o277`` umask set after it exists so new files lack owner-write."""
+    previous = os.umask(0o277)
+    yield tmp_path
+    os.umask(previous)
+
+
+@needs_posix_file_modes
+@needs_non_root
+@pytest.mark.parametrize("writer", _ATOMIC_WRITERS)
+def test_atomic_text_writers_when_umask_strips_owner_write_does_write_the_text_without_leftover_temp(
+    dir_under_read_only_umask: Path, writer: Callable[[Path, str], None]
+):
+    path = dir_under_read_only_umask / "state.json"
+
+    writer(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(dir_under_read_only_umask) == ["state.json"]
+
+
+@needs_posix_file_modes
+@needs_non_root
+@pytest.mark.parametrize("writer", _ATOMIC_WRITERS)
+def test_atomic_text_writers_when_umask_strips_owner_write_and_write_fails_does_leave_directory_empty(
+    dir_under_read_only_umask: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer: Callable[[Path, str], None],
+):
+    reason = _fail_fsync(monkeypatch)
+
+    with pytest.raises(OSError, match=reason):
+        writer(dir_under_read_only_umask / "state.json", NEW_TEXT)
+
+    assert _entries(dir_under_read_only_umask) == []
+
+
+# ---------------------------------------------------------------------------
 # SamplingEta
 # ---------------------------------------------------------------------------
 
