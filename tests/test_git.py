@@ -115,15 +115,28 @@ def test_try_git_when_command_fails_does_return_gits_stderr(repo: str):
     assert result == expected
 
 
+def _git_launch_error(cwd: Path) -> str:
+    """The message of the error starting git raises in ``cwd``."""
+    try:
+        subprocess.run(  # noqa: S603 -- fixed git binary plus test-chosen args
+            ["git", *_UNKNOWN_REF_ARGS],  # noqa: S607 -- git resolved from PATH like a user's shell
+            cwd=cwd,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as error:
+        return str(error)
+    pytest.fail("git started although PATH holds no git")
+
+
 @pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
 @pytest.mark.usefixtures("unusable_git")
-def test_try_git_when_git_cannot_be_started_does_return_the_launch_error_naming_git(
-    tmp_path: Path,
-):
+def test_try_git_when_git_cannot_be_started_does_return_the_launch_error(tmp_path: Path):
+    expected = _git_launch_error(tmp_path)
+
     result = try_git(_UNKNOWN_REF_ARGS, str(tmp_path))
 
-    assert result is not None
-    assert "'git'" in result
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------

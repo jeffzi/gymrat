@@ -5,7 +5,7 @@ signal trips.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
@@ -48,12 +48,18 @@ def test_resolve_render_mode_when_color_env_varies_does_follow_the_tty_alone(
 
 
 @pytest.fixture
-def children() -> Iterator[list[asyncio.subprocess.Process]]:
-    """The processes a body spawns, released from containment whatever the test does."""
+async def children() -> AsyncIterator[list[asyncio.subprocess.Process]]:
+    """The processes a body spawns, reaped in-loop and released whatever the test does."""
     spawned: list[asyncio.subprocess.Process] = []
     yield spawned
     for child in spawned:
-        release_contained(child.pid)
+        try:
+            # Reaping here lets the loop close the child's transport; a transport
+            # left to the garbage collector while the loop never saw the exit
+            # warns that the process is still running.
+            await asyncio.wait_for(child.wait(), timeout=5)
+        finally:
+            release_contained(child.pid)
 
 
 def _signalled_body(
