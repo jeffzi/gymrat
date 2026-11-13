@@ -10,7 +10,7 @@ import pytest
 from filelock import FileLock
 
 from gymrat.errors import GymratError
-from gymrat.session.lock import is_held, now_iso
+from gymrat.session.lock import is_held, now_iso, os_lock_file, publish_lock_file
 from gymrat.session.paths import lockfile_path, supervise_lockfile_path
 
 #: A fixed, well-formed ``at`` stamp for a planted holder record; its exact
@@ -20,34 +20,6 @@ FIXED_HOLDER_AT = "2026-01-01T00:00:00.000Z"
 #: Every lock ``hold_lock`` acquired, keyed by its OS lock file, so
 #: ``remove_lock_files`` can release one a test still holds before unlinking it.
 _held_locks: dict[str, list[FileLock]] = {}
-
-
-def os_lock_file(lock_path: str) -> str:
-    """The OS lock file ``acquire_lock`` takes beside the holder record at ``lock_path``.
-
-    The suffix is restated because the production helper is private; tests
-    need the path to inject faults at it and to find it in the messages that
-    name it.
-
-    Args:
-        lock_path: The holder-record path.
-
-    Returns:
-        The path of the sibling OS lock file.
-    """
-    return lock_path + ".lock"
-
-
-def publish_lock_file(lock_path: str) -> str:
-    """The publish lock file ``acquire_lock`` serializes holder writes through.
-
-    Args:
-        lock_path: The holder-record path.
-
-    Returns:
-        The path of the sibling publish lock file.
-    """
-    return os_lock_file(lock_path) + ".publish"
 
 
 def hold_lock(

@@ -85,7 +85,7 @@ from gymrat.report.loop import (
 )
 from gymrat.report.style import render_lines
 from gymrat.report.text.render import render_report
-from gymrat.report.types import ComparisonResult, ReportOptions
+from gymrat.report.types import ReportOptions
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
@@ -137,19 +137,14 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class IterationJudgment:
-    """The outcome, primary figure, and optional confirmation rerun to report.
+    """What the loop concludes from a judged run; the primary and rerun stay on the ``Judged``.
 
     Attributes:
         outcome: The loop outcome derived from the comparison.
-        primary: The primary figure that drives the verdict display.
-        confirmation: What the confirmation rerun found, or ``None`` when no
-            rerun was needed.
         reached_target: Whether the run met its declared target.
     """
 
     outcome: Outcome
-    primary: LoopPrimary
-    confirmation: Confirmation | None
     reached_target: bool
 
 
@@ -207,7 +202,7 @@ def build_iteration_record(
     Args:
         judged: The bench run outputs and comparison result.
         seq: The 1-based iteration sequence number.
-        judgment: The outcome, primary, and optional confirmation.
+        judgment: The outcome and whether the target was reached.
         duration_ms: Wall-clock milliseconds the iteration took.
         measured_tree: The experiment worktree fingerprint at measurement time,
             or ``None`` when fingerprinting failed.
@@ -215,7 +210,7 @@ def build_iteration_record(
     Returns:
         The iteration record ready to append to the session log.
     """
-    confirmation = judgment.confirmation
+    confirmation = judged.confirmation
     confirm: Confirm | None = None
     if confirmation is not None:
         absent = tuple(name for name in confirmation.filtered if name in confirmation.absent)
@@ -225,7 +220,7 @@ def build_iteration_record(
             samples=confirmation.samples,
             absent=absent or None,
         )
-    primary = judgment.primary
+    primary = judged.primary
     return IterationRecord(
         type="iteration",
         seq=seq,
@@ -350,8 +345,6 @@ def derive_outcome(
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     return IterationJudgment(
         outcome=derive_outcome(judged.run.verdicts, judged.run.metric_meta, judged.primary),
-        primary=judged.primary,
-        confirmation=judged.confirmation,
         reached_target=target_reached(config, judged.primary, judged.result.metrics),
     )
 
@@ -488,7 +481,7 @@ async def iterate_session(
         iteration_count=state.iteration_count + 1,
     )
 
-    iteration_report = render_iteration(judged.result, seq, judgment, color=color)
+    iteration_report = render_iteration(judged, seq, judgment, color=color)
     report = "\n".join(
         part for part in (before_report, iteration_report, after_report) if part != ""
     )
@@ -727,7 +720,7 @@ _NEXT_STEPS: dict[Outcome, str] = {
 
 
 def render_iteration(
-    result: ComparisonResult,
+    judged: Judged,
     seq: int,
     judgment: IterationJudgment,
     *,
@@ -736,16 +729,18 @@ def render_iteration(
     """The iteration as it prints: the loop's header, the comparison table, the verdict.
 
     Args:
-        result: The comparison result for this iteration.
+        judged: The judged run: its comparison, primary, and optional
+            confirmation rerun.
         seq: The 1-based iteration sequence number, used for the header.
-        judgment: The outcome, primary, and optional confirmation.
+        judgment: The outcome and whether the target was reached.
         color: Explicit ANSI color choice — ``True`` forces color, ``False``
             suppresses it, ``None`` defers to the environment.
 
     Returns:
         The fully rendered iteration report as a single string.
     """
-    confirmation = judgment.confirmation
+    confirmation = judged.confirmation
+    result = judged.result
     reruns: list[RerunConfirmation] = (
         [
             RerunConfirmation(metric=name, answer=rerun_answer(confirmation, name))
@@ -759,7 +754,7 @@ def render_iteration(
     verdict = render_lines(
         *format_verdict_block(
             outcome=judgment.outcome,
-            primary=judgment.primary,
+            primary=judged.primary,
             next_step=_NEXT_STEPS[judgment.outcome],
             reruns=reruns,
             target_reached=judgment.reached_target,

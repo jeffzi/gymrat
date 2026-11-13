@@ -23,13 +23,13 @@ from gymrat.session.lock import (
     LockContentionError,
     acquire_lock,
     is_held,
+    os_lock_file,
+    publish_lock_file,
 )
 from gymrat.utils import os_error_reason
 from tests._lock import (
     FIXED_HOLDER_AT,
     hold_lock,
-    os_lock_file,
-    publish_lock_file,
 )
 
 # ---------------------------------------------------------------------------

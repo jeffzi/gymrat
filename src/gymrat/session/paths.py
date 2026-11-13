@@ -270,9 +270,8 @@ def baseline_worktree_dir(root: str) -> str:
     return _session_path(root, WORKTREES_DIR_NAME, BASELINE_WORKTREE_NAME)
 
 
-def baseline_worktree_label() -> str:
-    """The baseline worktree's path relative to the repository root, with ``/`` separators."""
-    return f"{SESSION_DIR_NAME}/{WORKTREES_DIR_NAME}/{BASELINE_WORKTREE_NAME}"
+BASELINE_WORKTREE_LABEL = f"{SESSION_DIR_NAME}/{WORKTREES_DIR_NAME}/{BASELINE_WORKTREE_NAME}"
+"""The baseline worktree's path relative to the repository root, with ``/`` separators."""
 
 
 def _repo_digest(root: str) -> str:

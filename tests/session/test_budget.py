@@ -132,7 +132,7 @@ def test_arm_budget_when_released_does_uninstall_the_termination_hook(
 
 
 def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
-    root: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    root: str, monkeypatch: pytest.MonkeyPatch
 ):
     track_cleanups(monkeypatch, "gymrat.session.budget")
     warned: list[str] = []
@@ -143,7 +143,6 @@ def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
     release()
 
     assert len(warned) == 1
-    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

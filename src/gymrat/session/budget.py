@@ -26,7 +26,6 @@ from gymrat.utils import (
     minutes_to_ms,
     read_sidecar,
     remove_sidecar,
-    warn_to_stderr,
     write_text_atomic,
 )
 
@@ -97,7 +96,7 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     return budget
 
 
-def clear_budget(root: str, warn: WarnSink = warn_to_stderr) -> None:
+def clear_budget(root: str, warn: WarnSink) -> None:
     """Remove the budget file, best-effort.
 
     A missing file is a silent success. A removal the OS refuses is never

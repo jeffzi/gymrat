@@ -190,14 +190,13 @@ def _history_lines(records: Sequence[SessionLogRecord]) -> list[str]:
         if isinstance(record, BaselineRecord):
             history.append(format_status_baseline(record))
         elif isinstance(record, IterationRecord):
-            settle = settled.get(position)
             history.append(
                 format_status_iteration(
                     StatusIteration(
                         seq=record.seq,
                         delta_pct=record.primary.delta_pct,
                         outcome=record.outcome,
-                        settle=settle if settle is not None else SettleUnsettled(),
+                        settle=settled.get(position, SettleUnsettled()),
                     )
                 )
             )

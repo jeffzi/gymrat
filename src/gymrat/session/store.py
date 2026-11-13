@@ -819,11 +819,6 @@ def best_kept_iteration(
     return best
 
 
-def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
-    """Return the newest stop record's message, or ``None`` if there is none."""
-    return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
-
-
 def read_live_session(
     root: str, primary_direction: Direction = GEOMEAN_DIRECTION
 ) -> ReadSessionResult:
@@ -852,7 +847,11 @@ def read_live_session(
         state=state,
         has_baseline=has_baseline,
         best=best_kept_iteration(records, primary_direction, pinned_sha),
-        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
+        stop_message=(
+            next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
+            if state.ends_on_stop
+            else None
+        ),
     )
 
 

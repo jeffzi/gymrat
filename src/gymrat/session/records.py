@@ -620,8 +620,6 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     Raises:
         GymratError: When ``errors`` contains a discriminator-mismatch error.
     """
-    if not errors:
-        return
     error_type = errors[0]["type"]
     if error_type not in ("union_tag_not_found", "union_tag_invalid"):
         return

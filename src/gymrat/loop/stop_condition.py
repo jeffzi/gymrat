@@ -53,23 +53,16 @@ class BudgetExceededError(LoopStopError):
     iterate duration, so the CLI routes it through the same gate-exit path as
     any other stop condition.
 
+    The hint tells the agent to report what the session measured, and the
+    refusal is recorded with the ``budget-exceeded`` reason.
+
     Args:
         *args: Passed through to :class:`GymratError`; a lone string message is
             the common case.
-        hint: Keyword-only. A human-facing suggestion for what to do next,
-            telling the agent to report what the session measured by default.
-            ``None`` when no hint applies.
-        reason: Keyword-only. The :data:`~gymrat.session.schema.CommandReason`
-            tag recorded for the refusal, ``"budget-exceeded"`` by default.
     """
 
-    def __init__(
-        self,
-        *args: object,
-        hint: str | None = _REPORT_INSTEAD_HINT,
-        reason: CommandReason | None = "budget-exceeded",
-    ) -> None:
-        super().__init__(*args, hint=hint, reason=reason)
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args, hint=_REPORT_INSTEAD_HINT, reason="budget-exceeded")
 
 
 def stop_reason(config: BenchlessConfig, state: SessionState) -> str | None:

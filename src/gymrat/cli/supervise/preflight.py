@@ -34,8 +34,8 @@ from gymrat.report.loop import format_start_summary
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import estimate_iterate_duration
 from gymrat.session.paths import (
+    BASELINE_WORKTREE_LABEL,
     baseline_worktree_dir,
-    baseline_worktree_label,
     session_jsonl_path,
 )
 from gymrat.session.store import (
@@ -182,7 +182,7 @@ async def _baseline_step(
     if latest_baseline(read_session_records(root)) is not None:
         return
 
-    target = TargetSpec(label=baseline_worktree_label(), target=baseline_worktree_dir(root))
+    target = TargetSpec(label=BASELINE_WORKTREE_LABEL, target=baseline_worktree_dir(root))
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
         run_options = RunOptions.from_config(
