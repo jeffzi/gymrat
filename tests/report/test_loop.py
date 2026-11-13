@@ -261,6 +261,16 @@ def test_format_status_iteration_when_delta_unmeasured_does_omit_the_percentage(
             "baseline main · total[ms] 15200",
             id="bracketed-name-renders-literally",
         ),
+        pytest.param(
+            ({"total\\[1]": 15200},),
+            "baseline main · total\\[1] 15200",
+            id="backslash-before-bracket-renders-literally",
+        ),
+        pytest.param(
+            ({"total_ms\\": 15200, "alloc_bytes": 1500},),
+            "baseline main · total_ms\\ 15200 · alloc_bytes 1500",
+            id="name-ending-in-backslash-renders-literally",
+        ),
     ],
 )
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric(

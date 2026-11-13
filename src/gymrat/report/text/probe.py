@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
-from rich.markup import escape
 from rich.text import Text
 
+from gymrat.metric_name import escape_literal
 from gymrat.model import is_improvement
 from gymrat.report.format import (
     ZERO_PERCENT_DELTA,
@@ -123,7 +123,11 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
 
 def _probe_header(result: ProbeResult, label: str) -> str:
     """The probe report's run header as markup: the worktree, the run, and any scope."""
-    scope = [f"scoped: {escape(', '.join(result.names))}"] if result.names else []
+    scope = (
+        [f"scoped: {escape_literal(', '.join(result.names), before_tag=False)}"]
+        if result.names
+        else []
+    )
     return target_run_header("probe", label, result.samples, result.adapter, scope)
 
 

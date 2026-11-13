@@ -27,7 +27,7 @@ from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
-from gymrat.metric_name import format_inline
+from gymrat.metric_name import escape_literal, format_inline
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
@@ -266,7 +266,10 @@ def highlight_label(name: str, meta: ResolvedMetricMeta, *, qualify: bool) -> st
         The reported name.
     """
     if qualify:
-        return scope_label(escape(meta.kind), escape(meta.short_name))
+        return scope_label(
+            escape_literal(meta.kind, before_tag=False),
+            escape_literal(meta.short_name, before_tag=False),
+        )
     return format_inline(parse_metric_name(name))
 
 

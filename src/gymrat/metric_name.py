@@ -123,10 +123,23 @@ def _guard_plain_bracket(match: re.Match[str]) -> str:
     return run if opens_tag else f"{run}\\"
 
 
-def _escape(text: str, *, before_tag: bool) -> str:
-    # rich reads a backslash as an escape only when a tag follows it, so trailing
-    # backslashes are doubled exactly when the caller writes a tag right after
-    # ``text``. ``rich.markup.escape`` cannot know what follows: it doubles a single
+def escape_literal(text: str, *, before_tag: bool) -> str:
+    """Escape ``text`` so rich markup renders it exactly as written.
+
+    Unlike :func:`rich.markup.escape`, this keeps every backslash: one directly
+    before a square bracket, and a run ending the text, which rich reads as an
+    escape only when a tag follows it.
+
+    Args:
+        text: The plain text to escape, such as a metric name or one of its parts.
+        before_tag: Whether the caller writes a markup tag directly after the
+            escaped text, which decides whether a trailing backslash run is
+            doubled.
+
+    Returns:
+        Rich markup that renders as ``text``.
+    """
+    # ``rich.markup.escape`` cannot know what follows: it doubles a single
     # trailing backslash and leaves a longer run alone, so the run is set aside and
     # only the rest, which no longer ends in a backslash, goes through it.
     body = text.rstrip("\\")
@@ -150,6 +163,6 @@ def format_inline(metric: MetricName) -> str:
         Rich markup that renders as the metric name.
     """
     group, kind = metric.group, metric.kind
-    prefix = f"[dim]{_escape(group, before_tag=False)}/[/dim]" if group is not None else ""
-    suffix = f"[dim]#{_escape(kind, before_tag=True)}[/dim]" if kind is not None else ""
-    return f"{prefix}{_escape(metric.case, before_tag=kind is not None)}{suffix}"
+    prefix = f"[dim]{escape_literal(group, before_tag=False)}/[/dim]" if group is not None else ""
+    suffix = f"[dim]#{escape_literal(kind, before_tag=True)}[/dim]" if kind is not None else ""
+    return f"{prefix}{escape_literal(metric.case, before_tag=kind is not None)}{suffix}"

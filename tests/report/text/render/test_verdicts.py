@@ -65,7 +65,7 @@ from tests.report._verdicts import (
 
 if TYPE_CHECKING:
     from gymrat.model import GeomeanResult
-    from gymrat.report.types import ComparisonResult, MetricComparisons
+    from gymrat.report.types import ComparisonResult, MetricComparison, MetricComparisons
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +159,57 @@ def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_ot
     highlights = [strip_ansi(line) for line in highlight_lines(render_report(result))]
 
     assert highlights[0].index("+2.2%") == highlights[1].index("+1.5%")
+
+
+#: Case names holding a backslash, each paired with a name of equal length without one.
+BACKSLASH_NAMES = [
+    pytest.param("a\\[1]", "abcde", id="backslash-before-bracket"),
+    pytest.param("case\\", "cases", id="ends-in-backslash"),
+]
+
+
+def _two_kind_case(
+    case: str, time_metric: MetricComparison, memory_metric: MetricComparison
+) -> ComparisonResult:
+    """A run measuring ``case`` under a ``time`` and a ``memory`` kind.
+
+    Args:
+        case: The case name both kinds measure.
+        time_metric: The comparison under the ``time`` kind.
+        memory_metric: The comparison under the ``memory`` kind.
+
+    Returns:
+        The comparison result.
+    """
+    return create_comparison_result(
+        metrics={
+            f"{case}#time": replace(time_metric, meta=metric_meta(case, kind="time")),
+            f"{case}#memory": replace(
+                memory_metric, meta=metric_meta(case, kind="memory", unit="bytes")
+            ),
+        },
+        candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+    )
+
+
+@pytest.mark.parametrize(("name", "plain"), BACKSLASH_NAMES)
+def test_render_report_when_multi_kind_name_holds_backslash_does_print_it_exactly_in_highlights(
+    name: str, plain: str
+):
+    def highlights_for(case: str) -> list[str]:
+        result = _two_kind_case(
+            case,
+            permutation_metric(verdict="regressed", delta=2.2),
+            permutation_metric(verdict="regressed", delta=3.0),
+        )
+        return [strip_ansi(line) for line in highlight_lines(render_report(result))]
+
+    plain_lines = highlights_for(plain)
+    assert [plain in line for line in plain_lines] == [True, True]
+
+    highlights = highlights_for(name)
+
+    assert highlights == [line.replace(plain, name) for line in plain_lines]
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +316,22 @@ def test_render_report_when_a_gate_condition_trips_does_flag_it_with_its_figures
 
     [gate_line] = _gate_lines(report)
     assert [part for part in inserted if part not in gate_line] == []
+
+
+@pytest.mark.parametrize(("name", "plain"), BACKSLASH_NAMES)
+def test_render_report_when_multi_kind_name_holds_backslash_does_print_it_exactly_in_the_gate(
+    name: str, plain: str
+):
+    def gate_lines_for(case: str) -> list[str]:
+        result = _two_kind_case(case, band_metric(verdict="regressed", delta=8, n=4), band_metric())
+        return _gate_lines(render_report(result, ReportOptions(fail_on=(RegressedFailOn(),))))
+
+    [plain_line] = gate_lines_for(plain)
+    assert plain in plain_line
+
+    gate_lines = gate_lines_for(name)
+
+    assert gate_lines == [plain_line.replace(plain, name)]
 
 
 def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exceeded():

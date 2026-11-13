@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
-from gymrat.metric_name import format_inline
+from gymrat.metric_name import escape_literal, format_inline
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.report.display import GLYPHS
 from gymrat.report.format import format_percent_delta, format_value
@@ -433,7 +433,7 @@ def format_status_baseline(record: BaselineRecord) -> str:
     """
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
-        f"{escape(name)} {format_value(median)}"
+        f"{escape_literal(name, before_tag=False)} {format_value(median)}"
         for name, median in medians_by_name(record.samples).items()
     )
     return join_header_parts(parts)

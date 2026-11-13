@@ -44,6 +44,23 @@ def test_render_probe_report_when_names_given_does_reflect_scope_in_the_header()
     assert strip_ansi(header).endswith("total_ms, decode large payload")
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        pytest.param(("total\\[1]",), id="backslash-before-bracket"),
+        pytest.param(("decode", "total_ms\\"), id="name-ending-in-backslash"),
+    ],
+)
+def test_render_probe_report_when_name_holds_backslash_does_print_it_exactly_in_the_header(
+    names: tuple[str, ...],
+):
+    result = probe_result(names=names)
+
+    header = line_containing(render_probe_report(result), "gymrat probe")
+
+    assert strip_ansi(header).endswith(", ".join(names))
+
+
 # ---------------------------------------------------------------------------
 # color
 # ---------------------------------------------------------------------------

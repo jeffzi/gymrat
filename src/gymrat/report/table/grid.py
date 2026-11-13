@@ -37,7 +37,7 @@ from rich.text import Text
 
 from gymrat.metric_sections import section_metrics
 from gymrat.report.format import SPREAD_SEPARATOR
-from gymrat.report.style import markup, render_line_list
+from gymrat.report.style import RENDER_WIDTH, markup, render_line_list
 from gymrat.report.table.cells import METRIC_COLUMN_HEADER, scope_label
 
 if TYPE_CHECKING:
@@ -671,10 +671,11 @@ def _flush_batch(
     table = _make_table(widths)
     for row in batch:
         table.add_row(*row.cells, end_section=row.end_section)
-    out = render_line_list(table, color=color)
+    rule = _horizontal(widths, "┼")
+    out = render_line_list(table, color=color, width=max(RENDER_WIDTH, len(rule)))
     # rich draws a section end only between rows, never after the last one.
     if batch[-1].end_section:
-        out.append(_horizontal(widths, "┼"))
+        out.append(rule)
     batch.clear()
     return out
 
