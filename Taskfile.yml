@@ -9,7 +9,6 @@ vars:
     - .ruff_cache
     - .venv
     - .venv-*
-    - "*.egg-info"
     - coverage.xml
     - dist
 

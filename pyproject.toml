@@ -114,25 +114,17 @@ ignore = [
   "DOC", # docstring section checks (fixtures and helpers)
   "D102", # missing docstring in public method
   "D103", # missing docstring in public function
-  "E402", # module import not at top of file
-  "ANN003", # missing type annotation for **kwargs
   "ANN201", # missing return type for public function
-  "ANN202", # missing return type for private function
-  "ANN204", # missing return type for special method
   "ANN401", # dynamically typed expression (Any) — mock/fixture returns
   "ARG001", # unused function argument (injected fixtures)
   "ARG002", # unused method argument
   "E501", # line too long (long fixture data)
   "FBT001", # boolean positional arg (parametrize values)
   "INP001", # implicit namespace package (tests have no __init__.py)
-  "PERF401", # manual list comprehension (perf irrelevant in tests)
-  "PLC0415", # import outside top-level (local test imports)
   "PLR0913", # too many arguments (fixture/builder options mirror TS option objects)
   "PLR2004", # magic value in comparison (assert x == 42)
-  "RUF043", # pytest.raises(match) ambiguous pattern
   "S101", # use of assert
   "S108", # hardcoded temp file path
-  "SIM117", # nested with statements (raises + patch)
   "SLF001", # private member access
   "TRY301", # raise within try
 ]

@@ -25,7 +25,6 @@
     "dunder",
     "EFBIG",
     "EINVAL",
-    "EISDIR",
     "ENOENT",
     "ENOSPC",
     "ENOTDIR",
@@ -34,7 +33,6 @@
     "excinfo",
     "execv",
     "faulthandler",
-    "fchmod",
     "filelock",
     "filterwarnings",
     "flatmap",
@@ -133,14 +131,10 @@
     "WNOWAIT",
     "wilcoxon",
     "winerror",
-    "worktree",
     "worktrees",
     "WRONLY",
     "xdist",
     "xhigh"
   ],
-  "useGitignore": true,
-  "ignorePaths": [
-    "uv.lock"
-  ]
+  "useGitignore": true
 }

@@ -1,16 +1,13 @@
 {
   "config": {
-    "default": true,
     "MD013": { "line_length": 100, "tables": false },
     "MD024": {
       "siblings_only": true,
     },
-    "MD033": false,
     "MD044": {
       "names": ["dprint", "GitHub", "prek", "PyPI", "Python", "pytest", "Ruff", "uv"],
       "code_blocks": false,
     },
-    "MD060": false,
   },
   "gitignore": true,
 }
