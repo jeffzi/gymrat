@@ -1,11 +1,10 @@
 """Live-wiring, repaint, session-refresh and render-failure tests.
 
-Tests for the refresh rate the live display is built with, the single repaint an
-event or exit phase that changes state triggers, the session refresh that
-re-reads the session and repaints only when the re-read succeeds, and a frame
-that fails to render: the last good frame holds with one warning, a fresh frame
-returns once the failures stop, and a setup frame that fails warns through the
-dashboard.
+Tests for the single repaint an event or exit phase that changes state
+triggers, the session refresh that re-reads the session and repaints only when
+the re-read succeeds, and a frame that fails to render: the last good frame
+holds with one warning, a fresh frame returns once the failures stop, and a
+setup frame that fails warns through the dashboard.
 
 The zero-width fallback, what a termination signal does to a display, and the
 ``stop()`` guards every renderer shares are tested in
@@ -57,19 +56,6 @@ def _repaints_from_now(live_cls: MagicMock) -> Callable[[], int]:
     live = live_cls.return_value
     painted = live.refresh.call_count
     return lambda: live.refresh.call_count - painted
-
-
-# ---------------------------------------------------------------------------
-# Live construction — refresh rate and renderable
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_derive_the_refresh_rate_from_refresh_ms(
-    mock_live_cls: MagicMock,
-):
-    make_reporter(mode="live", refresh_ms=500)
-
-    assert mock_live_cls.call_args.kwargs.get("refresh_per_second") == 2
 
 
 # ---------------------------------------------------------------------------

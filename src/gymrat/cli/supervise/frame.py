@@ -208,12 +208,13 @@ def build_best_text(session_result: ReadSessionResult | None) -> Text | None:
 # Dashboard frame
 # ---------------------------------------------------------------------------
 
+IDLE_WARN_MS = 30_000
+"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
 
-def _build_waiting_text(
-    waiting: Waiting, now: int, tz: tzinfo | None, *, idle_warn_ms: int
-) -> Text:
+
+def _build_waiting_text(waiting: Waiting, now: int, tz: tzinfo | None) -> Text:
     ago = now - waiting.since
-    if ago < idle_warn_ms:
+    if ago < IDLE_WARN_MS:
         return Text(f"  waiting  {format_duration(ago)}", style=STYLE_PENDING)
     idle = f"no output for {format_duration(ago)}"
     last = waiting.last_tool
@@ -239,7 +240,6 @@ def _build_liveness_text(
     tz: tzinfo | None,
     *,
     tool_col: int,
-    idle_warn_ms: int,
 ) -> Text:
     match liveness:
         case Starting():
@@ -264,7 +264,7 @@ def _build_liveness_text(
             elapsed = format_duration(now - since)
             return Text(f"  {_pending_label(liveness)}  {elapsed}", style=STYLE_PENDING)
         case Waiting():
-            return _build_waiting_text(liveness, now, tz, idle_warn_ms=idle_warn_ms)
+            return _build_waiting_text(liveness, now, tz)
         case Capped(cap_type=cap_type, action=action):
             return Text(f"{action} ({cap_type})", style=STYLE_ALERT)
         case _:  # pragma: no cover - exhaustive over the liveness union
@@ -370,26 +370,17 @@ def _build_iterate_nest_row(
     return Text(text, style=STYLE_META)
 
 
-def _build_liveness_table(  # noqa: PLR0913 -- view knobs threaded to leaf renderers
+def _build_liveness_table(
     state: ReporterState,
     now: int,
     tz: tzinfo | None,
     *,
     tool_col: int,
-    idle_warn_ms: int,
     read_progress: Callable[[str], ProgressSnapshot | None],
 ) -> Table:
     liveness_table = Table.grid(padding=(0, 1))
     liveness_table.add_column()
-    liveness_table.add_row(
-        _build_liveness_text(
-            state.liveness,
-            now,
-            tz,
-            tool_col=tool_col,
-            idle_warn_ms=idle_warn_ms,
-        )
-    )
+    liveness_table.add_row(_build_liveness_text(state.liveness, now, tz, tool_col=tool_col))
 
     if isinstance(state.liveness, InFlight):
         nest_row = _build_iterate_nest_row(state.liveness, now, state.root, read_progress)
@@ -438,7 +429,6 @@ def build_frame(
     now: int,
     *,
     tz: tzinfo | None,
-    idle_warn_ms: int,
     read_progress: Callable[[str], ProgressSnapshot | None],
 ) -> RenderableType:
     """Assemble the supervise dashboard panel from the current reporter state.
@@ -448,8 +438,6 @@ def build_frame(
         now: Current wall-clock time in milliseconds, used for every elapsed
             duration in the frame.
         tz: Timezone for wall-clock timestamps; ``None`` uses the local zone.
-        idle_warn_ms: Milliseconds of inactivity before the waiting line
-            escalates to alert styling.
         read_progress: Reader for the iterate progress sidecar, keyed by project
             root.
 
@@ -468,7 +456,6 @@ def build_frame(
             now,
             tz,
             tool_col=tool_col,
-            idle_warn_ms=idle_warn_ms,
             read_progress=read_progress,
         )
     )

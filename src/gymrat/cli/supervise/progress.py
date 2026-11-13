@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
     from rich.console import Console, RenderableType
 
-    from gymrat.cli.live_display import ErasableLive
     from gymrat.config import Effort
     from gymrat.model import Direction
     from gymrat.session.progress_file import ProgressSnapshot
@@ -50,10 +49,7 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 REFRESH_MS = 1000
-"""Default Live dashboard refresh interval in milliseconds."""
-
-IDLE_WARN_MS = 30_000
-"""After 30 seconds of no tool activity, the liveness line escalates to alert styling."""
+"""Live dashboard refresh interval in milliseconds."""
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +75,6 @@ class _DashboardShell(LiveDisplayMixin):
         read_progress: Callable[[str], ProgressSnapshot | None],
         plain_write: Callable[[str], None],
         tz: tzinfo | None,
-        idle_warn_ms: int,
     ) -> None:
         self._console = console
         self.state = state
@@ -88,24 +83,22 @@ class _DashboardShell(LiveDisplayMixin):
         self._read_progress = read_progress
         self._plain_write = plain_write
         self._tz = tz
-        self._idle_warn_ms = idle_warn_ms
         self._session_read_warned = False
         self._last_frame: RenderableType = ""
         self._frame_warned = False
 
-    def mount(self, mode: Literal["live", "plain"], refresh_ms: int) -> None:
+    def mount(self, mode: Literal["live", "plain"]) -> None:
         """Start the live display when *mode* and the console call for one.
 
         Args:
             mode: The render mode the caller asked for.
-            refresh_ms: Live dashboard refresh interval in milliseconds.
         """
         if self._resolve_live(mode):
             # rich's stderr redirect lands a stray stderr write above the frame.
             self._mount_live(
                 transient=True,
                 get_renderable=self._live_frame,
-                refresh_per_second=MS_PER_SECOND / refresh_ms,
+                refresh_per_second=MS_PER_SECOND / REFRESH_MS,
                 redirect_stderr=True,
             )
 
@@ -124,7 +117,6 @@ class _DashboardShell(LiveDisplayMixin):
             self.state,
             self._now(),
             tz=self._tz,
-            idle_warn_ms=self._idle_warn_ms,
             read_progress=self._read_progress,
         )
 
@@ -255,8 +247,6 @@ class SuperviseReporter:
             writes no event announced, such as an exit-sequence step that failed
             after writing to the session log. A successful re-read writes no
             plain line; a failed read keeps the previous result.
-        display: The live-display bookkeeping behind ``live``, or ``None`` for
-            a reporter that paints nothing.
     """
 
     observer: SessionObserver
@@ -267,12 +257,6 @@ class SuperviseReporter:
     final_text: Callable[[], str | None]
     exit_phase: Callable[[ExitPhase], None]
     refresh_session: Callable[[], None]
-    display: LiveDisplayMixin | None = None
-
-    @property
-    def live(self) -> ErasableLive | None:
-        """The active live display, or ``None`` outside live mode or after ``stop()``."""
-        return None if self.display is None else self.display.live
 
 
 # ---------------------------------------------------------------------------
@@ -298,14 +282,12 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
     tz: tzinfo | None = None,
     model: str | None = None,
     effort: Effort | None = None,
-    refresh_ms: int = REFRESH_MS,
-    idle_warn_ms: int = IDLE_WARN_MS,
     primary_direction: Direction = GEOMEAN_DIRECTION,
 ) -> SuperviseReporter:
     """Build the observer/stop/frame/warn surface for the supervise dashboard.
 
     In live mode the Live display starts here, taking over stderr, and rich
-    repaints the frame on its own refresh thread every ``refresh_ms``, so
+    repaints the frame on its own refresh thread every :data:`REFRESH_MS`, so
     elapsed time and the idle indicator advance without events. A frame that
     fails to render never raises: while the display is being set up, on the
     refresh thread, or on an event-driven repaint, the last frame that rendered
@@ -343,9 +325,6 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         tz: Timezone for wall-clock timestamps.  ``None`` uses the local zone.
         model: Model name shown as a labelled row when set.
         effort: Effort level shown as a labelled row when set.
-        refresh_ms: Live dashboard refresh interval in milliseconds.
-        idle_warn_ms: Milliseconds of inactivity before the liveness line
-            escalates to alert styling.
         primary_direction: Whether a lower or a higher primary is the better
             outcome, passed to the default session reader to pick the best
             kept iteration.  Unused when ``read_session`` is given.
@@ -375,11 +354,10 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         read_progress=read_progress if read_progress is not None else _default_read_progress,
         plain_write=plain_write if plain_write is not None else warn_to_stderr,
         tz=tz,
-        idle_warn_ms=idle_warn_ms,
     )
     # No reporter exists for the caller to stop until this returns, so the mount
     # itself stops the display when starting or writing the first paint fails.
-    shell.mount(mode, refresh_ms)
+    shell.mount(mode)
 
     return SuperviseReporter(
         observer=shell.handle_event,
@@ -390,5 +368,4 @@ def create_supervise_reporter(  # noqa: PLR0913 - one parameter per reporter kno
         final_text=lambda: shell.state.last_agent_text,
         exit_phase=shell.exit_phase,
         refresh_session=shell.refresh_session,
-        display=shell,
     )

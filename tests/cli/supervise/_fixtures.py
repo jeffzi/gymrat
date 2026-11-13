@@ -19,8 +19,6 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import EndedBy
 
 from gymrat.cli.supervise.progress import (
-    IDLE_WARN_MS,
-    REFRESH_MS,
     SuperviseReporter,
     create_supervise_reporter,
 )
@@ -392,8 +390,6 @@ def make_reporter(
     tz: tzinfo | None = UTC,
     model: str | None = None,
     effort: Effort | None = None,
-    idle_warn_ms: int = IDLE_WARN_MS,
-    refresh_ms: int = REFRESH_MS,
     clock: Clock[int] | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
@@ -417,9 +413,6 @@ def make_reporter(
             tests produce stable timestamps regardless of host timezone.
         model: Model name shown as a labelled row when set.
         effort: Effort level shown as a labelled row when set.
-        idle_warn_ms: Milliseconds of inactivity before the liveness line
-            escalates to alert styling.
-        refresh_ms: Live dashboard refresh interval in milliseconds.
         clock: Drives the reporter, e.g. a ``Clock`` subclass; replaces the one
             built from ``clock_start``.
 
@@ -447,8 +440,6 @@ def make_reporter(
         plain_write=plain_write,
         model=model,
         effort=effort,
-        idle_warn_ms=idle_warn_ms,
-        refresh_ms=refresh_ms,
     )
     return ReporterKit(track(reporter), clock)
 

@@ -108,7 +108,8 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
     async def body(_trace: CommandTrace) -> StartResult:
         _working_tree_gate(root, allow_dirty=flags.allow_dirty)
         validate_experiment_worktree(root)
-        result = _session_step(root, config, flags.baseline_ref)
+        result = start_session(root, flags.baseline_ref, config, warn=warn_to_stderr)
+        write_stdout(format_start_summary(result, config.runbook) + "\n")
         _stop_condition_gate(config, result.state, force=flags.force)
         await _baseline_step(root, config)
         _check_feasibility(root, max_minutes=flags.max_minutes, force=flags.force)
@@ -139,36 +140,6 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
     rendered = render_doctor_report(report, color=resolved_color)
     write_and_flush(sys.stderr, rendered + "\n")
     raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
-
-
-def _session_step(
-    root: str,
-    config: ResolvedConfig,
-    baseline_ref: str | None,
-) -> StartResult:
-    """Open, resume, or archive-and-reopen the session.
-
-    The caller holds the repository lock for the full session-through-feasibility span.
-
-    Args:
-        root: The repository root path.
-        config: The resolved configuration for the session.
-        baseline_ref: The git ref to measure as baseline, or ``None`` to reuse the existing
-            baseline.
-
-    Returns:
-        The session start result.
-
-    Raises:
-        GymratError: When the baseline ref names no commit or a directory, when
-            the log is corrupt, or when git refuses to create or recreate the
-            workspace.
-    """
-    result = start_session(root, baseline_ref, config, warn=warn_to_stderr)
-
-    summary = format_start_summary(result, config.runbook)
-    write_stdout(summary + "\n")
-    return result
 
 
 def _stop_condition_gate(

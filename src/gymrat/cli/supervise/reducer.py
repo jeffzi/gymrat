@@ -399,11 +399,11 @@ def _follow_up_decision(state: ReporterState, event: FollowUpEvent) -> str:
 def _follow_up(
     state: ReporterState, event: FollowUpEvent, session_result: ReadSessionResult | None
 ) -> ReporterState:
-    decided = replace(state, last_decision=_follow_up_decision(state, event))
-    if not wants_session_refresh(state, event):
-        return decided
+    # A follow-up the session read did not follow arrives with no result, which
+    # keeps the last one.
     return replace(
-        decided,
+        state,
+        last_decision=_follow_up_decision(state, event),
         session_result=session_result if session_result is not None else state.session_result,
     )
 

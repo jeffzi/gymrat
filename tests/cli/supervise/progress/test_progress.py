@@ -28,8 +28,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from gymrat.cli.supervise.frame import format_eta
-from gymrat.cli.supervise.progress import IDLE_WARN_MS
+from gymrat.cli.supervise.frame import IDLE_WARN_MS, format_eta
 from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.store import BestIteration
@@ -381,11 +380,9 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
 # ---------------------------------------------------------------------------
 
 
-def _make_reporter_past_bash_end(
-    *, idle_warn_ms: int = IDLE_WARN_MS, result: str = "ok"
-) -> ReporterKit:
-    """A reporter with the given idle-warn threshold, clock frozen right after a Bash end."""
-    kit = make_reporter(idle_warn_ms=idle_warn_ms)
+def _make_reporter_past_bash_end(*, result: str = "ok") -> ReporterKit:
+    """A reporter whose clock is frozen right after a Bash end."""
+    kit = make_reporter()
     fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock, result=result)
     return kit
 
@@ -413,25 +410,23 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
 
 
 # ---------------------------------------------------------------------------
-# custom idle_warn_ms — configurable threshold
+# the idle-warn threshold
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("offset", "expected_state"),
     [
-        pytest.param(
-            1, "no output for 0s (last tool: Bash at 00:00:03)", id="past-custom-idle-warn"
-        ),
-        pytest.param(-1, "waiting  0s", id="below-custom-idle-warn"),
+        pytest.param(1, "no output for 30s (last tool: Bash at 00:00:03)", id="past-idle-warn"),
+        pytest.param(-1, "waiting  29s", id="below-idle-warn"),
+        pytest.param(0, "no output for 30s (last tool: Bash at 00:00:03)", id="at-idle-warn"),
     ],
 )
-def test_liveness_when_waiting_around_custom_idle_warn_does_escalate_only_past_it(
+def test_liveness_when_waiting_around_idle_warn_does_escalate_once_it_is_reached(
     offset: int, expected_state: str
 ):
-    custom_ms = 100
-    kit = _make_reporter_past_bash_end(idle_warn_ms=custom_ms)
-    kit.clock.now = BASH_CYCLE_END_MS + custom_ms + offset
+    kit = _make_reporter_past_bash_end()
+    kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + offset
 
     frame = render_frame(kit.reporter)
 
