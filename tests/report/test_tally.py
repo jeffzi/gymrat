@@ -22,10 +22,10 @@ from tests.report._assertions import (
     word_styles,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     every_class_metrics,
-    n_way_metric,
+    permutation_candidate,
     permutation_metric,
+    shared_baseline_metric,
 )
 from tests.report._verdicts import one_sided_metric
 
@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 
 
 _TWO_CANDIDATES: MetricComparisons = {
-    "decode/time": n_way_metric([
-        NWayCandidate(verdict="improved", delta=-10, median=90),
-        NWayCandidate(verdict="regressed", delta=8, median=108),
+    "decode/time": shared_baseline_metric([
+        permutation_candidate(verdict="improved", delta=-10, median=90),
+        permutation_candidate(verdict="regressed", delta=8, median=108),
     ]),
 }
 

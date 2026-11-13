@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from gymrat.config import KindEntry
@@ -255,15 +255,6 @@ def exact_metric(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class NWayCandidate:
-    """One candidate's permutation outcome, carrying its own measured median."""
-
-    verdict: ApproximateVerdict
-    delta: float
-    median: float
-
-
 def permutation_candidate(
     *, verdict: ApproximateVerdict, delta: float, median: float
 ) -> CandidateMetric:
@@ -302,16 +293,6 @@ def shared_baseline_metric(
         candidates=tuple(candidates),
         meta=metric_meta(name, unit="ns"),
     )
-
-
-def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
-    """One metric judged for several candidates against a single shared baseline."""
-    return shared_baseline_metric([
-        permutation_candidate(
-            verdict=candidate.verdict, delta=candidate.delta, median=candidate.median
-        )
-        for candidate in candidates
-    ])
 
 
 def multi_candidate_result(
@@ -355,7 +336,7 @@ def n_way_kind_metric(
     *,
     kind: str,
     short_name: str,
-    candidates: Sequence[NWayCandidate],
+    candidates: Sequence[CandidateMetric],
     gating: bool = True,
 ) -> MetricComparison:
     """A permutation-judged metric under one kind, judged once per candidate.
@@ -363,13 +344,13 @@ def n_way_kind_metric(
     Args:
         kind: The kind the metric belongs to.
         short_name: The name the metric displays under.
-        candidates: Each candidate's permutation outcome, in candidate order.
+        candidates: Each candidate's slice of the metric, in candidate order.
         gating: Whether the metric counts toward the gated geomean.
 
     Returns:
         The metric comparison.
     """
-    metric = n_way_metric(candidates)
+    metric = shared_baseline_metric(candidates)
     return replace(
         metric,
         meta=replace(metric.meta, kind=kind, short_name=short_name, gating=gating),
@@ -531,8 +512,8 @@ def grouped_comparison() -> ComparisonResult:
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-10, median=90),
-                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                    permutation_candidate(verdict="improved", delta=-10, median=90),
+                    permutation_candidate(verdict="regressed", delta=4, median=104),
                 ],
             ),
             "encode#memory": n_way_kind_metric(
@@ -540,8 +521,8 @@ def grouped_comparison() -> ComparisonResult:
                 short_name="encode",
                 gating=False,
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-7, median=93),
-                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                    permutation_candidate(verdict="improved", delta=-7, median=93),
+                    permutation_candidate(verdict="improved", delta=-2, median=98),
                 ],
             ),
         },

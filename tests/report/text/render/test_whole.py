@@ -36,7 +36,6 @@ from tests.report._assertions import (
     table_region,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     create_comparison_result,
     entity_time_metrics,
@@ -47,6 +46,7 @@ from tests.report._comparisons import (
     mixed_methods_result,
     n_way_kind_metric,
     other_kind,
+    permutation_candidate,
     two_kind_result,
 )
 from tests.report._measurements import two_kind_measurement
@@ -87,8 +87,8 @@ def _non_gating_two_candidate_result() -> ComparisonResult:
                 kind="time",
                 short_name="warmup",
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-10, median=90),
-                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                    permutation_candidate(verdict="improved", delta=-10, median=90),
+                    permutation_candidate(verdict="regressed", delta=4, median=104),
                 ],
                 gating=False,
             ),
@@ -116,8 +116,8 @@ def _per_candidate_geomean_result() -> ComparisonResult:
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
-                    NWayCandidate(verdict="no-signal", delta=-9, median=91),
-                    NWayCandidate(verdict="improved", delta=-12, median=88),
+                    permutation_candidate(verdict="no-signal", delta=-9, median=91),
+                    permutation_candidate(verdict="improved", delta=-12, median=88),
                 ],
             ),
             "encode#memory": n_way_kind_metric(
@@ -125,8 +125,8 @@ def _per_candidate_geomean_result() -> ComparisonResult:
                 short_name="encode",
                 gating=False,
                 candidates=[
-                    NWayCandidate(verdict="no-signal", delta=-1, median=99),
-                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                    permutation_candidate(verdict="no-signal", delta=-1, median=99),
+                    permutation_candidate(verdict="improved", delta=-2, median=98),
                 ],
             ),
         },

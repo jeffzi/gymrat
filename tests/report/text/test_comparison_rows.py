@@ -19,12 +19,12 @@ from gymrat.report.text.comparison_rows import (
     shown_verdict,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     gating_kind,
     informational_kind,
     memory_kind,
     n_way_kind_metric,
+    permutation_candidate,
     time_kind,
 )
 from tests.report._verdicts import geomean_of, permutation_verdict
@@ -159,8 +159,8 @@ def _rows() -> list[ComparisonRow]:
         kind="time",
         short_name="entity.spawn",
         candidates=[
-            NWayCandidate(verdict="no-signal", delta=-9, median=91),
-            NWayCandidate(verdict="improved", delta=-12, median=88),
+            permutation_candidate(verdict="no-signal", delta=-9, median=91),
+            permutation_candidate(verdict="improved", delta=-12, median=88),
         ],
     )
     informational = n_way_kind_metric(
@@ -168,8 +168,8 @@ def _rows() -> list[ComparisonRow]:
         short_name="encode",
         gating=False,
         candidates=[
-            NWayCandidate(verdict="improved", delta=-2, median=98),
-            NWayCandidate(verdict="regressed", delta=3, median=103),
+            permutation_candidate(verdict="improved", delta=-2, median=98),
+            permutation_candidate(verdict="regressed", delta=3, median=103),
         ],
     )
     return [
@@ -264,8 +264,8 @@ def _informational_rows() -> list[ComparisonRow]:
         short_name="warmup",
         gating=False,
         candidates=[
-            NWayCandidate(verdict="no-signal", delta=-1, median=99),
-            NWayCandidate(verdict="improved", delta=-6, median=94),
+            permutation_candidate(verdict="no-signal", delta=-1, median=99),
+            permutation_candidate(verdict="improved", delta=-6, median=94),
         ],
     )
     encode = n_way_kind_metric(
@@ -273,8 +273,8 @@ def _informational_rows() -> list[ComparisonRow]:
         short_name="encode",
         gating=False,
         candidates=[
-            NWayCandidate(verdict="improved", delta=-9, median=91),
-            NWayCandidate(verdict="regressed", delta=14, median=114),
+            permutation_candidate(verdict="improved", delta=-9, median=91),
+            permutation_candidate(verdict="regressed", delta=14, median=114),
         ],
     )
     return [build("warmup#time", None, warmup), build("encode#time", None, encode)]

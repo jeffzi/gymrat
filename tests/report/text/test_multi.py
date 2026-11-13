@@ -26,12 +26,12 @@ from tests.report._assertions import (
     styles_at,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     create_comparison_result,
     multi_candidate_result,
-    n_way_metric,
     other_kind,
+    permutation_candidate,
+    shared_baseline_metric,
 )
 
 if TYPE_CHECKING:
@@ -81,9 +81,9 @@ def _dimming_result() -> ComparisonResult:
             create_candidate(label="candidate-b"),
         ],
         metrics={
-            "flat/time": n_way_metric([
-                NWayCandidate(verdict="no-signal", delta=0.3, median=100),
-                NWayCandidate(verdict="unstable", delta=-50, median=50),
+            "flat/time": shared_baseline_metric([
+                permutation_candidate(verdict="no-signal", delta=0.3, median=100),
+                permutation_candidate(verdict="unstable", delta=-50, median=50),
             ]),
         },
     )
