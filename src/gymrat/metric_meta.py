@@ -251,7 +251,7 @@ def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str
         if fitted is None:
             return None
         step = format_value(fitted, "ns")
-        return f"{name}: readings sit on a timer step of {step}. {_RESOLUTION_ADVICE}"
+        return f"warning: {name}: readings sit on a timer step of {step}. {_RESOLUTION_ADVICE}"
 
     repeats = any(
         later - earlier <= tolerance
@@ -264,4 +264,7 @@ def _quantized_readings_warning(name: str, per_target: list[list[float]]) -> str
     if gap is not None and gap <= min_step:
         return None
     bound = "" if gap is None else f"; its step is at most {format_value(gap, 'ns')}"
-    return f"{name}: readings repeat as a quantized timer's would{bound}. {_RESOLUTION_ADVICE}"
+    return (
+        f"warning: {name}: readings repeat as a quantized timer's would{bound}. "
+        f"{_RESOLUTION_ADVICE}"
+    )

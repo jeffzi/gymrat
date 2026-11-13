@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, assert_never
 
 from gymrat.cli.milestone_lines import prepare_milestone
+from gymrat.cli.missing_delta import MISSING_DELTA
 from gymrat.progress_events import (
     ConfirmFinished,
     ConfirmSkipped,
@@ -30,7 +31,7 @@ from gymrat.progress_events import (
 )
 from gymrat.report.format import format_percent_delta
 from gymrat.session.budget import SIDES_PER_ITERATE
-from gymrat.utils import MISSING_DELTA, SamplingEta, StyledSegment, format_duration, pluralize
+from gymrat.utils import SamplingEta, StyledSegment, format_duration, pluralize
 
 REGRESSED_NAME_CAP = 3
 """How many regressed metric names the judge's lines spell out."""
@@ -357,6 +358,10 @@ def _pass_started(state: IterateState, event: PassStarted) -> IterateState:
     )
 
 
+def _measure_passes_complete(state: IterateState) -> bool:
+    return state.pass_phase.eta.completed >= state.total
+
+
 def _pass_finished(state: IterateState, event: PassFinished) -> IterateState:
     counters = state.confirm_phase if event.phase == "confirm" else state.pass_phase
     advanced = replace(counters, eta=counters.eta.advanced(event.at_ms - counters.start_ms))
@@ -365,7 +370,7 @@ def _pass_finished(state: IterateState, event: PassFinished) -> IterateState:
         return replace(state, confirm_phase=advanced)
 
     sampled = replace(state, pass_phase=advanced)
-    if advanced.eta.completed < state.total:
+    if not _measure_passes_complete(sampled):
         return sampled
     done = replace(
         state.nodes.passes,
@@ -470,7 +475,7 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
     match event:
         case PrepareFinished():
             return prepare_milestone(event.label, event.at_ms - before.prepare_current_start_ms)
-        case PassFinished(phase="measure") if after.pass_phase.eta.completed >= after.total:
+        case PassFinished(phase="measure") if _measure_passes_complete(after):
             return f"passes done ({format_duration(after.pass_phase.eta.total_time_ms)})"
         case JudgeFinished():
             segments = judge_segments(_judge_detail(before, event))
@@ -482,24 +487,6 @@ def plain_line(before: IterateState, after: IterateState, event: ProgressEvent) 
             return f"recorded {_record_detail(after, event.outcome)}"
         case _:
             return None
-
-
-def format_primary_delta(primary_delta_pct: float | None) -> str:
-    """Format the judge's primary delta the way the report prints it.
-
-    Both checklist modes print the delta through this, so the live row, the
-    plain line, and the report agree on sign and rounding.
-
-    Args:
-        primary_delta_pct: Percentage delta on the primary metric, or ``None``
-            when no delta is available.
-
-    Returns:
-        The report's signed percentage (``"+2.2%"``, an unsigned ``"0.0%"``
-        for a value that rounds to zero), or :data:`MISSING_DELTA` for a
-        missing or non-finite delta.
-    """
-    return format_percent_delta(primary_delta_pct, missing=MISSING_DELTA)
 
 
 def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
@@ -515,11 +502,12 @@ def judge_segments(detail: JudgeDetail) -> list[StyledSegment[JudgeRole]]:
         The verdict's segments in print order. A ``"name"`` segment is one
         regressed metric's name; every other segment is ``"meta"`` wording.
         At most :data:`REGRESSED_NAME_CAP` regressed names are spelled out and
-        the rest collapse to ``"…"``; the delta renders through
-        :func:`format_primary_delta`, and the primary metric's name appears
-        only beside a printable delta.
+        the rest collapse to ``"…"``; the delta renders as the report prints
+        it, and the primary metric's name appears only beside a printable delta.
     """
-    delta = format_primary_delta(detail.primary_delta_pct)
+    # Both checklist modes print the delta through here, so the live row, the
+    # plain line, and the report agree on sign and rounding.
+    delta = format_percent_delta(detail.primary_delta_pct, missing=MISSING_DELTA)
     primary = delta if delta == MISSING_DELTA else f"{delta} on {detail.primary_metric}"
     regressed = detail.regressed_names
     if not regressed:

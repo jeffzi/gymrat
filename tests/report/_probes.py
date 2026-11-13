@@ -17,7 +17,6 @@ def probe_metric(
     name: str = "total_ms",
     *,
     median: float = 90.0,
-    spread: float | None = 2.0,
     reference_median: float | None = 100.0,
     delta_pct: float | None = -10.0,
     direction: Direction = "lower",
@@ -29,8 +28,6 @@ def probe_metric(
     Args:
         name: The metric name.
         median: The metric's median now.
-        spread: The run-to-run spread as a percentage of the median. ``None``
-            means there was no run-to-run jitter to report.
         reference_median: The baseline's median, ``None`` together with
             ``delta_pct`` when the baseline has nothing to pair the metric with.
         delta_pct: The gap to the baseline, in percent.
@@ -44,7 +41,7 @@ def probe_metric(
     return ProbeMetric(
         name=name,
         median=median,
-        spread=spread,
+        spread=2.0,
         reference_median=reference_median,
         delta_pct=delta_pct,
         meta=metric_meta(name, direction=direction, gating=True, kind=kind, unit=unit),
@@ -53,18 +50,12 @@ def probe_metric(
 
 def probe_result(
     *,
-    label: str = "experiment",
-    samples: int = 6,
-    adapter: str = "mitata",
     metrics: Sequence[ProbeMetric] = (),
     names: Sequence[str] = (),
 ) -> ProbeResult:
     """A probe of one worktree paired against the newest recorded baseline.
 
     Args:
-        label: The display label of the benched worktree.
-        samples: How many rounds the probe ran.
-        adapter: The adapter that parsed the bench output.
         metrics: One entry per metric the run reported, in report order.
         names: The metric names the bench was narrowed to, in the order given;
             empty means the whole bench ran. It filters the bench, not
@@ -74,9 +65,9 @@ def probe_result(
         The probe result.
     """
     return ProbeResult(
-        label=label,
-        samples=samples,
-        adapter=adapter,
+        label="experiment",
+        samples=6,
+        adapter="mitata",
         metrics=tuple(metrics),
         names=tuple(names),
     )

@@ -6,6 +6,7 @@ every run component's warning reaches the reporter rather than stderr.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import create_autospec
@@ -20,17 +21,14 @@ from opentelemetry.sdk.trace import Span as SdkSpan
 
 from gymrat.errors import GymratError
 from gymrat.session.paths import budget_path
-from gymrat.supervisor.driver import SessionPrompt
 from gymrat.supervisor.events import create_event_log_writer
+from gymrat.telemetry.run_spans import RUN_SPAN, SESSION_SPAN
 from tests._cli import combined_output
 from tests.cli.commands.supervise._seams import (
     install_seams,
     run,
 )
-from tests.cli.supervise._fixtures import (
-    follow_up_event,
-    make_supervision_result,
-)
+from tests.cli.supervise._fixtures import follow_up_event
 from tests.session.records._fixtures import SESSION_ID
 from tests.supervisor._fixtures import raising_observer
 from tests.telemetry._fixtures import memory_tracing
@@ -41,14 +39,6 @@ from tests.telemetry._fixtures import memory_tracing
 
 _OUTCOMES = [
     pytest.param({}, id="completed"),
-    pytest.param(
-        {
-            "result": make_supervision_result(
-                reason="error", duration_ms=5_000, cost_usd=0.03, end_reason="SDK failed"
-            )
-        },
-        id="error-outcome",
-    ),
     pytest.param({"raises": GymratError("boom")}, id="supervise-raises"),
 ]
 
@@ -67,21 +57,11 @@ def test_supervise_when_tracing_enabled_does_export_the_session_and_run_spans_on
     with memory_tracing(SESSION_ID) as exporter:
         run()
 
-    assert [s.name for s in exporter.get_finished_spans()] == ["gymrat.run", "gymrat.session"]
+    assert Counter(s.name for s in exporter.get_finished_spans()) == Counter([
+        RUN_SPAN,
+        SESSION_SPAN,
+    ])
     assert [r for r in caplog.records if r.name == "opentelemetry.sdk.trace"] == []
-
-
-def test_supervise_when_tracing_enabled_does_hand_supervise_the_run_span_context(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-
-    with memory_tracing(SESSION_ID):
-        run()
-
-    prompt = seams.supervise_calls[0]["prompt"]
-    assert isinstance(prompt, SessionPrompt)
-    assert prompt.traceparent is not None
 
 
 # ---------------------------------------------------------------------------

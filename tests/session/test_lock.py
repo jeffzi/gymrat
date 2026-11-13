@@ -23,12 +23,13 @@ from gymrat.session.lock import (
     LockContentionError,
     acquire_lock,
     is_held,
+    os_lock_file,
+    publish_lock_file,
 )
+from gymrat.utils import os_error_reason
 from tests._lock import (
     FIXED_HOLDER_AT,
     hold_lock,
-    os_lock_file,
-    publish_lock_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -272,7 +273,7 @@ def _acquire_for_compare(lock_path: str) -> object:
         pytest.param(is_held, os_lock_file, id="is-held"),
     ],
 )
-def test_lock_probe_when_lock_file_cannot_be_opened_does_raise_without_a_hint(
+def test_lock_probe_when_lock_file_cannot_be_opened_does_raise_naming_the_path_once(
     lock_path: str, probe: Callable[[str], object], lock_file: Callable[[str], str]
 ):
     target_path = lock_file(lock_path)
@@ -281,8 +282,11 @@ def test_lock_probe_when_lock_file_cannot_be_opened_does_raise_without_a_hint(
     with pytest.raises(GymratError) as caught:
         probe(lock_path)
 
-    assert target_path in str(caught.value)
-    assert str(caught.value.__cause__) in str(caught.value)
+    message = str(caught.value)
+    cause = caught.value.__cause__
+    assert isinstance(cause, OSError)
+    assert message.count(target_path) == 1
+    assert os_error_reason(cause) in message
     assert caught.value.hint is None
 
 

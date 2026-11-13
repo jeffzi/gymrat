@@ -39,6 +39,7 @@ import sys
 import time
 import warnings
 from collections.abc import Awaitable, Callable, Iterable
+from ctypes import wintypes
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -128,8 +129,6 @@ attribute at all is what has to be avoided.
 # ---------------------------------------------------------------------------
 
 if sys.platform == "win32":
-    from ctypes import wintypes
-
     _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
     _JOB_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_BASIC_ACCOUNTING_INFORMATION = 1
@@ -381,15 +380,20 @@ def resume_process_group(pid: int) -> bool:
 def release_process_group(pid: int) -> None:
     """Drop the container holding ``pid``, ending any descendant it left behind.
 
-    A no-op on POSIX. On Windows the job's kill-on-close limit turns this into
-    the last sweep of the tree, so a descendant that outlived the child does not
-    outlive the run.
+    This is the last sweep of the tree, so a descendant that outlived the child
+    does not outlive the run. On POSIX the group led by ``pid`` is killed at
+    once, with no stop request first, as :func:`kill_process_group` does; an
+    empty group is silent. A descendant that moved itself into a session of its
+    own has left the group and survives. On Windows the job's kill-on-close
+    limit ends the tree when its handle is closed.
 
     Args:
         pid: The process ID the run was spawned with.
     """
     if _release_job_impl is not None:
         _release_job_impl(pid)
+    elif sys.platform != "win32":
+        kill_process_group(pid)
 
 
 def _stop_group(pid: int, signal_number: int, *, defer_refusal: bool, settle_s: float) -> bool:
@@ -551,7 +555,10 @@ def _linux_group_states(group_id: int) -> list[str]:
     """List the ``/proc/<pid>/stat`` state of every member of group ``group_id``, zombies included.
 
     Linux has no call listing one group, so every process is scanned. A process
-    that exits between the scan and the read of its ``stat`` file is skipped.
+    that exits between the scan and the read of its ``stat`` file is skipped, as
+    is one whose ``stat`` file the caller may not read: a hardened ``/proc``
+    hides other users' processes that way, and such a process is never in a
+    group the caller started.
 
     Args:
         group_id: The process group to list.
@@ -569,7 +576,7 @@ def _linux_group_states(group_id: int) -> list[str]:
             continue
         try:
             stat = (entry / "stat").read_bytes()
-        except (FileNotFoundError, ProcessLookupError):
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
         # The command name before the state is parenthesized and may itself
         # hold spaces and parentheses, so the fields start after the last ")".

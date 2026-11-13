@@ -78,25 +78,26 @@ def _drain(fd: int, chunks: list[bytes]) -> None:
 
 
 @contextlib.contextmanager
-def pty_capture(size: tuple[int, int] | None = None) -> Generator[PtyCapture]:
+def pty_capture() -> Generator[PtyCapture]:
     """Open a pseudo-terminal and collect everything drawn on it until the block exits.
 
     On exit the capture closes its own copy of the slave, waits for the reader
     to reach end-of-file, closes the master, and decodes what was read into
     ``output``. A child still holding the slave keeps the reader waiting up to
-    the join bound, so the block should end only once the child has exited.
-
-    Args:
-        size: The ``(rows, columns)`` the terminal reports, so a renderer in the
-            child draws at a known geometry; ``None`` leaves the pty's default.
+    the join bound, so the block should end only once the child has exited. The
+    terminal reports :data:`PTY_SIZE`, so a renderer in the child draws at a known
+    geometry.
 
     Yields:
         The capture, whose ``slave`` the caller hands to the child.
+
+    Raises:
+        AssertionError: A process still held the pty when the join bound ran
+            out, so ``output`` would be missing what it drew after that.
     """
     master, slave = pty.openpty()
-    if size is not None:
-        rows, columns = size
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("4H", rows, columns, 0, 0))
+    rows, columns = PTY_SIZE
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("4H", rows, columns, 0, 0))
     capture = PtyCapture(slave)
     reader = threading.Thread(target=_drain, args=(master, capture.chunks))
     reader.start()
@@ -105,13 +106,18 @@ def pty_capture(size: tuple[int, int] | None = None) -> Generator[PtyCapture]:
     finally:
         os.close(slave)
         reader.join(timeout=_READER_JOIN_S)
+        still_held = reader.is_alive()
         os.close(master)
         capture.output = b"".join(capture.chunks).decode("utf-8", "replace")
+    if still_held:
+        msg = (
+            f"a process still holds the pty after {_READER_JOIN_S}s; "
+            "the captured output would be truncated"
+        )
+        raise AssertionError(msg)
 
 
-def on_pty_kwargs(
-    terminal: PtyCapture, *, stdin_on_pty: bool, stderr_on_pty: bool
-) -> dict[str, Any]:
+def on_pty_kwargs(terminal: PtyCapture, *, every_stream: bool) -> dict[str, Any]:
     """The ``Popen`` options that attach a child to ``terminal`` as its own session.
 
     The child writes stdout to the pty in binary mode, leads a new session, and
@@ -119,8 +125,8 @@ def on_pty_kwargs(
 
     Args:
         terminal: The capture whose slave the child is attached to.
-        stdin_on_pty: Whether the child also reads stdin from the pty.
-        stderr_on_pty: Whether the child also writes stderr to the pty.
+        every_stream: Whether the child also reads stdin from, and writes
+            stderr to, the pty.
 
     Returns:
         The keyword arguments to spread into the child's ``Popen`` call.
@@ -131,8 +137,7 @@ def on_pty_kwargs(
         "start_new_session": True,
         "close_fds": True,
     }
-    if stdin_on_pty:
+    if every_stream:
         kwargs["stdin"] = terminal.slave
-    if stderr_on_pty:
         kwargs["stderr"] = terminal.slave
     return kwargs

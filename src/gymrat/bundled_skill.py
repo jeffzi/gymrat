@@ -6,18 +6,16 @@ from a source checkout, a wheel, or a zipapp.
 """
 
 from importlib import resources
-from importlib.resources.abc import Traversable
+from typing import TYPE_CHECKING
 from zipfile import BadZipFile
 
 from gymrat.errors import GymratError
 
+if TYPE_CHECKING:
+    from importlib.resources.abc import Traversable
+
 _PACKAGE = "gymrat"
 _SKILL_RELATIVE_PATH = "skills/gymrat/SKILL.md"
-
-
-def _skill_resource() -> Traversable:
-    """Resolve the packaged skill file as an :mod:`importlib.resources` traversable."""
-    return resources.files(_PACKAGE).joinpath(_SKILL_RELATIVE_PATH)
 
 
 def read_bundled_skill() -> str:
@@ -34,7 +32,7 @@ def read_bundled_skill() -> str:
     """
     resource: Traversable | None = None
     try:
-        resource = _skill_resource()
+        resource = resources.files(_PACKAGE).joinpath(_SKILL_RELATIVE_PATH)
         return resource.read_text(encoding="utf-8")
     except (OSError, ValueError, BadZipFile) as err:
         location = "" if resource is None else f" (resolved to {resource})"

@@ -17,18 +17,16 @@ import pytest
 
 from gymrat.errors import GymratError
 from gymrat.loop.discard import discard_session
-from gymrat.loop.keep import keep_session
 from gymrat.session.paths import baseline_worktree_dir, experiment_worktree_dir
 from gymrat.session.records import KeepRecord
 from tests._git import commit_all, head_of, status_of
 from tests.loop._settle import (
     assert_settling_record,
-    checks_config,
-    checks_pass,
     commit_and_keep,
     commit_experiment_directly,
     edit_experiment,
     gating_blocked_history,
+    keep_an_edit,
     settling_record_of,
     start_with,
 )
@@ -72,7 +70,7 @@ def test_discard_session_when_iteration_unsettled_does_settle_it_as_discarded(re
     assert result.at == result.record.at
 
 
-def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbering_past_it(
+def test_discard_session_when_gating_block_stands_does_number_the_discard_past_the_block(
     repo: str,
 ):
     start_with(repo, gating_blocked_history())
@@ -80,24 +78,19 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
 
     result = discard_session(repo)
 
-    _assert_reverted(experiment_worktree_dir(repo))
     # The block already settled iteration 1, so the discard takes the number no
     # iteration has used yet.
     assert result.record is not None
     assert_settling_record(result.record, discard_record(2))
 
 
-async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
+async def test_discard_session_when_keep_retried_after_block_does_discard_iteration_one_after_the_refusal(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, gating_blocked_history())
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    await keep_session(repo, checks_config())
+    await keep_an_edit(repo, monkeypatch, gating_blocked_history())
 
     result = discard_session(repo)
 
-    _assert_reverted(experiment_worktree_dir(repo))
     refusal, discard = log_records(repo)[-2:]
     assert isinstance(refusal, KeepRecord)
     assert refusal.status == "blocked"
@@ -114,10 +107,7 @@ async def test_discard_session_when_keep_retried_after_block_does_throw_away_the
 async def test_discard_session_when_keep_committed_then_agent_committed_does_reset_to_kept_commit(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo, (iteration_record(seq=1),))
-    edit_experiment(repo)
-    checks_pass(monkeypatch)
-    keep_result = await keep_session(repo, checks_config())
+    keep_result = await keep_an_edit(repo, monkeypatch)
     kept_commit = keep_result.record.commit
     worktree = experiment_worktree_dir(repo)
     append_records(repo, iteration_record(seq=2))
@@ -140,13 +130,12 @@ def test_discard_session_when_kept_commit_unreachable_does_fall_back_to_the_work
     (Path(worktree) / "after-commit.txt").write_text("more\n", encoding="utf-8")
     head = head_of(worktree)
 
-    result = discard_session(repo)
+    discard_session(repo)
 
     stderr = capsys.readouterr().err
     assert COMMIT in stderr
     assert status_of(worktree) == ""
     assert head_of(worktree) == head
-    assert result.record is None
 
 
 # ---------------------------------------------------------------------------

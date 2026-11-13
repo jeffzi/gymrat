@@ -8,7 +8,8 @@ broken install leaves nothing behind.
 The scaffold is re-runnable: an existing ``gymrat.toml`` is left byte-identical
 and reported as ``exists``, while the runbook and skill are still filled in.
 ``bench`` is therefore only required when the config has to be written. Every
-artifact is written atomically, and if a write fails, each artifact this run
+artifact is written atomically and never over a file that appears mid-run,
+which is reported as ``exists`` and kept. If a write fails, each artifact this run
 created is removed so no partial scaffold is left — one that was already there
 is never touched. The directories this run created go with them, unless
 something else has put a file in one since: a directory that is no longer
@@ -24,7 +25,7 @@ from typing import Literal
 from gymrat.bundled_skill import read_bundled_skill
 from gymrat.config import CONFIG_FILENAME, validate_config_dict
 from gymrat.errors import GymratError
-from gymrat.utils import write_text_atomic
+from gymrat.utils import create_text_atomic
 
 SKILL_RELATIVE_PATH = ".claude/skills/gymrat/SKILL.md"
 """Path, relative to the project root, where init writes and doctor checks for the skill."""
@@ -109,24 +110,30 @@ def _make_directory(directory: Path) -> bool:
     return True
 
 
-def _make_directories(directory: Path, created: list[Path]) -> None:
-    """Create ``directory`` and its missing ancestors, recording each one this call made.
+def _make_directories(directory: Path, base_dir: Path, created: list[Path]) -> None:
+    """Create ``directory`` and its missing ancestors below ``base_dir``, recording each one made.
 
-    A directory is recorded the moment it is made, so a failure part-way
-    through still leaves ``created`` naming everything there is to roll back.
+    ``base_dir`` itself is never created: a project root that does not exist is
+    a mistyped path, so the write under it fails instead. A directory is
+    recorded the moment it is made, so a failure part-way through still leaves
+    ``created`` naming everything there is to roll back.
 
     Args:
         directory: The directory that must exist afterwards.
+        base_dir: The project root, which must already exist.
         created: Extended with each directory this call created, an ancestor
             before its descendants.
 
     Raises:
-        OSError: When a directory cannot be created.
+        OSError: When a directory cannot be created, ``base_dir`` included
+            when it is missing.
     """
+    if directory == base_dir:
+        return
     try:
         made = _make_directory(directory)
     except FileNotFoundError:
-        _make_directories(directory.parent, created)
+        _make_directories(directory.parent, base_dir, created)
         made = _make_directory(directory)
     if made:
         created.append(directory)
@@ -138,7 +145,8 @@ def _write_artifact(
     """Write ``content`` to ``relative`` unless a file is already there.
 
     The write is atomic, so a failure never leaves a truncated file that a
-    later run would take for an existing artifact.
+    later run would take for an existing artifact, and it never replaces a
+    file that appears after the existence check.
 
     Args:
         base_dir: The project root the artifact is written into.
@@ -160,8 +168,10 @@ def _write_artifact(
         return ScaffoldArtifact(path=relative, status="exists")
 
     try:
-        _make_directories(full_path.parent, created_directories)
-        write_text_atomic(full_path, content)
+        _make_directories(full_path.parent, base_dir, created_directories)
+        create_text_atomic(full_path, content)
+    except FileExistsError:
+        return ScaffoldArtifact(path=relative, status="exists")
     except OSError as exc:
         msg = f"Cannot write {relative} in {base_dir}"
         raise GymratError(msg, hint=str(exc)) from exc
@@ -192,41 +202,39 @@ def _prepare_config(request: ScaffoldRequest) -> str:
     return "".join(f"{key} = {json.dumps(value)}\n" for key, value in config_dict.items())
 
 
-def _write_config(base_dir: Path, content: str) -> ScaffoldArtifact:
-    """Write the config atomically, so a failed write never leaves a truncated ``gymrat.toml``.
-
-    Args:
-        base_dir: The project root the config is written into.
-        content: The serialized TOML text.
-
-    Returns:
-        The scaffold artifact describing the written config file.
-
-    Raises:
-        GymratError: When the file cannot be written.
-    """
-    try:
-        write_text_atomic(base_dir / CONFIG_FILENAME, content)
-    except OSError as exc:
-        msg = f"Cannot write {CONFIG_FILENAME} in {base_dir}"
-        raise GymratError(msg, hint=str(exc)) from exc
-    return ScaffoldArtifact(path=CONFIG_FILENAME, status="created")
+def _blocking_path(base_dir: Path, relative: str) -> str | None:
+    full = base_dir / relative
+    if full.is_symlink() or (full.exists() and not full.is_file()):
+        return relative
+    # A file or dangling symlink where a directory of the path belongs leaves
+    # nowhere to write; ``is_file`` reports such a path as missing, not blocked.
+    # The entry to name is that directory, since it is the one the user removes.
+    for parent in reversed(Path(relative).parents):
+        if parent == Path():
+            continue
+        ancestor = base_dir / parent
+        if ancestor.exists(follow_symlinks=False) and not ancestor.is_dir():
+            return parent.as_posix()
+    return None
 
 
 def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
-    """The requested artifact paths a non-regular file occupies.
+    """The entries that occupy or cut off a requested artifact path.
 
     Symlinks (including dangling ones) are always blocked — writing through a
     symlink would place the content at a location the user did not choose.
-    Directories are blocked because they cannot be opened as regular files.
+    Directories are blocked because they cannot be opened as regular files. A
+    path is also blocked when one of its directories below ``base_dir`` is a
+    file or a symlink that does not lead to a directory.
 
     Args:
         base_dir: The base directory the artifact paths are resolved against.
         request: The user choices that decide which artifacts are written.
 
     Returns:
-        Each requested path holding a symlink, directory, or other non-regular
-        file, in write order.
+        In write order, each requested path holding a symlink, directory, or
+        other non-regular file, and, for a requested path lying under a
+        non-directory, that non-directory instead.
     """
     requested = [
         (CONFIG_FILENAME, True),
@@ -234,10 +242,9 @@ def _blocked_paths(base_dir: Path, request: ScaffoldRequest) -> list[str]:
         (SKILL_RELATIVE_PATH, request.install_skill),
     ]
     return [
-        relative
+        blocking
         for relative, wanted in requested
-        if wanted
-        and ((full := base_dir / relative).is_symlink() or (full.exists() and not full.is_file()))
+        if wanted and (blocking := _blocking_path(base_dir, relative)) is not None
     ]
 
 
@@ -284,9 +291,11 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         A :class:`ScaffoldResult` describing each artifact.
 
     Raises:
-        GymratError: When the config fails validation, the bundled skill cannot
-            be read, a non-regular file (directory, symlink) occupies an artifact
-            path, or a filesystem error prevents writing.
+        GymratError: When no config exists and ``request.bench`` is None, the
+            config fails validation, the bundled skill cannot be read, a
+            non-regular file (directory, symlink) occupies an artifact path, a
+            file or dangling symlink stands where one of its directories
+            belongs, or a filesystem error prevents writing.
     """
     base_dir = Path(base_dir)
     config_path = base_dir / CONFIG_FILENAME
@@ -296,6 +305,10 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         msg = f"Cannot access {config_path}: {error}"
         raise GymratError(msg, hint="Check directory permissions.") from error
 
+    # An existing config is kept as-is, so its bench command stands in for the flag.
+    if not config_exists and request.bench is None:
+        msg = "Missing --bench flag."
+        raise GymratError(msg)
     config_content = None if config_exists else _prepare_config(request)
     skill_content = read_bundled_skill() if request.install_skill else None
 
@@ -311,7 +324,7 @@ def scaffold(base_dir: str | Path, request: ScaffoldRequest) -> ScaffoldResult:
         artifacts.append(
             ScaffoldArtifact(path=CONFIG_FILENAME, status="exists")
             if config_content is None
-            else _write_config(base_dir, config_content)
+            else _write_artifact(base_dir, CONFIG_FILENAME, config_content, created_directories)
         )
         artifacts.append(
             _write_artifact(base_dir, DEFAULT_RUNBOOK_PATH, _RUNBOOK_STUB, created_directories)

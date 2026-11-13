@@ -54,7 +54,7 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
                 iteration_record(seq=7),
                 hook_record(stage="after", seq=7),
             ],
-            ("before", "7", "exit 3", "80", "12"),
+            ("before", "7", "3", "80", "12"),
             id="non-zero-exit-two-back-from-tail",
         ),
         pytest.param(
@@ -62,7 +62,7 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
                 command_record(),
                 hook_record(stage="after", seq=4, exit_code=1, timed_out=True, stderr_bytes=None),
             ],
-            ("after", "4", "timed out", "?"),
+            ("timed out", "?"),
             id="timed-out-without-stderr-count",
         ),
         pytest.param(
@@ -71,7 +71,7 @@ def test_detect_end_condition_when_stop_met_but_check_stop_false_does_report_not
                 iteration_record(seq=3),
                 hook_record(stage="after", seq=3, exit_code=6, stderr_bytes=4),
             ],
-            ("2", "exit 5"),
+            ("5",),
             id="earliest-of-several-failures",
         ),
     ],

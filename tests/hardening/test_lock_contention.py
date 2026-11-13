@@ -1,14 +1,12 @@
-"""Contention-hardening tests for the single-flight lock and its command wiring.
+"""Contention-hardening test for the single-flight lock across real processes.
 
 Where :mod:`tests.session.test_lock` drives the lock through patched system
-calls in one process, these tests pin the guarantees that only surface under
-genuine pressure:
+calls in one process, this test pins the guarantee that only surfaces under
+genuine pressure: a burst of real processes racing for one lockfile grants
+exactly one holder and hands every loser the contention error, with the
+lockfile never torn.
 
-- a burst of real processes racing for one lockfile grants exactly one holder
-  and hands every loser the contention error, with the lockfile never torn.
-
-The multi-process tests are POSIX-only: they rendezvous children on a named
-pipe.
+The test is POSIX-only: it rendezvouses its children on a named pipe.
 """
 
 import json
@@ -152,7 +150,9 @@ def _run_race(tmp_path: Path, lock_path: str, count: int, command: str = "measur
 # ---------------------------------------------------------------------------
 
 
-def test_acquire_lock_when_processes_race_does_admit_exactly_one_holder(tmp_path: Path):
+def test_acquire_lock_when_processes_race_does_admit_one_holder_that_every_loser_names(
+    tmp_path: Path,
+):
     lock_path = str(tmp_path / "gymrat.lock.json")
 
     outcome = _run_race(tmp_path, lock_path, 5)

@@ -38,11 +38,11 @@ side, and prints a verdict per metric plus a geometric-mean (geomean) summary:
 
 ```text
 gymrat compare · baseline main ↔ perf/faster-decode · 12 paired samples · adapter: metric-lines
-metric                    │ main         │ perf/faster-decode │ vs main
-──────────────────────────┼──────────────┼────────────────────┼────────────────
-decode#time               │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
-──────────────────────────┼──────────────┼────────────────────┼────────────────
-geomean (1 stable metric) │              │                    │    -8.3%  ±0.6%
+metric           │ main         │ perf/faster-decode │ vs main
+─────────────────┼──────────────┼────────────────────┼────────────────
+decode#time      │ 12.0ms ± 0%  │ 11.0ms ± 0%        │ ✓  -8.3%  ±0.6%
+─────────────────┼──────────────┼────────────────────┼────────────────
+geomean (1/1)    │              │                    │    -8.3%  ±0.6%
 
 ✓ 1 improved   ✗ 0 regressed   ≈ 0 unstable   = 0 identical   ~ 0 within noise   ? 0 inconclusive
 
@@ -166,6 +166,10 @@ The file also accepts `runbook`, `unstable_noise_pct`, and per-kind `[kinds]` ov
 `gymrat iterate` (see [Hooks](#hooks)). Kinds are `time` (`#time` metrics), `memory` (`#memory`
 metrics), and `other` (every other metric). gymrat names any unknown key or invalid value when it
 reads the file; it ignores a `[kinds]` entry that matches no kind.
+
+On Linux and macOS, no process started by `prepare`, `bench`, `checks` or a hook outlives that
+command: when the command ends, gymrat kills whatever it left running in its process group, a
+detached server included. A process that starts its own session with `setsid` escapes this.
 
 - `gating`, per metric or per kind, decides whether a regression on that metric fails
   `--fail-on regressed` and blocks `keep`.
@@ -339,11 +343,9 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 ## Machine-readable output
 
 `compare`, `measure`, `probe`, `doctor`, and every session command accept `--format json` for
-structured output. The session commands are `start`, `iterate`, `keep`, `discard`, `status`,
-`stop`, `sync`, and `finalize`.
-`init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases. From the first release published to PyPI, the log schema and the `--format json`
-documents are additive-only. Each JSON document starts with a `schema_version` field.
+structured output. `init`, `export`, and `supervise` are text-only. Text output is for humans and
+may change between releases. From the first release published to PyPI, the log schema and the
+`--format json` documents are additive-only. Each JSON document starts with a `schema_version` field.
 
 The [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md) documents
 the session log and supervisor event log formats, with JSON Schema and AsyncAPI files in
@@ -367,8 +369,9 @@ uv tool install 'gymrat[otel] @ git+https://github.com/jeffzi/gymrat'
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-With both in place, gymrat exports spans as they happen: for every command that appends a `command`
-record and for every supervised run. One trace covers the whole session:
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, the full URL spans are posted to, works too and wins over the
+base endpoint. With both in place, gymrat exports spans as they happen: for every command that
+appends a `command` record and for every supervised run. One trace covers the whole session:
 
 - **`gymrat.session`** — the root span, carrying the session identity.
 - **`gymrat.run`** — one per supervised run, a child of the session span, with cost, duration, and
@@ -400,10 +403,11 @@ gymrat export --endpoint http://localhost:4318              # override the colle
 Each candidate is sampled in rounds with its baseline: every round runs each side once, so machine
 drift hits both sides equally. The run order changes from round to round so each target runs in
 every position, and after every other target, equally often. The sample count must be a multiple of
-the order's cycle: an even count for two targets, a multiple of `N` for an even number `N` of
-targets, and a multiple of `2N` for an odd number. The default of 12 balances 1, 2, 3, 4, 6
-and 12 targets. gymrat refuses any other count before a bench or hook runs, and names the nearest valid
-counts. `gymrat doctor` lists the target counts from 2 through 8 the configured `samples` balances.
+the order's cycle: any count for a single target, an even count for two targets, a multiple of `N`
+for an even number `N` of targets, and a multiple of `2N` for an odd number `N` of three or more.
+The default of 12 balances 1, 2, 3, 4, 6 and 12 targets. gymrat refuses any other count before a
+bench or hook runs, and names the nearest valid counts. `gymrat doctor` lists the target counts
+from 2 through 8 the configured `samples` balances.
 
 A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of the paired
 differences. Tied pairs carry no sign to flip. When fewer than 6 pairs differ, a noise-band

@@ -100,13 +100,11 @@
           "type": "integer"
         },
         "reason": {
-          "default": null,
           "description": "Reason for the action, if applicable.",
           "title": "Reason",
           "type": "string"
         },
         "text": {
-          "default": null,
           "description": "Follow-up text sent to the agent, if any.",
           "title": "Text",
           "type": "string"
@@ -149,7 +147,6 @@
           "title": "Dirty"
         },
         "effort": {
-          "default": null,
           "description": "Effort level, if specified.",
           "enum": [
             "low",
@@ -177,13 +174,11 @@
           "type": "number"
         },
         "max_usd": {
-          "default": null,
           "description": "Spend cap in US dollars, if configured.",
           "title": "Max Usd",
           "type": "number"
         },
         "model": {
-          "default": null,
           "description": "Model identifier, if specified.",
           "title": "Model",
           "type": "string"
@@ -235,7 +230,6 @@
           "type": "integer"
         },
         "parent_tool_use_id": {
-          "default": null,
           "description": "Tool use ID of the enclosing tool call, if any.",
           "title": "Parent Tool Use Id",
           "type": "string"
@@ -252,7 +246,6 @@
           "type": "string"
         },
         "tool_name": {
-          "default": null,
           "description": "Tool name when the phase is tool_input.",
           "title": "Tool Name",
           "type": "string"
@@ -287,7 +280,6 @@
           "type": "string"
         },
         "parent_tool_use_id": {
-          "default": null,
           "description": "Tool use ID of the enclosing tool call, if any.",
           "title": "Parent Tool Use Id",
           "type": "string"
@@ -327,7 +319,6 @@
           "type": "integer"
         },
         "parent_tool_use_id": {
-          "default": null,
           "description": "Tool use ID of the enclosing tool call, if any.",
           "title": "Parent Tool Use Id",
           "type": "string"
@@ -370,7 +361,6 @@
           "title": "Duration Ms"
         },
         "parent_tool_use_id": {
-          "default": null,
           "description": "Tool use ID of the enclosing tool call, if any.",
           "title": "Parent Tool Use Id",
           "type": "string"
@@ -440,7 +430,6 @@
           "type": "string"
         },
         "parent_tool_use_id": {
-          "default": null,
           "description": "Tool use ID of the enclosing tool call, if any.",
           "title": "Parent Tool Use Id",
           "type": "string"

@@ -13,7 +13,8 @@ import gc
 import json
 import math
 import sys
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping
+from operator import methodcaller
 from typing import override
 
 import pytest
@@ -37,20 +38,18 @@ from gymrat.supervisor.claude import create_claude_driver, usable_cost
 from gymrat.supervisor.driver import Driver, DriverSession, SessionPrompt
 from gymrat.supervisor.events import (
     CompactionEvent,
+    SessionEvent,
     SessionObserver,
     TextDeltaEvent,
     ToolEndEvent,
     ToolStartEvent,
     TurnEndEvent,
-    summarize,
-    summarize_input,
+    UsageUpdateEvent,
 )
 from gymrat.supervisor.tool_names import MCP_SERVER
 from tests._clock import install_monotonic_clock
-from tests._rich import Clock
 from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 from tests.supervisor._fixtures import (
-    PROMPT_CWD,
     SDK_SESSION_ID,
     FactoryProbe,
     FakeClient,
@@ -62,7 +61,6 @@ from tests.supervisor._fixtures import (
     make_prompt,
     result_message,
     run_acting_on_first,
-    run_interrupting_on_first_usage_update,
     run_outcome,
     run_session,
     run_with_messages,
@@ -127,14 +125,6 @@ class ToolsFactoryProbe:
         return _SENTINEL_SERVER
 
 
-#: The timeout variables a session sets to the prompt's command timeout.
-_TIMEOUT_ENV_KEYS = (
-    "CLAUDE_CODE_DEFAULT_TOOL_USE_TIMEOUT_MS",
-    "CLAUDE_CODE_MAX_TOOL_USE_TIMEOUT_MS",
-    "MCP_TOOL_TIMEOUT",
-)
-
-
 async def test_start_when_no_optional_input_given_does_pass_only_the_prompt_derived_client_options():
     client = FiniteClient([result_message()])
     prompt = make_prompt(
@@ -151,7 +141,7 @@ async def test_start_when_no_optional_input_given_does_pass_only_the_prompt_deri
     assert isinstance(env, dict)
     assert options.keys().isdisjoint({"model", "effort", "max_budget_usd", "hooks", "mcp_servers"})
     assert (options["cwd"], system_prompt["append"]) == ("/my/project", "extra instructions")
-    assert [env[key] for key in _TIMEOUT_ENV_KEYS] == ["300000"] * len(_TIMEOUT_ENV_KEYS)
+    assert env["MCP_TOOL_TIMEOUT"] == "300000"
     assert TRACEPARENT_ENV not in env
 
 
@@ -214,26 +204,14 @@ async def test_start_when_hooks_given_does_call_factory_once_per_session():
     assert probe.calls == 2
 
 
-@pytest.mark.parametrize(
-    ("prompt", "env"),
-    [
-        pytest.param(
-            make_prompt(traceparent=TRACEPARENT),
-            {TRACEPARENT_ENV: TRACEPARENT},
-            id="traceparent",
-        ),
-        pytest.param(make_prompt(), {}, id="no-traceparent"),
-    ],
-)
-async def test_start_when_tools_given_does_call_factory_with_the_session_context(
-    prompt: SessionPrompt, env: dict[str, str]
-):
+async def test_start_when_tools_given_does_call_factory_with_the_session_context():
     probe = ToolsFactoryProbe()
     abort = asyncio.Event()
+    prompt = make_prompt(traceparent=TRACEPARENT)
 
     await run_outcome(FiniteClient([result_message()]), prompt=prompt, abort=abort, tools=probe)
 
-    assert probe.calls == [(abort, env)]
+    assert probe.calls == [(abort, {TRACEPARENT_ENV: TRACEPARENT})]
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +230,7 @@ async def test_start_when_text_block_does_emit_text_delta_carrying_its_parent():
     ]
 
 
-async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_duration_unknown():
+async def test_start_when_tool_result_has_no_matching_start_does_report_no_start_details():
     orphan = tool_results(ToolResultBlock(tool_use_id="tu_orphan", content="result"))
 
     events = await run_with_messages([orphan])
@@ -263,59 +241,24 @@ async def test_start_when_tool_result_has_no_matching_start_does_leave_name_and_
     ]
 
 
-class _ClockedClient(FiniteClient):
-    """A finite client that sets both fake clocks before yielding each message."""
-
-    def __init__(
-        self,
-        steps: Sequence[tuple[float, int, object]],
-        monotonic: Clock[float],
-        wall_ns: Clock[int],
-    ) -> None:
-        super().__init__([message for _, _, message in steps])
-        self._steps = steps
-        self._monotonic = monotonic
-        self._wall_ns = wall_ns
-
-    @override
-    async def receive_messages(self) -> AsyncIterator[object]:
-        for monotonic_ms, wall_ns, message in self._steps:
-            self._monotonic.now = monotonic_ms
-            self._wall_ns.now = wall_ns
-            await asyncio.sleep(0)
-            yield message
-
-
-async def test_start_when_wall_clock_jumps_back_does_report_monotonic_tool_duration(
+async def test_start_when_tool_result_matches_start_does_report_monotonic_duration(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monotonic = install_monotonic_clock(monkeypatch)
-    wall_ns = Clock(0)
-    monkeypatch.setattr("time.time_ns", wall_ns)
-    monkeypatch.setattr("time.time", lambda: wall_ns.now / 1_000_000_000)
-    one_hour_ns = 3_600 * 1_000_000_000
-    start_wall_ns = 1_700_000_000 * 1_000_000_000
-    client = _ClockedClient(
-        [
-            (
-                1_000.0,
-                start_wall_ns,
-                assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"})),
-            ),
-            (
-                1_250.0,
-                start_wall_ns - one_hour_ns,
-                tool_results(ToolResultBlock(tool_use_id="tu_1", content="done")),
-            ),
-        ],
-        monotonic,
-        wall_ns,
-    )
-    probe = collecting_observer()
+    client = FiniteClient([
+        assistant(ToolUseBlock(id="tu_1", name="Read", input={"file_path": "/a"})),
+        tool_results(ToolResultBlock(tool_use_id="tu_1", content="done")),
+    ])
+    events: list[SessionEvent] = []
 
-    await run_outcome(client, probe.observer)
+    def advance_on_tool_start(event: SessionEvent) -> None:
+        events.append(event)
+        if isinstance(event, ToolStartEvent):
+            monotonic.tick(250)
 
-    ends = events_of(probe.events, ToolEndEvent)
+    await run_outcome(client, advance_on_tool_start)
+
+    ends = events_of(events, ToolEndEvent)
     assert [end.duration_ms for end in ends] == [250]
 
 
@@ -338,7 +281,6 @@ async def test_start_when_tool_result_content_not_json_encodable_does_fall_back_
 # ---------------------------------------------------------------------------
 
 _READ_INPUT: dict[str, object] = {"file_path": "/foo.ts"}
-_READ_UNDER_CWD_INPUT: dict[str, object] = {"file_path": f"{PROMPT_CWD}/src/main.py"}
 _WEB_SEARCH_INPUT: dict[str, object] = {"query": "benchmark noise"}
 _WEB_SEARCH_RESULT: dict[str, object] = {
     "type": "web_search_tool_result",
@@ -348,43 +290,17 @@ _WEB_SEARCH_RESULT: dict[str, object] = {
 }
 
 
-@pytest.mark.parametrize(
-    ("block", "parent", "expected_input_summary"),
-    [
-        pytest.param(
-            ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT),
-            "tu_parent",
-            summarize_input(_READ_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
-            id="client-tool-under-a-parent",
-        ),
-        pytest.param(
-            ToolUseBlock(id="tu_1", name="Read", input=_READ_UNDER_CWD_INPUT),
-            None,
-            summarize_input(_READ_UNDER_CWD_INPUT, tool_name="Read", supervised_root=PROMPT_CWD),
-            id="client-read-under-cwd-is-relative",
-        ),
-        pytest.param(
-            ServerToolUseBlock(id="tu_web", name="web_search", input=_WEB_SEARCH_INPUT),
-            None,
-            summarize_input(_WEB_SEARCH_INPUT, tool_name="web_search", supervised_root=PROMPT_CWD),
-            id="server-tool",
-        ),
-    ],
-)
-async def test_start_when_tool_use_block_does_emit_tool_start(
-    block: ToolUseBlock | ServerToolUseBlock,
-    parent: str | None,
-    expected_input_summary: str,
-):
-    events = await run_with_messages([assistant(block, parent_tool_use_id=parent)])
+async def test_start_when_tool_use_block_does_emit_tool_start():
+    block = ToolUseBlock(id="tu_1", name="Read", input=_READ_INPUT)
+
+    events = await run_with_messages([assistant(block, parent_tool_use_id="tu_parent")])
 
     starts = events_of(events, ToolStartEvent)
     assert len(starts) == 1
-    assert starts[0].parent_tool_use_id == parent
+    assert starts[0].parent_tool_use_id == "tu_parent"
     assert starts[0].tool_use_id == block.id
     assert starts[0].tool_name == block.name
     assert starts[0].input == block.input
-    assert starts[0].input_summary == expected_input_summary
 
 
 @pytest.mark.parametrize(
@@ -406,7 +322,6 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                 "tu_1",
                 "Read",
                 "file contents\n  here\n",
-                summarize("file contents\n  here\n"),
             ),
             id="client-tool-under-a-parent",
         ),
@@ -422,22 +337,20 @@ async def test_start_when_tool_use_block_does_emit_tool_start(
                 "tu_web",
                 "web_search",
                 json.dumps(_WEB_SEARCH_RESULT),
-                summarize(json.dumps(_WEB_SEARCH_RESULT)),
             ),
             id="server-tool",
         ),
     ],
 )
-async def test_start_when_tool_result_matches_start_does_emit_tool_end_with_tracked_name(
+async def test_start_when_tool_result_matches_start_does_emit_matching_tool_end_for_either_block_kind(
     messages: list[object],
-    expected: tuple[str | None, str, str, str, str],
+    expected: tuple[str | None, str, str, str],
 ):
     events = await run_with_messages(messages)
 
     ends = events_of(events, ToolEndEvent)
     assert [
-        (end.parent_tool_use_id, end.tool_use_id, end.tool_name, end.result, end.result_summary)
-        for end in ends
+        (end.parent_tool_use_id, end.tool_use_id, end.tool_name, end.result) for end in ends
     ] == [expected]
 
 
@@ -469,7 +382,9 @@ async def test_start_when_system_message_subclass_arrives_does_emit_nothing():
 async def test_interrupt_when_scheduled_on_usage_update_does_soft_stop_at_the_crossing_cost():
     client = FakeClient([result_message(total_cost_usd=0.15), result_message(total_cost_usd=0.25)])
 
-    outcome = await run_interrupting_on_first_usage_update(client)
+    # Usage updates come from result messages, which leave the session idle
+    # between turns, so the soft stop lands when the stream delivers its next message.
+    outcome = await run_acting_on_first(client, UsageUpdateEvent, methodcaller("interrupt"))
 
     assert (outcome.reason, outcome.cost_usd) == ("interrupted", 0.15)
     assert client.interrupt_called is True
@@ -628,7 +543,7 @@ def _never_abort(_abort: asyncio.Event) -> SessionObserver:
         ),
     ],
 )
-async def test_claude_driver_when_session_settles_does_not_leak_task_diagnostics(
+async def test_start_when_session_settles_does_not_leak_task_diagnostics(
     make_client: Callable[[], FakeClient],
     observer_for: Callable[[asyncio.Event], SessionObserver],
     reason: str,

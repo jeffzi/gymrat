@@ -10,7 +10,6 @@ from rich.markup import escape
 
 from gymrat.report.display import GLYPHS, VERDICT_GLOSSES, display_class
 from gymrat.report.style import VERDICT_STYLES, markup
-from gymrat.report.types import candidate_at
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -61,11 +60,11 @@ def each_candidate_verdict(
 
     Yields:
         The candidate's verdict for each metric that reported one, in metric
-        order; metrics the candidate never reported are skipped.
+        order; metrics without a verdict for the candidate are skipped.
     """
     for name, metric in metrics.items():
-        candidate = candidate_at(metric, candidate_index)
-        if candidate is not None and candidate.verdict is not None:
+        candidate = metric.candidates[candidate_index]
+        if candidate.verdict is not None:
             yield CandidateVerdict(
                 name=name, metric=metric, candidate=candidate, verdict=candidate.verdict
             )

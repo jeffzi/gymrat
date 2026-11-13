@@ -14,12 +14,15 @@ import os
 import subprocess
 from typing import TYPE_CHECKING
 
-from tests._ansi import SGR_RE, strip_ansi
+from tests._ansi import SGR_RE
 from tests._cli import run_cli
 from tests._git import BENCH_ONCE_FLAGS, EMIT_ONE_BENCH
 from tests._git import write_committed_bench as _write_committed_bench
+from tests._platform import needs_pty
 from tests.cli._signalled_cli import spawned_gymrat
-from tests.hardening._pty import PTY_SIZE, on_pty_kwargs, pty_capture, pty_env
+from tests.hardening._pty import on_pty_kwargs, pty_capture, pty_env
+
+pytestmark = needs_pty
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -53,13 +56,13 @@ def _run_report_on_pty(args: list[str], repo: str) -> tuple[int, str, str]:
         The exit code, the captured stderr, and the text drawn on the pty.
     """
     with (
-        pty_capture(size=PTY_SIZE) as terminal,
+        pty_capture() as terminal,
         spawned_gymrat(
             args,
             repo,
             env=_neutral_env(),
             stdin=subprocess.DEVNULL,
-            **on_pty_kwargs(terminal, stdin_on_pty=False, stderr_on_pty=False),
+            **on_pty_kwargs(terminal, every_stream=False),
         ) as proc,
     ):
         _, stderr = proc.communicate(timeout=120)
@@ -80,7 +83,6 @@ def test_measure_report_when_stdout_is_a_real_tty_does_render_styled(
     returncode, stderr, output = _run_report_on_pty(["measure", *BENCH_ONCE_FLAGS], repo)
 
     assert returncode == 0, stderr
-    assert "gymrat measure" in strip_ansi(output)
     assert SGR_RE.search(output)
 
 

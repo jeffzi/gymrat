@@ -22,6 +22,7 @@ import pytest
 import typer
 
 from gymrat.adapters.contract import AdapterError
+from gymrat.cli.console import set_color_override
 from gymrat.cli.exit import (
     BUGS_URL,
     exit_with_error,
@@ -29,6 +30,7 @@ from gymrat.cli.exit import (
     run_cli,
 )
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from tests._ansi import SGR_RE
 from tests._process_helpers import run_with_closed_reader
 from tests._rich import unwrap_panel
 from tests._streams import RaisingStream
@@ -142,7 +144,7 @@ def test_format_cli_error_when_adapter_error_does_keep_its_class_name_prefix(
 
     output = format_cli_error(AdapterError("parse failed"))
 
-    assert "AdapterError: parse failed" in output
+    assert output.index("AdapterError") < output.index("parse failed")
 
 
 def _raised(message: str) -> ValueError:
@@ -158,25 +160,40 @@ def _raised(message: str) -> ValueError:
     [
         pytest.param(_raised("boom"), True, True, id="debug"),
         pytest.param(_raised("boom"), False, False, id="no-debug"),
-        pytest.param("boom", True, False, id="debug-and-not-an-exception"),
     ],
 )
 def test_format_cli_error_when_debug_toggled_does_include_the_stack_only_under_debug(
-    error: object, debug: bool, has_stack: bool
+    error: Exception, debug: bool, has_stack: bool
 ):
     output = format_cli_error(error, debug=debug)
 
     assert ("Traceback" in output) is has_stack
 
 
-def test_format_cli_error_when_gymrat_error_carries_hint_does_append_an_unlabeled_line_without_footer(
+def test_format_cli_error_when_debug_and_error_never_raised_does_omit_the_exception_line():
+    output = format_cli_error(ValueError("boom"), debug=True)
+
+    assert "ValueError" not in output
+
+
+def test_format_cli_error_when_gymrat_error_carries_hint_does_append_the_hint_without_footer(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("NO_COLOR", "1")
 
     output = format_cli_error(GymratError("boom", hint="run gymrat doctor"))
 
-    assert output.splitlines()[-1] == "run gymrat doctor"
+    assert "run gymrat doctor" in output
+    assert BUGS_URL not in output
+
+
+def test_format_cli_error_when_gymrat_error_has_no_hint_does_omit_the_bug_footer(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    output = format_cli_error(GymratError("boom"))
+
     assert BUGS_URL not in output
 
 
@@ -197,7 +214,20 @@ def test_format_cli_error_when_plain_error_does_render_the_bare_message(
 
     output = format_cli_error(ValueError("boom"))
 
-    assert output.splitlines()[0].endswith("boom")
+    first = output.splitlines()[0]
+    assert first.endswith("boom")
+    assert "ValueError" not in first
+
+
+def test_format_cli_error_when_color_override_off_does_render_without_ansi_despite_force_color(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    set_color_override(override=False)
+
+    output = format_cli_error(GymratError("boom"))
+
+    assert not SGR_RE.search(output)
 
 
 # ---------------------------------------------------------------------------

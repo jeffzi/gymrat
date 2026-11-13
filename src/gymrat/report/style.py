@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import io
 import re
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.markup import escape
@@ -169,8 +169,10 @@ Every report block and table renders against it.
 """
 
 
-def make_capture_console(*, color: bool | None) -> Console:
-    """Build a rich console that captures its output to an in-memory buffer.
+def make_capture_console(
+    buffer: io.StringIO, *, color: bool | None, width: int = RENDER_WIDTH
+) -> Console:
+    """Build a rich console that captures its output to ``buffer``.
 
     Wide content is never wrapped or cropped (``soft_wrap``), so
     :data:`RENDER_WIDTH` only bounds justification, never the text. Emoji codes
@@ -178,6 +180,7 @@ def make_capture_console(*, color: bool | None) -> Console:
     literally (``lat:100:p99`` stays as written).
 
     Args:
+        buffer: The in-memory buffer the console writes everything to.
         color: The explicit color choice, resolved without touching
             :data:`os.environ`:
 
@@ -188,12 +191,13 @@ def make_capture_console(*, color: bool | None) -> Console:
               the ``FORCE_COLOR``/``NO_COLOR`` precedence and the ways it differs
               from rich's own detection. With neither variable set, a captured
               buffer is not a TTY, so the output is plain.
+        width: The console width. A table measures itself against it and
+            shrinks its columns to fit, so a caller drawing a table wider than
+            :data:`RENDER_WIDTH` passes the table's width.
 
     Returns:
-        A console whose ``file`` is an :class:`io.StringIO` holding everything
-        printed through it.
+        A console writing to ``buffer``.
     """
-    buffer = io.StringIO()
     resolved = color if color is not None else color_from_env()
 
     force_terminal: bool | None
@@ -213,7 +217,7 @@ def make_capture_console(*, color: bool | None) -> Console:
     # (TERM=dumb, common in git hooks and CI) early-returns (80, 25).
     return Console(
         file=buffer,
-        width=RENDER_WIDTH,
+        width=width,
         height=25,
         force_terminal=force_terminal,
         color_system=color_system,
@@ -224,7 +228,9 @@ def make_capture_console(*, color: bool | None) -> Console:
     )
 
 
-def render_line_list(*renderables: RenderableType, color: bool | None = None) -> list[str]:
+def render_line_list(
+    *renderables: RenderableType, color: bool | None = None, width: int = RENDER_WIDTH
+) -> list[str]:
     """Render ``renderables`` through a capture console and return the text lines.
 
     Each renderable is printed in turn through a console built by
@@ -239,19 +245,20 @@ def render_line_list(*renderables: RenderableType, color: bool | None = None) ->
             literally.
         color: The explicit color choice, or ``None`` to defer to the
             environment and TTY detection.
+        width: The console width, as :func:`make_capture_console` takes it.
 
     Returns:
         Exactly the visible lines with no soft wrapping, with no trailing
         whitespace on any line and no trailing empty line.
     """
-    console = make_capture_console(color=color)
+    buffer = io.StringIO()
+    console = make_capture_console(buffer, color=color, width=width)
     for renderable in renderables:
         # The report styles every span deliberately; rich's repr highlighter would
         # otherwise embolden bare numbers (a delta, a sample count) and split a
         # styled `-17.5%` at the `%`, so it is switched off here.
         console.print(renderable, soft_wrap=True, highlight=False)
 
-    buffer = cast("io.StringIO", console.file)
     lines = buffer.getvalue().split("\n")
     if lines and lines[-1] == "":
         lines.pop()

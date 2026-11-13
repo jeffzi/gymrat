@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from unittest.mock import create_autospec
 
 import pytest
 import typer
@@ -23,24 +24,24 @@ from gymrat.cli.supervise.preflight import (
     validate_experiment_worktree,
 )
 from gymrat.config import ResolvedConfig, StopConfig
-from gymrat.doctor import Check, DoctorReport
+from gymrat.doctor import Check, DoctorReport, build_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.loop.keep import gate_off_warning
 from gymrat.session.paths import (
     experiment_worktree_dir,
 )
-from gymrat.session.records import BaselineRecord, FinalizeRecord
+from gymrat.session.records import BaselineRecord
 from tests._ansi import strip_ansi
 from tests._config import resolved_config
 from tests._doctor_fixtures import single_check_report
-from tests.cli._session import make_discard_repo
 from tests.loop._settle import start_with
-from tests.report._measurements import create_measurement_result
 from tests.session.records._fixtures import (
     append_records,
     baseline_record,
     committed_keep,
     finalize_record,
     iteration_record,
+    last_command_record,
     records_of_type,
 )
 
@@ -62,25 +63,18 @@ def start_open_session(repo: str) -> None:
     start_with(repo, config=resolved_config())
 
 
-def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+def install_baseline_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the baseline measurement path so no real bench runs.
 
     Args:
         monkeypatch: The fixture that installs the stand-in measurement.
-
-    Returns:
-        A list that records each call's keyword arguments.
     """
-    calls: list[dict[str, Any]] = []
 
     async def fake_measure(target: object, run_options: object) -> Any:
-        calls.append({"target": target, "run_options": run_options})
-        record = baseline_record(duration_ms=5000)
-        result = create_measurement_result(label=record.label, samples=1, rounds=record.samples)
-        return result, record
+        del target, run_options
+        return None, baseline_record(duration_ms=5000)
 
     monkeypatch.setattr("gymrat.cli.supervise.preflight.measure_baseline", fake_measure)
-    return calls
 
 
 def seed_session_with_baseline(repo: str, *, baseline_duration_ms: float) -> None:
@@ -120,11 +114,10 @@ def _run_preflight(
 
 def _install_doctor_seam(monkeypatch: pytest.MonkeyPatch, report: DoctorReport) -> None:
     """Replace the doctor gate's ``build_doctor_report`` with one returning *report*."""
-
-    def fake_build(_flags: object, _cwd: object) -> DoctorReport:
-        return report
-
-    monkeypatch.setattr(f"{_MODULE}.build_doctor_report", fake_build)
+    monkeypatch.setattr(
+        f"{_MODULE}.build_doctor_report",
+        create_autospec(build_doctor_report, return_value=report),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -132,19 +125,17 @@ def _install_doctor_seam(monkeypatch: pytest.MonkeyPatch, report: DoctorReport) 
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_gate_when_check_fails_does_exit_two_with_a_colored_report(
+def test_doctor_gate_when_check_fails_does_exit_two_with_the_report_on_stderr(
     repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     failing = Check(name="git", status="fail", detail="missing", hint="install git")
     _install_doctor_seam(monkeypatch, report=single_check_report(failing))
 
     with pytest.raises(typer.Exit) as exc:
-        doctor_gate(repo, color=True)
+        doctor_gate(repo)
 
     assert exc.value.exit_code == TOOL_FAILURE_EXIT_CODE
-    captured = capsys.readouterr()
-    assert "install git" in strip_ansi(captured.err)
-    assert "\x1b[" in captured.err
+    assert "install git" in strip_ansi(capsys.readouterr().err)
 
 
 def test_doctor_gate_when_nothing_fails_does_not_print(
@@ -188,6 +179,18 @@ _REFUSALS = [
 ]
 
 
+def test_preflight_when_stop_condition_met_does_record_a_stop_condition_supervise_command(
+    repo: str,
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+
+    with pytest.raises(GymratError):
+        _run_preflight(repo, config=_met_stop_condition(repo))
+
+    cmd = last_command_record(repo)
+    assert (cmd.name, cmd.exit_code, cmd.reason) == ("supervise", 1, "stop-condition")
+
+
 @pytest.mark.parametrize(("refusal", "named"), _REFUSALS)
 def test_preflight_when_it_refuses_does_fail_the_supervise_command_with_the_refusal(
     repo: str,
@@ -212,16 +215,19 @@ def _leave_tree_clean(_repo: str) -> None:
     """Leave the seeded repository untouched."""
 
 
+def test_preflight_when_checks_not_configured_does_print_one_warning_to_stderr(
+    repo: str, capsys: pytest.CaptureFixture[str]
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=1000)
+
+    _run_preflight(repo, config=resolved_config(checks=None))
+
+    assert capsys.readouterr().err == gate_off_warning(color=False) + "\n"
+
+
 @pytest.mark.parametrize(
     ("arrange", "config_overrides", "preflight_kwargs", "named"),
     [
-        pytest.param(
-            _leave_tree_clean,
-            {"checks": None},
-            {},
-            "checks",
-            id="checks-not-configured",
-        ),
         pytest.param(
             _leave_tree_clean,
             {"checks": "npm test", "stop": StopConfig(max_iterations=0)},
@@ -264,7 +270,7 @@ def test_preflight_when_warning_raised_does_print_it_to_stderr(
 def test_preflight_when_experiment_worktree_dirty_with_unsettled_does_refuse_with_settle_hint(
     repo: str,
 ):
-    make_discard_repo(repo)
+    start_with(repo, (iteration_record(seq=1),), config=resolved_config())
     _dirty_experiment_worktree(repo)
 
     with pytest.raises(GymratError) as exc:
@@ -292,12 +298,14 @@ def test_preflight_when_no_baseline_record_does_record_a_measured_baseline(
 def test_preflight_when_baseline_already_recorded_does_not_measure(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    measure_calls = install_baseline_seam(monkeypatch)
+    install_baseline_seam(monkeypatch)
     seed_session_with_baseline(repo, baseline_duration_ms=5000)
 
     _run_preflight(repo)
 
-    assert len(measure_calls) == 0
+    assert records_of_type(repo, BaselineRecord) == [
+        baseline_record(label=".gymrat/worktrees/baseline", duration_ms=5000)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +313,7 @@ def test_preflight_when_baseline_already_recorded_does_not_measure(
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic_leaving_the_session_open(
+def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmetic(
     repo: str,
 ):
     seed_session_with_baseline(repo, baseline_duration_ms=1_440_000)
@@ -313,8 +321,28 @@ def test_preflight_when_cap_cannot_fit_one_iterate_does_refuse_with_the_arithmet
     with pytest.raises(GymratError) as exc:
         _run_preflight(repo, max_minutes=30)
 
-    assert all(part in str(exc.value) for part in ("baseline", "24m", "48m", "30m"))
-    assert records_of_type(repo, FinalizeRecord) == []
+    message = str(exc.value)
+    assert "24m" in message
+    assert "48m" in message
+    assert "30m" in message
+
+
+@pytest.mark.parametrize(
+    ("baseline_duration_ms", "max_minutes", "shown"),
+    [
+        pytest.param(906_000, 30, "31m", id="needed-rounds-up"),
+        pytest.param(924_000, 30.7, "30m", id="cap-rounds-down"),
+    ],
+)
+def test_preflight_when_needed_time_barely_exceeds_the_cap_does_not_show_it_as_fitting(
+    repo: str, baseline_duration_ms: float, max_minutes: float, shown: str
+):
+    seed_session_with_baseline(repo, baseline_duration_ms=baseline_duration_ms)
+
+    with pytest.raises(GymratError) as exc:
+        _run_preflight(repo, max_minutes=max_minutes)
+
+    assert shown in str(exc.value)
 
 
 def test_preflight_when_force_passed_does_bypass_feasibility_check(repo: str):

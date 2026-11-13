@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, assert_never
 
-from gymrat.cli.supervise.text import NO_SESSION_TEXT, loop_segments
+from gymrat.cli.supervise.text import NO_SESSION_TEXT, UNKNOWN_TOOL_NAME, loop_segments
 from gymrat.cli.supervise.types import (
     Capped,
     Composing,
@@ -215,7 +215,7 @@ def _phase_liveness(state: ReporterState, event: ModelPhaseEvent, at_ms: int) ->
         case "responding":
             return Responding(since=at_ms)
         case "tool_input":
-            tool_name = event.tool_name if event.tool_name is not None else "unknown"
+            tool_name = event.tool_name if event.tool_name is not None else UNKNOWN_TOOL_NAME
             return Composing(tool_name=tool_name, since=at_ms)
         case "turn_end":
             return _waiting_from_last_tool(state.finished_tools, at_ms)
@@ -399,11 +399,11 @@ def _follow_up_decision(state: ReporterState, event: FollowUpEvent) -> str:
 def _follow_up(
     state: ReporterState, event: FollowUpEvent, session_result: ReadSessionResult | None
 ) -> ReporterState:
-    decided = replace(state, last_decision=_follow_up_decision(state, event))
-    if not wants_session_refresh(state, event):
-        return decided
+    # A follow-up the session read did not follow arrives with no result, which
+    # keeps the last one.
     return replace(
-        decided,
+        state,
+        last_decision=_follow_up_decision(state, event),
         session_result=session_result if session_result is not None else state.session_result,
     )
 

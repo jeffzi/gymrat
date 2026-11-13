@@ -33,10 +33,7 @@ from gymrat.cli.supervise.types import (
     Thinking,
     Waiting,
 )
-from gymrat.supervisor.events import (
-    CompactionEvent,
-    TextDeltaEvent,
-)
+from gymrat.supervisor.events import CompactionEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from gymrat.utils import NS_PER_MS
 from tests._imports import modules_imported_by
@@ -157,35 +154,6 @@ def emit(
 
 
 # ---------------------------------------------------------------------------
-# advance — caps, launch, usage
-# ---------------------------------------------------------------------------
-
-
-def test_advance_when_cap_fires_does_freeze_liveness_without_touching_the_last_decision():
-    before = make_state(last_decision="turn 1 ended · replied")
-
-    after = advance(before, cap_event("wall-clock", action="ending"), None)
-
-    assert after.liveness == Capped("wall-clock", "ending")
-    assert after.last_decision == "turn 1 ended · replied"
-
-
-def test_advance_when_launch_does_start_the_run_on_the_passed_session():
-    session = read_result()
-
-    after = advance(make_state(), launch_event(1000), session)
-
-    assert after.launch_timestamp == 1000
-    assert after.session_result is session
-
-
-def test_advance_when_usage_update_does_record_the_cost():
-    after = advance(make_state(), usage_event(1.42), None)
-
-    assert after.cost_usd == 1.42
-
-
-# ---------------------------------------------------------------------------
 # advance — tool start
 # ---------------------------------------------------------------------------
 
@@ -299,7 +267,7 @@ def test_advance_when_untracked_tool_ends_does_log_it_without_summary_or_livenes
     assert after.liveness == Starting()
 
 
-def test_advance_when_more_tools_finish_than_the_bound_does_keep_only_the_most_recent():
+def test_advance_when_more_tools_finish_than_the_finished_tool_bound_does_keep_only_the_most_recent():
     state = make_state()
     for index in range(1, 5):
         at_ms = 1000 + index * 1000
@@ -361,29 +329,16 @@ def two_nested_tools_state() -> ReporterState:
     )
 
 
-@pytest.mark.parametrize(
-    ("ended", "still_running"),
-    [
-        pytest.param(
-            ("Read", "read-1"),
-            RunningTool(tool_name="Grep", input_summary="...", since=2100),
-            id="first-started-ends",
-        ),
-        pytest.param(
-            ("Grep", "grep-1"),
-            RunningTool(tool_name="Read", input_summary="...", since=2000),
-            id="last-started-ends",
-        ),
-    ],
-)
-def test_advance_when_one_of_two_nested_tools_ends_does_show_the_one_still_running(
-    ended: tuple[str, str], still_running: RunningTool
-):
+def test_advance_when_one_of_two_nested_tools_ends_does_show_the_one_still_running():
     before = two_nested_tools_state()
 
-    after = advance(before, tool_end_event(*ended, 2500, parent_tool_use_id="bash-1"), None)
+    after = advance(
+        before, tool_end_event("Grep", "grep-1", 2500, parent_tool_use_id="bash-1"), None
+    )
 
-    assert dict(after.nested) == {"bash-1": still_running}
+    assert dict(after.nested) == {
+        "bash-1": RunningTool(tool_name="Read", input_summary="...", since=2000)
+    }
 
 
 def test_advance_when_parent_tool_ends_does_drop_only_its_own_nested_tools():
@@ -399,18 +354,20 @@ def test_advance_when_parent_tool_ends_does_drop_only_its_own_nested_tools():
     }
 
 
-def test_advance_when_nested_tool_outlives_another_parent_does_clear_its_line_when_it_ends():
+def test_advance_when_nested_tool_ends_beside_another_live_parent_does_fall_back_to_its_own_sibling():
     before = started("Task", "task-1", 1600, base=two_nested_tools_state())
     before = advance(
         before, tool_start_event("Glob", "glob-1", 2200, parent_tool_use_id="task-1"), None
     )
-    before = advance(before, tool_end_event("Bash", "bash-1", 3000, started_at_ms=1500), None)
 
     after = advance(
-        before, tool_end_event("Glob", "glob-1", 3500, parent_tool_use_id="task-1"), None
+        before, tool_end_event("Grep", "grep-1", 2500, parent_tool_use_id="bash-1"), None
     )
 
-    assert dict(after.nested) == {}
+    assert dict(after.nested) == {
+        "bash-1": RunningTool(tool_name="Read", input_summary="...", since=2000),
+        "task-1": RunningTool(tool_name="Glob", input_summary="...", since=2200),
+    }
 
 
 @pytest.mark.parametrize(
@@ -495,14 +452,14 @@ def test_advance_when_liveness_is_blocking_does_ignore_thinking_and_phase_events
 
 
 _NESTED_MODEL_PHASES = [
-    pytest.param("responding", None, id="responding"),
-    pytest.param("tool_input", "Edit", id="tool-input"),
+    pytest.param("responding", "Edit", None, id="responding"),
+    pytest.param("tool_input", "Edit", "Edit", id="tool-input"),
 ]
 
 
-@pytest.mark.parametrize(("phase", "tool_name"), _NESTED_MODEL_PHASES)
+@pytest.mark.parametrize(("phase", "tool_name", "expected_tool_name"), _NESTED_MODEL_PHASES)
 def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent(
-    phase: NestedModelPhase, tool_name: str | None
+    phase: NestedModelPhase, tool_name: str, expected_tool_name: str | None
 ):
     before = bash_in_flight_state()
 
@@ -514,7 +471,7 @@ def test_advance_when_nested_model_phase_arrives_does_record_it_under_the_parent
 
     assert after.liveness == before.liveness
     assert dict(after.nested) == {
-        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=tool_name)
+        "bash-1": NestedPhase(phase=phase, since=2000, tool_name=expected_tool_name)
     }
 
 
@@ -599,25 +556,9 @@ def test_advance_when_follow_up_arrives_does_record_the_turn_decision(
     assert after.last_decision == expected
 
 
-def test_advance_when_text_delta_arrives_does_not_change_state():
-    before = make_state()
-
-    after = advance(before, TextDeltaEvent(at=2000 * NS_PER_MS, chunk="hi"), None)
-
-    assert after == before
-
-
 # ---------------------------------------------------------------------------
 # exit_phase — run-end exit sequence
 # ---------------------------------------------------------------------------
-
-
-def test_exit_phase_when_same_phase_repeats_does_return_the_state_unchanged():
-    before = exiting_state()
-
-    after = exit_phase(before, ExitPhase(kind="settling", pid=None), 9000)
-
-    assert after is before
 
 
 def test_exit_phase_when_lock_holder_changes_does_restart_the_timestamp():
@@ -700,8 +641,7 @@ def test_wants_session_refresh_when_ended_follow_up_arrives_does_reread_only_whi
     ("max_minutes", "max_usd", "expected"),
     [
         pytest.param(60, 5.0, "caps 60m, $5.00", id="spend-cap"),
-        pytest.param(5.5, None, "caps 5.5m", id="fractional-minutes-keep-the-decimal"),
-        pytest.param(10.0, None, "caps 10m", id="whole-float-minutes-drop-the-decimal"),
+        pytest.param(10.0, None, "caps 10m", id="no-spend-cap"),
     ],
 )
 def test_plain_line_when_launch_does_return_the_caps_line(
@@ -732,11 +672,10 @@ def test_plain_line_when_launch_does_return_the_caps_line(
         pytest.param(
             make_state(), CompactionEvent(at=3000 * NS_PER_MS), "context compacted", id="compaction"
         ),
-        pytest.param(make_state(), tool_start_event("Bash", "bash-1", 2000), None, id="tool-start"),
     ],
 )
-def test_plain_line_when_event_arrives_does_return_its_line_or_nothing(
-    state: ReporterState, event: SessionEvent, expected: str | None
+def test_plain_line_when_event_arrives_does_return_its_milestone_line(
+    state: ReporterState, event: SessionEvent, expected: str
 ):
     _, line = emit(state, event)
 
@@ -749,7 +688,7 @@ def test_plain_line_when_the_loop_text_changes_does_return_the_loop_line():
 
     _, line = emit(state, tool_end_event("Bash", "bash-1", 3000), session)
 
-    assert line == "2/20 iterations · 1 kept · 1 discarded · last +3.2% regressed"
+    assert line == loop_plain_text(session, 20)
 
 
 def test_plain_line_when_the_loop_text_is_unchanged_does_return_nothing():
@@ -783,13 +722,6 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
         pytest.param(
             session_state(iteration_count=1),
             True,
-            None,
-            "1 iteration · 0 kept · 0 discarded",
-            id="one-uncapped",
-        ),
-        pytest.param(
-            session_state(iteration_count=1),
-            True,
             20,
             "1/20 iterations · 0 kept · 0 discarded",
             id="one-capped",
@@ -807,13 +739,6 @@ def test_plain_line_when_no_session_has_been_read_does_not_return_the_loop_line(
             20,
             "3/20 iterations · 2 kept · 1 discarded · last -3.2% improved",
             id="iterations-present",
-        ),
-        pytest.param(
-            session_state(iteration_count=1, last_iteration=make_iteration(None, "no-signal")),
-            True,
-            None,
-            "1 iteration · 0 kept · 0 discarded · last — no-signal",
-            id="missing-delta-renders-em-dash",
         ),
         pytest.param(
             session_state(

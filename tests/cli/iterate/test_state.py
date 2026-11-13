@@ -112,6 +112,21 @@ def test_initial_state_when_no_before_hook_does_leave_the_hook_row_out():
     assert result.nodes.before_hook not in result.visible_nodes
 
 
+@pytest.mark.parametrize(
+    ("metric_count", "expected"),
+    [
+        pytest.param(4, "4 metrics · geomean primary", id="metrics-counted"),
+        pytest.param(0, "geomean primary", id="no-metric-count"),
+    ],
+)
+def test_initial_state_when_metric_count_varies_does_count_metrics_in_the_judge_hint_only_when_known(
+    metric_count: int, expected: str
+):
+    result = initial_state(iteration_facts(metric_count=metric_count))
+
+    assert result.nodes.judge.hint == expected
+
+
 # ---------------------------------------------------------------------------
 # Row transitions
 # ---------------------------------------------------------------------------
@@ -159,10 +174,10 @@ def test_advance_when_two_worktrees_prepared_does_sum_their_elapsed_times():
         _state(),
         PrepareStarted(label="baseline", at_ms=0),
         PrepareFinished(label="baseline", at_ms=3000),
-        PrepareStarted(label="experiment", at_ms=3000),
+        PrepareStarted(label="experiment", at_ms=4000),
     )
 
-    result = advance(state, PrepareFinished(label="experiment", at_ms=5000))
+    result = advance(state, PrepareFinished(label="experiment", at_ms=6000))
 
     assert result.nodes.prepare.elapsed_ms == 5000
 
@@ -181,6 +196,20 @@ def test_advance_when_judge_finished_after_started_does_time_the_judge_row():
     result = advance(state, JudgeFinished(primary_delta_pct=-1.0, regressed=(), at_ms=5000))
 
     assert result.nodes.judge.elapsed_ms == 4000
+
+
+def test_advance_when_judge_finished_without_a_start_does_report_no_judge_elapsed_time():
+    result = advance(_state(), JudgeFinished(primary_delta_pct=-1.0, regressed=(), at_ms=5000))
+
+    assert result.nodes.judge.elapsed_ms == 0.0
+
+
+def test_advance_when_later_events_arrive_does_keep_the_run_start_at_the_first_event():
+    state = advance(_state(), PrepareStarted(label="baseline", at_ms=7000))
+
+    result = advance(state, PrepareFinished(label="baseline", at_ms=9000))
+
+    assert result.run_start_ms == 7000
 
 
 def test_advance_when_confirm_pass_finished_does_count_it_in_the_confirm_phase():
@@ -266,12 +295,6 @@ def test_advance_when_confirm_started_does_set_confirm_note(
     ("setup", "event", "expected"),
     [
         pytest.param(
-            (PrepareStarted(label="baseline", at_ms=0),),
-            PrepareFinished(label="baseline", at_ms=5000),
-            "prepared baseline (5s)",
-            id="prepare-finished",
-        ),
-        pytest.param(
             (_FIRST_PASS_STARTED, _FIRST_PASS_FINISHED, _LAST_PASS_STARTED),
             _LAST_PASS_FINISHED,
             "passes done (20s)",
@@ -288,12 +311,6 @@ def test_advance_when_confirm_started_does_set_confirm_note(
             JudgeFinished(primary_delta_pct=None, regressed=(), at_ms=6000),
             "judge — · no gating regression",
             id="judge-finished-missing-delta",
-        ),
-        pytest.param(
-            (),
-            JudgeFinished(primary_delta_pct=-6.8, regressed=("latency",), at_ms=6000),
-            "judge -6.8% on geomean · 1 regressed: latency",
-            id="judge-finished-one-regressed",
         ),
         pytest.param(
             (),

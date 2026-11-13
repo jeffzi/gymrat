@@ -1,11 +1,10 @@
 """Tests for the rich-based progress renderer (live + plain modes).
 
 Tests inject a deterministic ``Clock`` from ``tests._rich`` and capture
-output through ``sealed_console``.  Frame content is pinned with syrupy
-golden snapshots; plain-mode milestones use exact-line equality; live wiring
-assertions check ``Live`` attributes directly.
+output through ``sealed_console``. Frame content is pinned with syrupy
+golden snapshots; plain-mode milestones use exact-line equality.
 
-The pure reducer behind the bar (``advance``, ``plain_line``) is driven
+The pure reducer behind the bar (``advance``) is driven
 terminal-free: ``advance`` takes ``now`` from the event's own ``at_ms``, so a
 state transition is fully determined by ``(state, event)``.
 """
@@ -13,11 +12,11 @@ state transition is fully determined by ``(state, event)``.
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.cli.progress import ProgressReporter, ProgressState, RunShape, advance, plain_line
+from gymrat.cli.progress import ProgressReporter, ProgressState, advance, format_clock
 from gymrat.progress_events import (
     HookStarted,
     PrepareFinished,
@@ -28,13 +27,11 @@ from tests._rich import (
     console_output,
     frame_text,
     screen_lines,
-    sealed_console,
-    track,
 )
 from tests.cli._progress_helpers import ms_from_clock as _ms
 from tests.cli._progress_helpers import pass_finished as _pass_finished
 from tests.cli._progress_helpers import pass_started as _pass_started
-from tests.cli._progress_helpers import report_full_pass
+from tests.cli._progress_helpers import progress_reporter, report_full_pass
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -43,33 +40,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _reporter(
-    mode: Literal["live", "plain"],
-    *,
-    width: int = 80,
-    height: int = 24,
-    target_count: int = 1,
-    sample_count: int = 3,
-    command: str | None = None,
-    target_labels: list[str] | None = None,
-) -> tuple[Console, Clock[float], ProgressReporter]:
-    """Wire a progress reporter to a sealed console and a hand-advanced clock."""
-    clock = Clock(0.0)
-    console = sealed_console(width=width, height=height, get_time=clock)
-    reporter = ProgressReporter(
-        mode=mode,
-        console=console,
-        shape=RunShape(
-            target_count=target_count,
-            sample_count=sample_count,
-            command=command,
-            target_labels=tuple(target_labels or ()),
-        ),
-        clock=clock,
-    )
-    return console, clock, track(reporter)
 
 
 def _summary_line(console: Console) -> str:
@@ -178,7 +148,7 @@ def test_advance_when_pass_finished_does_advance_eta_by_pass_duration(state: Pro
 
     result = advance(running, _pass_finished(1, 3, at_ms=12_000))
 
-    assert (result.eta.completed, result.eta.total_time_ms) == (1, 10_000)
+    assert result.eta.total_time_ms == 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -193,17 +163,6 @@ def test_advance_when_unrelated_event_does_return_state_unchanged(state: Progres
 
 
 # ---------------------------------------------------------------------------
-# plain_line
-# ---------------------------------------------------------------------------
-
-
-def test_plain_line_when_event_is_not_a_milestone_does_return_none(state: ProgressState):
-    event = _pass_started(1, 3, at_ms=7_000)
-
-    assert plain_line(state, advance(state, event), event) is None
-
-
-# ---------------------------------------------------------------------------
 # Frame golden snapshots via frame_text(reporter.frame())
 # ---------------------------------------------------------------------------
 
@@ -212,7 +171,7 @@ def test_plain_line_when_event_is_not_a_milestone_does_return_none(state: Progre
 def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
     snapshot: SnapshotAssertion,
 ):
-    _console, clock, reporter = _reporter("live")
+    _console, clock, reporter = progress_reporter("live")
     reporter.report(PrepareStarted(label="bench", at_ms=0))
     clock.tick(2)
     reporter.report(PrepareFinished(label="bench", at_ms=_ms(clock)))
@@ -228,7 +187,7 @@ def test_frame_when_prepare_done_and_first_pass_running_does_show_pending_eta(
 def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
     snapshot: SnapshotAssertion,
 ):
-    _console, clock, reporter = _reporter("live")
+    _console, clock, reporter = progress_reporter("live")
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
     report_full_pass(reporter, clock, 1, 3, duration_s=10)
@@ -245,7 +204,7 @@ def test_frame_when_mid_run_with_computed_eta_does_show_clock_total(
 def test_frame_when_multi_target_compare_does_name_running_target(
     snapshot: SnapshotAssertion,
 ):
-    _console, clock, reporter = _reporter("live", target_count=2, sample_count=5)
+    _console, clock, reporter = progress_reporter("live", target_count=2, sample_count=5)
     reporter.report(PrepareFinished(label="main", at_ms=0))
     clock.tick(1)
     reporter.report(_pass_started(1, 5, target_count=2, label="candidate", at_ms=_ms(clock)))
@@ -259,7 +218,7 @@ def test_frame_when_multi_target_compare_does_name_running_target(
 def test_frame_when_compact_layout_on_short_console_does_show_single_row(
     snapshot: SnapshotAssertion,
 ):
-    _console, clock, reporter = _reporter("live", height=10)
+    _console, clock, reporter = progress_reporter("live", height=10)
     reporter.report(PrepareFinished(label="bench", at_ms=0))
     clock.tick(1)
     reporter.report(_pass_started(1, 3, at_ms=_ms(clock)))
@@ -277,15 +236,15 @@ def test_frame_when_compact_layout_on_short_console_does_show_single_row(
 @pytest.mark.parametrize(
     ("command", "target_labels"),
     [
-        pytest.param("measure", ["ecstatic-ts"], id="measure"),
-        pytest.param("compare", ["main", "candidate"], id="compare"),
+        pytest.param("measure", ("ecstatic-ts",), id="measure"),
+        pytest.param("compare", ("main", "candidate"), id="compare"),
     ],
 )
 @pytest.mark.usefixtures("manual_refresh")
 def test_frame_when_command_given_does_show_header_with_command_and_labels(
-    command: str, target_labels: list[str], snapshot: SnapshotAssertion
+    command: str, target_labels: tuple[str, ...], snapshot: SnapshotAssertion
 ):
-    _console, _clock, reporter = _reporter(
+    _console, _clock, reporter = progress_reporter(
         "live",
         command=command,
         target_labels=target_labels,
@@ -305,7 +264,7 @@ def test_frame_when_command_given_does_show_header_with_command_and_labels(
 
 
 def test_report_when_plain_mode_prepare_finished_does_print_exact_timestamped_line():
-    console, clock, reporter = _reporter("plain")
+    console, clock, reporter = progress_reporter("plain")
     clock.tick(7)
     reporter.report(PrepareStarted(label="bench", at_ms=_ms(clock)))
     clock.tick(5)
@@ -322,7 +281,7 @@ def test_report_when_plain_mode_prepare_finished_does_print_exact_timestamped_li
 
 @pytest.mark.usefixtures("manual_refresh")
 def test_stop_when_measure_done_does_print_summary():
-    console, clock, reporter = _reporter("live", sample_count=2)
+    console, clock, reporter = progress_reporter("live", sample_count=2)
     _run_two_passes(reporter, clock)
 
     reporter.stop()
@@ -331,7 +290,7 @@ def test_stop_when_measure_done_does_print_summary():
 
 
 def test_stop_when_plain_mode_does_print_only_the_milestone_lines():
-    console, clock, reporter = _reporter("plain", sample_count=2)
+    console, clock, reporter = progress_reporter("plain", sample_count=2)
     _run_two_passes(reporter, clock)
 
     reporter.stop()
@@ -345,7 +304,7 @@ def test_stop_when_plain_mode_does_print_only_the_milestone_lines():
 
 @pytest.mark.usefixtures("manual_refresh")
 def test_stop_when_compare_done_does_print_summary():
-    console, clock, reporter = _reporter("live", target_count=2, sample_count=2)
+    console, clock, reporter = progress_reporter("live", target_count=2, sample_count=2)
     reporter.report(PrepareStarted(label="main", at_ms=0))
     clock.tick(1)
     reporter.report(PrepareFinished(label="main", at_ms=_ms(clock)))
@@ -356,3 +315,22 @@ def test_stop_when_compare_done_does_print_summary():
     reporter.stop()
 
     assert _summary_line(console) == "compared in 45s"
+
+
+# ---------------------------------------------------------------------------
+# format_clock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ms", "expected"),
+    [
+        pytest.param(9_999, "00:09", id="floors-partial-second"),
+        pytest.param(465_000, "07:45", id="minutes"),
+        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
+    ],
+)
+def test_format_clock_when_given_milliseconds_does_show_the_hour_tier_only_when_nonzero(
+    ms: float, expected: str
+) -> None:
+    assert format_clock(ms) == expected

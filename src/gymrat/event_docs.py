@@ -216,16 +216,6 @@ def _build_messages(
     }
 
 
-def _build_channel(
-    wire_to_class: dict[str, str],
-    address: str,
-) -> dict[str, object]:
-    return {
-        "address": address,
-        "messages": {wire: {"$ref": f"#/components/messages/{wire}"} for wire in wire_to_class},
-    }
-
-
 def _build_operation(reader: ReaderSpec) -> dict[str, object]:
     op: dict[str, object] = {
         "action": "receive",
@@ -266,15 +256,20 @@ def render_asyncapi(
             "version": importlib.metadata.version("gymrat"),
             "description": (
                 "gymrat writes two append-only JSONL log files during a session: "
-                f"the session log ({SESSION_LOG_ADDRESS}) records high-level "
+                f"the session log (`{SESSION_LOG_ADDRESS}`) records high-level "
                 "session lifecycle events, and the supervisor log "
-                f"({SUPERVISOR_LOG_ADDRESS}) captures fine-grained agent "
+                f"(`{SUPERVISOR_LOG_ADDRESS}`) captures fine-grained agent "
                 "activity. Both files are strictly append-only; each line is a "
                 "self-contained JSON object discriminated by a type field."
             ),
         },
         "channels": {
-            log.channel: _build_channel(wire_to_class, log.address)
+            log.channel: {
+                "address": log.address,
+                "messages": {
+                    wire: {"$ref": f"#/components/messages/{wire}"} for wire in wire_to_class
+                },
+            }
             for log, wire_to_class in zip(_LOGS, wire_maps, strict=True)
         },
         "operations": {name: _build_operation(reader) for name, reader in READERS.items()},
@@ -291,29 +286,6 @@ def render_asyncapi(
             },
         },
     }
-
-
-def render_asyncapi_yaml(document: dict[str, object]) -> str:
-    """Serialize an AsyncAPI document dict to YAML.
-
-    Note:
-        ``yaml`` is imported inside this function so that importing the
-        module does not pull in PyYAML at load time.
-
-    Args:
-        document: The AsyncAPI document dict to serialize.
-
-    Returns:
-        The YAML string.
-    """
-    import yaml  # noqa: PLC0415
-
-    return yaml.safe_dump(
-        document,
-        sort_keys=False,
-        allow_unicode=True,
-        width=_YAML_WIDTH,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +550,35 @@ def _require_discriminator(schema_def: dict[str, Any]) -> None:
     schema_def["required"] = [name for name in schema_def["properties"] if name in required]
 
 
+def _admits_null(prop: dict[str, Any], defs: dict[str, dict[str, Any]]) -> bool:
+    if "$ref" in prop:
+        return _admits_null(defs[_ref_name(str(prop["$ref"]))], defs)
+    if "anyOf" in prop:
+        return any(_admits_null(variant, defs) for variant in prop["anyOf"])
+    if "const" in prop:
+        return prop["const"] is None
+    if "enum" in prop:
+        return None in prop["enum"]
+    if "type" in prop:
+        types = prop["type"]
+        return "null" in (types if isinstance(types, list) else [types])
+    return True
+
+
+def _drop_rejected_null_defaults(defs: dict[str, dict[str, Any]]) -> None:
+    # An omit-when-None field keeps pydantic's ``default: null`` after its ``null`` branch is
+    # hidden from the schema, so the published default would fail its own property schema.
+    # The key is absent on the wire instead, which the field's optional status already says.
+    for schema_def in defs.values():
+        for prop in schema_def.get("properties", {}).values():
+            if "default" in prop and prop["default"] is None and not _admits_null(prop, defs):
+                del prop["default"]
+
+
 def _json_schema(log: _LogSpec) -> dict[str, Any]:
     """Render one log's JSON Schema with its draft, title, and ``$id`` metadata."""
     schema = log.adapter.json_schema()
+    _drop_rejected_null_defaults(schema["$defs"])
     for model in log.models:
         _require_discriminator(schema["$defs"][model.__name__])
     schema["$schema"] = _DRAFT_2020_12
@@ -603,13 +601,19 @@ def render_json_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
 
 def render_all() -> dict[str, str]:
     """Return a dict mapping repo-relative path to rendered text for each artifact."""
+    # Imported here so that importing the module does not pull in PyYAML at load time.
+    import yaml  # noqa: PLC0415
+
     schemas = render_json_schemas()
+    asyncapi_yaml = yaml.safe_dump(
+        render_asyncapi(schemas), sort_keys=False, allow_unicode=True, width=_YAML_WIDTH
+    )
     return {
         **{
             f"schemas/{log.schema_file}": json.dumps(schema, indent=2, sort_keys=True) + "\n"
             for log, schema in zip(_LOGS, schemas, strict=True)
         },
-        "schemas/asyncapi.yaml": render_asyncapi_yaml(render_asyncapi(schemas)),
+        "schemas/asyncapi.yaml": asyncapi_yaml,
         "docs/event-reference.md": render_reference(schemas),
     }
 

@@ -45,10 +45,11 @@ def replay_session(
 ) -> int:
     """Replay JSONL session and supervisor logs into deterministic OTel spans.
 
-    A session-log line that cannot be parsed is skipped with a warning on
-    stderr, and so is a supervisor log that cannot be read or whose launch line
-    names this session but is not a valid launch event. A supervisor log whose
-    first line is not a launch of this session is skipped silently.
+    A session-log or supervisor-log line that cannot be parsed is skipped with
+    a warning on stderr, and so is a supervisor log that cannot be read or whose
+    launch line names this session but is not a valid launch event. A
+    supervisor log whose first line is not a launch of this session is skipped
+    silently.
 
     Args:
         session_log: Path to the session JSONL log file.
@@ -88,17 +89,12 @@ def replay_session(
     return 1 + len(run_spans) + cmd_count
 
 
-def _add_events(span: Span, events: list[_EventTuple]) -> None:
-    """Add each ``(name, attributes, timestamp)`` event tuple to *span*, in order."""
-    for ev_name, ev_attrs, ev_at in events:
-        span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
-
-
 def _create_run_span(run: _ParsedRun, session_span: Span) -> Span:
     """Open and close the ``gymrat.run`` span of one parsed supervisor run."""
     run_span = start_run_span(run.launch, parent=session_span, start_time=run.launch.at)
 
-    _add_events(run_span, run.events)
+    for ev_name, ev_attrs, ev_at in run.events:
+        run_span.add_event(ev_name, attributes=ev_attrs, timestamp=ev_at)
 
     if run.cost_usd is not None:
         run_span.set_attribute(RUN_COST_USD, run.cost_usd)
@@ -134,6 +130,8 @@ def _create_command_spans(
     Returns:
         The number of command spans created.
     """
+    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
+
     pending_records: list[SessionLogRecord] = []
     cmd_count = 0
 
@@ -143,37 +141,21 @@ def _create_command_spans(
 
         if isinstance(rec, CommandRecord):
             cmd_count += 1
-            _emit_command_span(rec, position, session_id, session_span, run_spans, pending_records)
+            cmd_span = start_command_span(
+                rec,
+                session_id=session_id,
+                position=position,
+                context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
+                start_time=rec.at - rec.duration_ms * NS_PER_MS,
+            )
+            add_record_events(cmd_span, pending_records)
+            pending_records.clear()
+            cmd_span.end(end_time=rec.at)
         else:
             pending_records.append(rec)
 
     add_record_events(session_span, pending_records)
     return cmd_count
-
-
-def _emit_command_span(  # noqa: PLR0913, PLR0917 — accepts the full replay context
-    rec: CommandRecord,
-    position: int,
-    session_id: str,
-    session_span: Span,
-    run_spans: list[_RunSpan],
-    pending_records: list[SessionLogRecord],
-) -> None:
-    """Create one command span, drain the pending records onto it as events, and close it."""
-    from opentelemetry import trace  # noqa: PLC0415 -- optional extra
-
-    cmd_span = start_command_span(
-        rec,
-        session_id=session_id,
-        line_number=position,
-        context=trace.set_span_in_context(_find_parent_run(rec, run_spans) or session_span),
-        start_time=rec.at - rec.duration_ms * NS_PER_MS,
-    )
-
-    add_record_events(cmd_span, pending_records)
-    pending_records.clear()
-
-    cmd_span.end(end_time=rec.at)
 
 
 @dataclass(slots=True)
@@ -186,45 +168,7 @@ class _ParsedRun:
     events: list[_EventTuple] = field(default_factory=list)
 
 
-def _decode_object_line(raw: bytes) -> dict[str, object] | None:
-    """Decode one raw UTF-8 log line as a JSON object.
-
-    Args:
-        raw: The line's bytes, without its trailing newline.
-
-    Returns:
-        The decoded object, or ``None`` when the line is not valid UTF-8, is not
-        strict JSON (non-finite numbers included), or decodes to something other
-        than an object.
-    """
-    try:
-        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
-        parsed = loads_strict_json(raw.decode("utf-8"))
-    except ValueError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _read_first_line(path: Path) -> bytes | None:
-    """Read the raw bytes of the first line of ``path``, never past it.
-
-    Args:
-        path: The file to read.
-
-    Returns:
-        The first line's bytes, its line feed included when it has one, or
-        ``None`` when the file does not exist.
-    """
-    # Binary read: a text-mode readline decodes a whole buffered chunk, so bytes
-    # on later lines could fail the read of a first line that is itself valid.
-    try:
-        with path.open("rb") as handle:
-            return handle.readline()
-    except FileNotFoundError:
-        return None
-
-
-def first_line_json(path: Path) -> dict[str, object] | None:
+def _first_line_object(path: Path) -> dict[str, object] | None:
     """Parse only the first line of ``path`` as a JSON object.
 
     Args:
@@ -239,10 +183,20 @@ def first_line_json(path: Path) -> dict[str, object] | None:
         OSError: When the file exists but cannot be read, such as a directory
             or a file without read permission.
     """
-    first_line = _read_first_line(path)
-    if first_line is None:
+    # Binary read of the first line alone: a text-mode readline decodes a whole
+    # buffered chunk, so bytes on later lines could fail the read of a first
+    # line that is itself valid.
+    try:
+        with path.open("rb") as handle:
+            first_line = handle.readline()
+    except FileNotFoundError:
         return None
-    return _decode_object_line(first_line)
+    try:
+        # UnicodeDecodeError is a ValueError, so a non-UTF-8 line lands here too.
+        parsed = loads_strict_json(first_line.decode("utf-8"))
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _read_bytes(path: str) -> bytes:
@@ -251,31 +205,6 @@ def _read_bytes(path: str) -> bytes:
         return Path(path).read_bytes()
     except FileNotFoundError:
         return b""
-
-
-def _read_lines(path: str) -> list[bytes]:
-    """Read *path* as raw lines, leaving each one to be decoded on its own.
-
-    Decoding the whole file at once would let one undecodable line, such as a
-    final record torn mid-character by a crash, hide every other line. CRLF and
-    lone CR are folded into a line feed, as text-mode reading would.
-
-    Deliberately narrower than :meth:`str.splitlines`, which also breaks on
-    U+0085, U+2028 and U+2029 — characters a JSON string may carry raw, so
-    splitting there would tear one record into two invalid halves.
-
-    Args:
-        path: The file to read.
-
-    Returns:
-        The file's lines split on line feeds, or ``[]`` when the file does not
-        exist.
-    """
-    content = _read_bytes(path)
-    lines = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
-    if lines[-1] == b"":
-        lines.pop()
-    return lines
 
 
 def _read_session_log(path: str) -> list[SessionLogRecord]:
@@ -301,23 +230,35 @@ def _read_session_log(path: str) -> list[SessionLogRecord]:
     return records
 
 
-def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
-    """Parse one JSONL line into a typed record, or None to skip it."""
+def _warn_skipped_line(log_kind: str, path: str, line_number: int, reason: str) -> None:
+    warn_to_stderr(f"warning: {log_kind} log {path}: skipping line {line_number} ({reason})")
+
+
+def _decode_log_line(
+    log_kind: str, path: str, line_number: int, line: bytes, noun: str
+) -> dict[str, object] | None:
+    """Decode one JSONL line as an object, warning and returning None when it is not one."""
     try:
         wire_value = loads_strict_json(line.decode("utf-8"))
     except ValueError:
-        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (invalid JSON)")
+        _warn_skipped_line(log_kind, path, line_number, "invalid JSON")
         return None
     if not isinstance(wire_value, dict):
-        warn_to_stderr(f"warning: session log {path}: skipping line {line_number} (not a record)")
+        _warn_skipped_line(log_kind, path, line_number, f"not {noun}")
+        return None
+    return wire_value
+
+
+def _parse_session_log_line(path: str, line_number: int, line: bytes) -> SessionLogRecord | None:
+    """Parse one JSONL line into a typed record, or None to skip it."""
+    wire_value = _decode_log_line("session", path, line_number, line, "a record")
+    if wire_value is None:
         return None
     try:
         return parse_record(wire_value)
     except GymratError:
         kind = wire_value.get("type", "untyped")
-        warn_to_stderr(
-            f"warning: session log {path}: skipping line {line_number} (invalid {kind} record)"
-        )
+        _warn_skipped_line("session", path, line_number, f"invalid {kind} record")
         return None
 
 
@@ -327,7 +268,10 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
     The typed launch event alone decides whether the log belongs to the
     session. A log that cannot be read, or whose launch line names the session
     but fails to parse as a launch event, is reported on stderr; any other
-    mismatch is skipped silently.
+    mismatch is skipped silently. The lines after the launch are read as the
+    session log's are: blank lines and an unterminated final line are dropped,
+    and a complete line that matches no event is skipped with a warning naming
+    its line number.
 
     Args:
         log_path: The supervisor log to read.
@@ -337,7 +281,7 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
         The parsed run, or ``None`` when the log does not belong to the session.
     """
     try:
-        first_obj = first_line_json(Path(log_path))
+        first_obj = _first_line_object(Path(log_path))
     except OSError as error:
         warn_to_stderr(f"warning: skipped {log_path}: {os_error_reason(error)}")
         return None
@@ -354,17 +298,28 @@ def _parse_one_supervisor_log(log_path: str, session_id: str) -> _ParsedRun | No
 
     run = _ParsedRun(launch=launch, last_at=launch.at)
 
-    for line in _read_lines(log_path)[1:]:
-        obj = _decode_object_line(line)
-        if obj is None:
+    for line_number, line in enumerate(complete_lines(_read_bytes(log_path)), start=1):
+        if line_number == 1 or is_blank_line(line):
             continue
-        event = event_from_wire(obj)
+        event = _parse_supervisor_log_line(log_path, line_number, line)
         if event is None:
             continue
         run.last_at = max(run.last_at, event.at)
         _collect_run_event(run, event)
 
     return run
+
+
+def _parse_supervisor_log_line(path: str, line_number: int, line: bytes) -> SessionEvent | None:
+    """Parse one supervisor JSONL line into a typed event, or None to skip it."""
+    wire_value = _decode_log_line("supervisor", path, line_number, line, "an event")
+    if wire_value is None:
+        return None
+    event = event_from_wire(wire_value)
+    if event is None:
+        kind = wire_value.get("type", "untyped")
+        _warn_skipped_line("supervisor", path, line_number, f"invalid {kind} event")
+    return event
 
 
 def _collect_run_event(run: _ParsedRun, event: SessionEvent) -> None:

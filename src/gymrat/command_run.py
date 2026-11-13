@@ -39,7 +39,7 @@ from gymrat.session.store import (
     recover_torn_tail,
     session_header,
 )
-from gymrat.utils import otlp_endpoint_from_env, warn_to_stderr
+from gymrat.utils import otlp_traces_url, warn_to_stderr
 
 # ---------------------------------------------------------------------------
 # Trace bookkeeping
@@ -167,12 +167,15 @@ async def with_repo_lock[T](
 
     jsonl = session_jsonl_path(root)
     start_ns = utils.now_ns()
-    pre_body_session_id, pre_body_records = _pre_body_log(root, jsonl)
 
     release = acquire_lock(lockfile_path(root), command)
     caught: BaseException | None = None
+    pre_body_session_id, pre_body_records = "", None
     result: T
     try:
+        # Read under the lock: a rival that appended while this command waited
+        # for it must not have its records counted among the body's.
+        pre_body_session_id, pre_body_records = _pre_body_log(root, jsonl)
         recover_torn_tail(jsonl)
         result = await body(trace)
     except BaseException as exc:
@@ -193,7 +196,7 @@ async def with_repo_lock[T](
             )
             if appended is not None and pre_body_records is not None:
                 try:
-                    _, tracing_active = _maybe_configure_tracing(root)
+                    tracing_active = _maybe_configure_tracing(root)
                     if tracing_active:
                         _emit_command_span(
                             appended,
@@ -203,7 +206,7 @@ async def with_repo_lock[T](
                             pre_body_records=pre_body_records,
                         )
                 except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
-                    warn_to_stderr(f"failed to emit command span: {span_error}")
+                    warn_to_stderr(f"warning: failed to emit command span: {span_error}")
         finally:
             release()
     return result
@@ -258,7 +261,7 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
         )
         append_record(jsonl, record)
     except Exception as error:  # noqa: BLE001 -- construction or IO failure must not mask the command outcome
-        warn_to_stderr(f"failed to append command record: {error}")
+        warn_to_stderr(f"warning: failed to append command record: {error}")
         return None
     return record
 
@@ -272,10 +275,10 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     """Read what the command span needs from the session log before the body runs.
 
     The span's events are the records the body appends, so the record count
-    must be taken before the body runs. Without an endpoint no span is emitted and
-    the log is not read. A log that exists but cannot be read warns to stderr:
-    without its record count the span cannot tell the body's records apart, so
-    none is emitted.
+    must be taken under the lock and before the body runs. Without an endpoint
+    no span is emitted, so the log is not read. A log that exists but cannot be
+    read warns to stderr: without its record count the span cannot tell the
+    body's records apart.
 
     Args:
         root: The repository whose session header names the session.
@@ -286,18 +289,18 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
         endpoint) and its record count: ``0`` without an endpoint or a log,
         ``None`` when the log could not be read.
     """
-    if otlp_endpoint_from_env() is None:
+    if otlp_traces_url() is None:
         return "", 0
     header = session_header(root)
     session_id = header.session_id if header is not None else ""
     try:
         return session_id, _count_record_lines(jsonl)
     except OSError as error:
-        warn_to_stderr(f"failed to emit command span: {error}")
+        warn_to_stderr(f"warning: failed to emit command span: {error}")
         return session_id, None
 
 
-def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
+def _maybe_configure_tracing(root: str) -> bool:
     """Configure tracing for the session whose log is at ``root`` now.
 
     Runs after the body, so a body that opens a session (``start``, the
@@ -308,24 +311,23 @@ def _maybe_configure_tracing(root: str) -> tuple[str, bool]:
         root: The repository whose session header names the session.
 
     Returns:
-        The session id (empty when there is no endpoint or no session) and
-        whether a tracer provider is now active.
+        Whether a tracer provider is now active: never without an endpoint or
+        a session.
 
     Raises:
         ValueError: When tracing is already configured for another session.
     """
-    if otlp_endpoint_from_env() is None:
-        return "", False
+    if otlp_traces_url() is None:
+        return False
     header = session_header(root)
     if header is None:
-        return "", False
+        return False
 
     from gymrat.telemetry.provider import (  # noqa: PLC0415 -- deferred: the telemetry stack and the optional otel extra stay off the CLI import path
         configure_tracing,
     )
 
-    active = configure_tracing(header.session_id)
-    return header.session_id, active
+    return configure_tracing(header.session_id)
 
 
 def _jsonl_is_empty(jsonl_path: str) -> bool:
@@ -409,7 +411,7 @@ def _emit_command_span(
     with start_command_span(
         cmd_record,
         session_id=session_id,
-        line_number=len(records),
+        position=len(records),
         context=parent_ctx,
         start_time=start_ns,
     ) as span:

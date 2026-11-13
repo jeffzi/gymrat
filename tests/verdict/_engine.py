@@ -29,7 +29,6 @@ def meta_of(
 METRIC_EXACT_LOWER = {"metric": meta_of("lower", exact=True)}
 METRIC_EXACT_HIGHER = {"metric": meta_of("higher", exact=True)}
 METRIC_APPROX_LOWER = {"metric": meta_of("lower")}
-METRIC_APPROX_HIGHER = {"metric": meta_of("higher")}
 METRIC_BYTES_LOWER = {"metric": meta_of("lower", unit="bytes", resolution=1.0)}
 
 # A 24 MHz timer read in whole nanoseconds: one tick is 41.67 ns, so readings land
@@ -108,8 +107,3 @@ SUBNORMAL_BASELINE = 5e-324
 # A subnormal median: any spread (or the one-byte floor) divided by it overflows
 # to infinity.
 OVERFLOWING_MEDIAN = 1e-310
-
-# Two six-window groups where every pair moves the same way: the sign-flip null
-# makes the shift significant (p = 0.03125) in either pairing direction.
-SEPARATED_HIGH = samples(180.0, 190.0, 200.0, 200.0, 210.0, 220.0)
-SEPARATED_LOW = samples(90.0, 95.0, 100.0, 100.0, 105.0, 110.0)

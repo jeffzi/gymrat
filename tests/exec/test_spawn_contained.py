@@ -26,8 +26,6 @@ import pytest
 from gymrat import exec as exec_mod
 from gymrat import process_group
 from gymrat.exec import ExecOptions, exec_argv
-from gymrat.signals import TERMINATION_SIGNALS
-from tests._exec_fixtures import expected_result, run_shell
 from tests._process_helpers import (
     KILLPG_FAILED,
     REAL_KILLPG,
@@ -48,27 +46,6 @@ def _raise_on_call(error: Exception) -> Callable[[int], NoReturn]:
         raise error
 
     return fail
-
-
-# Both entry points contain a child through the same spawn; a containment error
-# raised there is pinned with its teardown in the containment-and-teardown test.
-
-
-async def test_exec_when_resume_refused_after_spawn_does_fail_the_run_after_reaping_child(
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(process_group, "_resume_child_impl", refuse_resume)
-
-    result = await asyncio.wait_for(run_shell("sleep 30", make_opts()), _WAIT_TIMEOUT_S)
-
-    (child,) = spawned_processes
-    assert result == expected_result("", result.stderr, exit_code=1)
-    assert str(child.pid) in result.stderr
-    assert child.returncode is not None, (
-        "the child left behind by the failed spawn was never reaped"
-    )
 
 
 RELEASE_REFUSED = "release refused"
@@ -102,6 +79,23 @@ async def _spawn_contained_sleeper() -> asyncio.subprocess.Process:
             stderr=asyncio.subprocess.DEVNULL,
         ),
         _WAIT_TIMEOUT_S,
+    )
+
+
+async def test_spawn_contained_when_resume_refused_does_raise_after_reaping_child(
+    spawned_processes: list[asyncio.subprocess.Process],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process_group, "_resume_child_impl", refuse_resume)
+
+    with pytest.raises(exec_mod.SpawnError) as caught:
+        await _spawn_contained_sleeper()
+
+    (child,) = spawned_processes
+    assert str(child.pid) in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert child.returncode is not None, (
+        "the child left behind by the failed spawn was never reaped"
     )
 
 
@@ -280,27 +274,3 @@ def test_nesting_depth_when_read_from_environment_does_fall_back_to_zero_unless_
     )
 
     assert probe.stdout == f"{expected_depth}\n"
-
-
-# ---------------------------------------------------------------------------
-# the contained child: termination signals unblocked (POSIX)
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_child_spawned_does_unblock_termination_signals_in_it(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    result = await exec_argv(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import signal, json; "
-                "print(json.dumps(list(signal.pthread_sigmask(signal.SIG_BLOCK, []))))"
-            ),
-        ],
-        make_opts(),
-    )
-
-    blocked: list[int] = json.loads(result.stdout.strip())
-    assert sorted(set(TERMINATION_SIGNALS) & set(blocked)) == []

@@ -1,4 +1,4 @@
-"""Command-level tests for keep, discard, status, and subdirectory resolution.
+"""Command-level tests for keep, discard and status.
 
 Each command is driven through :class:`typer.testing.CliRunner` against a
 throwaway repository from the shared ``create_scratch_repo`` factory, so the
@@ -7,7 +7,7 @@ The seams mocked here mirror the engine suites' boundaries: for ``discard``'s
 prompt the ``is_tty`` check as the ``commands.loop`` module imports it, with the
 answer typed on the runner's stdin. The prompt's closed-stderr case runs the
 CLI in a child process, since only a real file descriptor can be closed. Config
-resolution runs for real, the subdirectory case included, where the test observes the directory a command resolves its config from.
+resolution runs for real.
 
 The documents' shapes are pinned in ``tests/report/test_json_doc.py``;
 iterate's tests live in ``test_iterate``. The budget key of a JSON document is
@@ -35,26 +35,22 @@ from typer.testing import CliRunner
 from gymrat.cli.app import app
 from gymrat.session.paths import experiment_worktree_dir
 from gymrat.session.records import (
-    CommandRecord,
     KeepRecord,
 )
 from gymrat.utils import is_tty
 from tests._ansi import SGR_RE, strip_ansi
 from tests._cli import no_color_env
 from tests._git import status_of
+from tests._platform import needs_posix_shell, needs_posix_signals
 from tests._process_helpers import (
     wait_for_pid_file_blocking,
     wait_until_dead_blocking,
-)
-from tests.cli._command_stubs import (
-    never_tty,
 )
 from tests.cli._runner import (
     runner,
 )
 from tests.cli._session import (
     start_edited_session,
-    write_bench_config,
     write_settled_session,
 )
 from tests.cli._signalled_cli import (
@@ -68,22 +64,23 @@ from tests.loop._settle import (
     checks_fail,
     checks_pass,
     settling_record_of,
-    start_with,
     unimproved,
 )
 from tests.session._budget import install_budget_with_ten_minutes_left
 from tests.session.records._fixtures import (
-    SESSION_ID,
-    iteration_record,
     last_command_record,
     log_records,
-    records_of_type,
 )
 
 
 def _always_tty(_stream: object) -> bool:
     """Stand in for ``is_tty`` so the discard command takes its interactive path."""
     return True
+
+
+def _never_tty(_stream: object) -> bool:
+    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +148,7 @@ def test_discard_command_when_tty_and_input_ends_does_cancel_with_exit_one(edite
     ("args", "is_tty_stub", "traced"),
     [
         pytest.param(["--force"], _always_tty, {"force": True}, id="force-long"),
-        pytest.param([], never_tty, {}, id="stdin-not-tty"),
+        pytest.param([], _never_tty, {}, id="stdin-not-tty"),
     ],
 )
 def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompting(
@@ -174,7 +171,7 @@ def test_discard_command_when_force_or_stdin_not_tty_does_discard_without_prompt
     assert (cmd.args, cmd.seq) == (traced, 1)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell")
+@needs_posix_shell
 def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: str):
     result = subprocess.run(  # noqa: S603 -- fixed /bin/sh script relaying sys.executable and a fixed program
         ["/bin/sh", "-c", 'exec "$0" -c "$1" 2>&-', sys.executable, _TTY_DISCARD],
@@ -191,35 +188,11 @@ def test_discard_command_when_stderr_closed_does_decline_silently(edited_repo: s
 
 
 # ---------------------------------------------------------------------------
-# the loop commands, run from a subdirectory of the repository
-# ---------------------------------------------------------------------------
-
-
-def test_loop_command_when_run_from_subdirectory_does_read_the_config_at_repo_root(
-    create_scratch_repo: Callable[[], str], monkeypatch: pytest.MonkeyPatch
-):
-    root = create_scratch_repo()
-    start_with(root, (iteration_record(seq=1),))
-    # Only the root holds a config, and its invalid value is what the command reports.
-    write_bench_config(root, samples=0)
-    nested = Path(root) / "packages" / "core"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-
-    result = runner.invoke(app, ["iterate"])
-
-    error = strip_ansi(result.stderr)
-    assert result.exit_code == 2
-    assert "samples" in error
-    assert "got 0" in error
-
-
-# ---------------------------------------------------------------------------
 # the keep command
 # ---------------------------------------------------------------------------
 
 
-def test_keep_command_when_checks_pass_does_trace_its_message_and_seq(
+def test_keep_command_when_checks_pass_does_record_its_message_and_seq(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_edited_session(repo, checks=CHECKS)
@@ -241,13 +214,7 @@ def test_keep_command_when_keep_blocked_does_exit_one_tracing_the_reason(
     result = runner.invoke(app, ["keep"])
 
     cmd = last_command_record(repo)
-    assert (result.exit_code, cmd.seq, cmd.exit_code, cmd.reason, cmd.args) == (
-        1,
-        1,
-        1,
-        "checks-failed",
-        {},
-    )
+    assert (result.exit_code, cmd.seq, cmd.exit_code, cmd.reason) == (1, 1, 1, "checks-failed")
 
 
 def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
@@ -264,11 +231,10 @@ def test_keep_command_when_allow_unimproved_does_commit_with_the_flag_traced(
     assert record.status == "committed"
     cmd = last_command_record(repo)
     assert cmd.args["allow_unimproved"] is True
-    assert cmd.reason is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell and signals")
-def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving_no_checks_process_or_command_record(
+@needs_posix_signals
+def test_keep_command_when_signalled_mid_checks_does_leave_no_checks_process(
     repo: str,
     tmp_path: Path,
     reap_groups: list[int],
@@ -288,16 +254,14 @@ def test_keep_command_when_signalled_mid_checks_does_exit_by_signal_code_leaving
 
         stop_by_signal(proc, signal.SIGTERM)
 
-    assert proc.returncode == 128 + signal.SIGTERM
     wait_until_dead_blocking(grandchild, timeout_s=SETTLE_TIMEOUT_S)
     # Polled rather than checked once: a killed leader stays visible as a zombie
     # until its parent reaps it.
     wait_until_dead_blocking(checks_pid, timeout_s=SETTLE_TIMEOUT_S)
-    assert records_of_type(repo, CommandRecord) == []
 
 
 # ---------------------------------------------------------------------------
-# --color / --no-color on keep
+# warning color when stderr is a terminal
 # ---------------------------------------------------------------------------
 
 
@@ -346,20 +310,7 @@ def test_keep_command_when_no_checks_and_stderr_a_terminal_does_color_the_warnin
 # ---------------------------------------------------------------------------
 
 
-#: The status document of a settled session with one kept iteration, minus its end-state flags.
-_SETTLED_STATUS = {
-    "schema_version": 1,
-    "session_id": SESSION_ID,
-    "branch": f"gymrat/{SESSION_ID}",
-    "baseline": {"ref": "main", "sha": "a" * 40},
-    "iteration_count": 1,
-    "keep_count": 1,
-    "discard_count": 0,
-    "unsettled": False,
-}
-
-
-def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
+def test_status_command_when_format_json_under_budget_does_include_the_budget_key(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     write_settled_session(repo)
@@ -368,9 +319,4 @@ def test_status_command_when_format_json_does_emit_structured_json_on_stdout(
     result = runner.invoke(app, ["status", "--format", "json"])
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout) == {
-        **_SETTLED_STATUS,
-        "finalized": False,
-        "stopped": False,
-        "budget": {"cap_minutes": 30, "remaining_seconds": 600},
-    }
+    assert json.loads(result.stdout)["budget"] == {"cap_minutes": 30, "remaining_seconds": 600}

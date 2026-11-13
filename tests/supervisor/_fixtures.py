@@ -11,7 +11,6 @@ import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from operator import methodcaller
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, override
 from unittest.mock import create_autospec
@@ -155,29 +154,18 @@ def make_prompt(
     )
 
 
-def noop_observer() -> SessionObserver:
-    """Return an observer that discards every event it receives."""
-
-    def _observer(_event: SessionEvent) -> None:
-        return None
-
-    return _observer
-
-
-def raising_observer(message: str, *, on: type[SessionEvent] | None = None) -> SessionObserver:
-    """Return an observer that raises ``RuntimeError(message)`` on the events it is handed.
+def raising_observer(message: str) -> SessionObserver:
+    """Return an observer that raises ``RuntimeError(message)`` on every event it is handed.
 
     Args:
         message: The error message, for the test to match the warning or report against.
-        on: The one event type the observer fails on; ``None`` fails on every event.
 
     Returns:
         The failing observer.
     """
 
-    def _observer(event: SessionEvent) -> None:
-        if on is None or isinstance(event, on):
-            raise RuntimeError(message)
+    def _observer(_event: SessionEvent) -> None:
+        raise RuntimeError(message)
 
     return _observer
 
@@ -769,10 +757,6 @@ class LockSwitch:
         """The lock probe a test hands the supervisor; reads the flag at call time."""
         return self.held
 
-    async def hold(self) -> None:
-        """Mark the lock held, as if another gymrat command had taken it."""
-        self.held = True
-
     async def release(self) -> None:
         """Mark the lock free, so the supervisor's next probe sees it released."""
         self.held = False
@@ -1023,12 +1007,10 @@ async def run_supervised(
     max_minutes: float = 10,
     max_usd: float | None = None,
     deadline_ms: float | None = None,
-    launch: LaunchEvent | None = None,
     observer: SessionObserver | None = None,
     is_lock_held: Callable[[], bool] | None = lambda: False,
     grace_ms: int = 30_000,
     settle_window_ms: int = 0,
-    wall_clock_poll_ms: int = 1,
     warn: WarnSink = warn_to_stderr,
 ) -> SupervisionResult:
     """Supervise ``driver`` over the repository at ``root`` with fast polls and no settle window.
@@ -1044,14 +1026,11 @@ async def run_supervised(
         max_minutes: The wall-clock cap in minutes.
         max_usd: The spend cap in dollars, or None for no cap.
         deadline_ms: The wall-clock deadline, or None for ``max_minutes`` from now.
-        launch: The launch event to emit, or None for one carrying ``max_minutes``
-            and ``max_usd``.
         observer: Receives every session event.
         is_lock_held: Answers whether the repository lock is held; None probes
             the real lock file instead.
         grace_ms: How long a stop request waits before forcing cancellation.
         settle_window_ms: Idle time after a turn ends before the log is read.
-        wall_clock_poll_ms: How often the caps are checked.
         warn: Receives each observer failure, such as a failed event-log write.
 
     Returns:
@@ -1069,10 +1048,10 @@ async def run_supervised(
             max_minutes=max_minutes,
             max_usd=max_usd,
         ),
-        launch=make_launch(max_minutes=max_minutes, max_usd=max_usd) if launch is None else launch,
+        launch=make_launch(max_minutes=max_minutes, max_usd=max_usd),
         observer=observer,
         grace_ms=grace_ms,
-        wall_clock_poll_ms=wall_clock_poll_ms,
+        wall_clock_poll_ms=1,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=1,
         is_lock_held=is_lock_held,
@@ -1093,7 +1072,6 @@ async def settled_outcome(session: DriverSession) -> SessionOutcome:
 async def run_session(
     driver: Driver,
     observer: SessionObserver,
-    prompt: SessionPrompt | None = None,
     abort: asyncio.Event | None = None,
 ) -> SessionOutcome:
     """Start a session on ``driver`` and await its settled outcome.
@@ -1101,13 +1079,12 @@ async def run_session(
     Args:
         driver: The driver that starts the session.
         observer: Receives every session event.
-        prompt: The prompt to start with, or None for ``make_prompt()``.
         abort: The session's abort event, or None for a fresh, never-set one.
 
     Returns:
         The settled outcome.
     """
-    session = driver.start(prompt or make_prompt(), observer, abort or asyncio.Event())
+    session = driver.start(make_prompt(), observer, abort or asyncio.Event())
     return await settled_outcome(session)
 
 
@@ -1119,6 +1096,7 @@ def start_claude_session(
     abort: asyncio.Event | None = None,
     hooks: HooksFactory | None = None,
     tools: ToolsFactory | None = None,
+    warn: WarnSink = warn_to_stderr,
 ) -> DriverSession:
     """Start a Claude driver session that streams from ``client``.
 
@@ -1129,13 +1107,16 @@ def start_claude_session(
         abort: The session's abort event; a fresh, never-set one when omitted.
         hooks: The hooks factory the driver passes on, if any.
         tools: The tools factory the driver passes on, if any.
+        warn: Receives the driver's warnings; stderr when omitted.
 
     Returns:
         The running session.
     """
-    driver = create_claude_driver(client_factory=FactoryProbe(client), hooks=hooks, tools=tools)
+    driver = create_claude_driver(
+        client_factory=FactoryProbe(client), hooks=hooks, tools=tools, warn=warn
+    )
     return driver.start(
-        prompt or make_prompt(), observer or noop_observer(), abort or asyncio.Event()
+        prompt or make_prompt(), observer or (lambda _event: None), abort or asyncio.Event()
     )
 
 
@@ -1205,23 +1186,6 @@ async def run_acting_on_first(
     return outcome
 
 
-async def run_interrupting_on_first_usage_update(client: FakeClient) -> SessionOutcome:
-    """Run a Claude session over ``client`` that interrupts itself on its first usage update.
-
-    Usage updates come from result messages, which leave the session idle
-    between turns, so the soft stop lands when the stream delivers its next
-    message.
-
-    Args:
-        client: The fake client the session streams from; it must carry a
-            message after the first result.
-
-    Returns:
-        The settled outcome.
-    """
-    return await run_acting_on_first(client, UsageUpdateEvent, methodcaller("interrupt"))
-
-
 async def run_outcome(
     client: FakeClient,
     observer: SessionObserver | None = None,
@@ -1251,7 +1215,11 @@ async def run_outcome(
 
 
 async def start_past_turns(
-    client: FakeClient, turns: int, prompt: SessionPrompt | None = None
+    client: FakeClient,
+    turns: int,
+    prompt: SessionPrompt | None = None,
+    *,
+    warn: WarnSink = warn_to_stderr,
 ) -> tuple[DriverSession, list[SessionEvent]]:
     """Start a Claude session over ``client`` and wait until it has closed ``turns`` turns.
 
@@ -1263,6 +1231,7 @@ async def start_past_turns(
         client: The fake client the session streams from.
         turns: How many ``TurnEndEvent`` the session must emit before returning.
         prompt: The prompt to start with; ``make_prompt()`` when omitted.
+        warn: Receives the driver's warnings; stderr when omitted.
 
     Returns:
         The running session and the list its observer keeps appending events to.
@@ -1275,7 +1244,7 @@ async def start_past_turns(
         if len(events_of(events, TurnEndEvent)) == turns:
             turns_closed.set()
 
-    session = start_claude_session(client, observer, prompt=prompt)
+    session = start_claude_session(client, observer, prompt=prompt, warn=warn)
     await wait_for_event_or_task(turns_closed, session.outcome)
     return session, events
 

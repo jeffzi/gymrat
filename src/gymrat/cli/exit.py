@@ -27,7 +27,7 @@ from gymrat.utils import is_broken_pipe, point_stream_at_devnull, write_and_flus
 BUGS_URL = "https://github.com/jeffzi/gymrat/issues"
 
 
-def format_cli_error(error: object, *, debug: bool = False) -> str:
+def format_cli_error(error: Exception, *, debug: bool = False) -> str:
     """Render ``error`` for stderr with a red ``Error:`` label and optional sections.
 
     The sections appear in order: the label, the message body (an
@@ -48,7 +48,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
 
     doc = f"{error_label}{escape(body)}"
 
-    if debug and isinstance(error, BaseException) and error.__traceback__ is not None:
+    if debug and error.__traceback__ is not None:
         stack = "".join(traceback.format_exception(type(error), error, error.__traceback__))
         doc += f"\n{escape(stack.rstrip())}"
 
@@ -67,7 +67,7 @@ def format_cli_error(error: object, *, debug: bool = False) -> str:
     return render_lines(doc, color=stderr_color)
 
 
-def exit_with_error(error: object, code: int = TOOL_FAILURE_EXIT_CODE) -> NoReturn:
+def exit_with_error(error: Exception, code: int = TOOL_FAILURE_EXIT_CODE) -> NoReturn:
     """Print a formatted error to stderr and exit on ``code``, even if the write fails.
 
     The stack trace is included when ``--debug`` is on.

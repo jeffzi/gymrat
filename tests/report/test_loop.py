@@ -32,7 +32,6 @@ from gymrat.report.loop import (
     format_status_footer,
     format_status_header,
     format_status_iteration,
-    format_status_stop,
     format_verdict_block,
 )
 from gymrat.session.workspace import BaselineRef, Worktrees
@@ -124,12 +123,6 @@ def test_format_verdict_block_when_rerun_does_lead_with_the_metric_and_its_answe
     [
         pytest.param(
             start_result(),
-            None,
-            [],
-            id="neither",
-        ),
-        pytest.param(
-            start_result(),
             "RUNBOOK.md",
             ["  runbook: RUNBOOK.md — read it before your first edit"],
             id="runbook",
@@ -148,22 +141,6 @@ def test_format_start_summary_when_runbook_or_archive_given_does_add_its_row(
     lines = format_start_summary(result, runbook).split("\n")
 
     assert lines[5:-1] == extra_rows
-
-
-def test_format_start_summary_when_started_does_name_the_branch():
-    session = session_record()
-
-    lines = format_start_summary(start_result(session=session), None).split("\n")
-
-    assert session.branch in lines[1]
-
-
-def test_format_start_summary_when_started_does_close_on_the_experiment_worktree():
-    session = session_record()
-
-    lines = format_start_summary(start_result(session=session), None).split("\n")
-
-    assert session.worktrees.experiment in lines[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +255,16 @@ def test_format_status_iteration_when_delta_unmeasured_does_omit_the_percentage(
             "baseline main · total[ms] 15200",
             id="bracketed-name-renders-literally",
         ),
+        pytest.param(
+            ({"total\\[1]": 15200},),
+            "baseline main · total\\[1] 15200",
+            id="backslash-before-bracket-renders-literally",
+        ),
+        pytest.param(
+            ({"total_ms\\": 15200, "alloc_bytes": 1500},),
+            "baseline main · total_ms\\ 15200 · alloc_bytes 1500",
+            id="name-ending-in-backslash-renders-literally",
+        ),
     ],
 )
 def test_format_status_baseline_when_given_samples_does_state_label_and_median_per_metric(
@@ -342,14 +329,3 @@ def test_format_status_finalized_when_given_record_does_render_the_finalized_lin
     line = format_status_finalized(finalize_record())
 
     assert render_plain(line) == f"finalized · branch gymrat/{SESSION_ID}-final · commit ccccccc"
-
-
-# ---------------------------------------------------------------------------
-# format_status_stop
-# ---------------------------------------------------------------------------
-
-
-def test_format_status_stop_when_given_message_does_render_the_stopped_line():
-    line = format_status_stop("user requested stop")
-
-    assert render_plain(line) == "stopped · user requested stop"

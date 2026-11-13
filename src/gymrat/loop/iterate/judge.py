@@ -43,18 +43,12 @@ from gymrat.report.loop import (
     LoopPrimary,
     MetricPrimary,
 )
-from gymrat.report.types import candidate_at
-from gymrat.sampling import (
-    CleanupResult,
-    RunOptions,
-    TargetContext,
-    TargetSamples,
-    collect_samples,
-)
+from gymrat.sampling import RunOptions, TargetContext, TargetSamples, collect_samples
 from gymrat.session.records import PairedSamples, SessionRecord
 from gymrat.targets import InPlaceTarget
 from gymrat.utils import finite_or_none
 from gymrat.verdict import compute_geomean, compute_verdicts
+from gymrat.worktree_sweep import CleanupResult
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -352,10 +346,9 @@ def target_reached(
     metric = metrics.get(primary.name)
     if metric is None:
         return False
-    experiment = candidate_at(metric, EXPERIMENT_INDEX)
-    if experiment is None or experiment.median is None:
+    median = metric.candidates[EXPERIMENT_INDEX].median
+    if median is None:
         return False
-    median = experiment.median
     return median >= target if metric.meta.direction == "higher" else median <= target
 
 

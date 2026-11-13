@@ -14,7 +14,7 @@ spinner and progress bar the renderer owns for that row.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.console import Console, Group, RenderableType
 from rich.spinner import Spinner
@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from rich.progress import Progress, TaskID
 
     from gymrat.cli.iterate.state import NodeState, PhaseCounters
-    from gymrat.cli.progress import _ClockColumn
+    from gymrat.cli.progress import ClockColumn
 
 
 GLYPH_SKIPPED = "\N{EN DASH}"
@@ -109,8 +109,10 @@ def render_row(
             return render_done_row(node)
         case "skipped":
             return render_skipped_row(node)
-        case _:
+        case "pending":
             return render_idle_row(node)
+        case _:  # pragma: no cover - exhaustive over the row statuses
+            assert_never(node.status)
 
 
 def render_running_row(
@@ -221,7 +223,7 @@ class _PhaseView:
     """The bar, clock column, and task id backing one sampling phase's row."""
 
     bar: Progress | None = None
-    clock_col: _ClockColumn | None = None
+    clock_col: ClockColumn | None = None
     task_id: TaskID | None = None
 
 

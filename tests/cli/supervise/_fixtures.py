@@ -7,14 +7,10 @@ helper imported as ``tests.cli.supervise._fixtures``.
 from __future__ import annotations
 
 from datetime import UTC, tzinfo
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
-from unittest.mock import patch
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from contextlib import AbstractContextManager
-
-    from rich.console import Console
 
     from gymrat.config import Effort
     from gymrat.session.progress_file import ProgressSnapshot
@@ -23,8 +19,6 @@ if TYPE_CHECKING:
     from gymrat.supervisor.supervise import EndedBy
 
 from gymrat.cli.supervise.progress import (
-    IDLE_WARN_MS,
-    REFRESH_MS,
     SuperviseReporter,
     create_supervise_reporter,
 )
@@ -49,7 +43,6 @@ from gymrat.utils import NS_PER_MS
 from tests._rich import (
     Clock,
     frame_text,
-    sealed_console,
     track,
 )
 from tests.session.records._fixtures import (
@@ -120,7 +113,6 @@ def make_read_session(
     *,
     has_baseline: bool,
     best: BestIteration | None = None,
-    stop_message: str | None = None,
 ) -> Callable[[], ReadSessionResult]:
     """A ``read_session`` that always returns the same result.
 
@@ -128,12 +120,11 @@ def make_read_session(
         state: The session state the result carries.
         has_baseline: Whether the session has recorded a baseline.
         best: The best iteration, if any.
-        stop_message: The stop-condition message, if any.
 
     Returns:
         A callable returning one fixed ``ReadSessionResult``.
     """
-    result = read_result(state, has_baseline=has_baseline, best=best, stop_message=stop_message)
+    result = read_result(state, has_baseline=has_baseline, best=best)
     return lambda: result
 
 
@@ -368,15 +359,6 @@ FRAME_WIDTH = 100
 #: shared live display every CLI progress renderer mounts builds it.
 LIVE_CLASS_PATH = "gymrat.cli.live_display.ErasableLive"
 
-#: Patch target for the factory that builds the console the dashboard paints on.
-CONSOLE_FACTORY_PATH = "gymrat.cli.supervise.progress.stderr_console"
-
-
-def dashboard_console_patch(console: Console) -> AbstractContextManager[Any]:
-    """Patch the dashboard's console factory with an autospec that hands out *console*."""
-    return patch(CONSOLE_FACTORY_PATH, autospec=True, return_value=console)
-
-
 #: The root every built reporter carries. Both session readers are stubbed, so
 #: nothing ever reads below it.
 _UNREAD_ROOT = "repo"
@@ -408,8 +390,6 @@ def make_reporter(
     tz: tzinfo | None = UTC,
     model: str | None = None,
     effort: Effort | None = None,
-    idle_warn_ms: int = IDLE_WARN_MS,
-    refresh_ms: int = REFRESH_MS,
     clock: Clock[int] | None = None,
 ) -> ReporterKit:
     """Build a reporter with injectable dependencies for deterministic testing.
@@ -433,9 +413,6 @@ def make_reporter(
             tests produce stable timestamps regardless of host timezone.
         model: Model name shown as a labelled row when set.
         effort: Effort level shown as a labelled row when set.
-        idle_warn_ms: Milliseconds of inactivity before the liveness line
-            escalates to alert styling.
-        refresh_ms: Live dashboard refresh interval in milliseconds.
         clock: Drives the reporter, e.g. a ``Clock`` subclass; replaces the one
             built from ``clock_start``.
 
@@ -463,8 +440,6 @@ def make_reporter(
         plain_write=plain_write,
         model=model,
         effort=effort,
-        idle_warn_ms=idle_warn_ms,
-        refresh_ms=refresh_ms,
     )
     return ReporterKit(track(reporter), clock)
 
@@ -475,33 +450,8 @@ def launched(kit: ReporterKit) -> ReporterKit:
     return kit
 
 
-def reporter_with_nested_read() -> ReporterKit:
-    """A reporter whose in-flight Bash call runs a nested Read of ``src/config.ts``.
-
-    The Bash call starts at 1500 ms, the nested Read at 2000 ms, and the clock
-    stands at 5000 ms.
-
-    Returns:
-        The reporter together with the clock that drives it.
-    """
-    kit = make_reporter()
-    fire_launch_and_bash_start(kit.reporter.observer)
-    kit.clock.now = 2000
-    kit.reporter.observer(
-        tool_start_event(
-            "Read",
-            "nested-read-1",
-            2000,
-            parent_tool_use_id="bash-1",
-            input_summary="src/config.ts",
-        )
-    )
-    kit.clock.now = 5000
-    return kit
-
-
 def reporter_showing_session(
-    state: SessionState, *, best: BestIteration | None = None, max_iterations: int | None = None
+    state: SessionState, *, best: BestIteration | None = None
 ) -> ReporterKit:
     """A reporter whose session read carries *state*, past one Bash call's end.
 
@@ -511,29 +461,15 @@ def reporter_showing_session(
     Args:
         state: The session state every read returns, with a baseline recorded.
         best: The best kept iteration the read reports, or ``None`` for none.
-        max_iterations: Iteration cap, or ``None`` for uncapped.
 
     Returns:
         The reporter together with the clock that drives it.
     """
-    kit = make_reporter(
-        read_session=make_read_session(state, has_baseline=True, best=best),
-        max_iterations=max_iterations,
-    )
+    kit = make_reporter(read_session=make_read_session(state, has_baseline=True, best=best))
     fire_launch_and_bash_cycle(kit.reporter.observer)
     return kit
 
 
-def render_frame(reporter: SuperviseReporter, *, width: int = FRAME_WIDTH) -> str:
+def render_frame(reporter: SuperviseReporter) -> str:
     """Render the reporter's current frame through a non-terminal console."""
-    return frame_text(reporter.frame(), width=width)
-
-
-def color_console(*, width: int = FRAME_WIDTH) -> Console:
-    """A sealed console with standard color, *width* columns wide."""
-    return sealed_console(width=width, no_color=False, color_system="standard")
-
-
-def row_content(line: str) -> str:
-    """Strip the panel's side borders and padding from one frame row."""
-    return line.strip("│").strip()
+    return frame_text(reporter.frame(), width=FRAME_WIDTH)

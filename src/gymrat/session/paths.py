@@ -49,9 +49,8 @@ def repository_lookup_error(directory: str, cause: object) -> GymratError:
 
     Git reporting that ``directory`` is outside every repository is an answer
     callers can act on. Every other failure — dubious ownership, an unreadable
-    ``.git``, a git that cannot run at all — is git declining to answer, and
-    carries git's own diagnostics so the reader sees the real reason rather than
-    a wrong one.
+    ``.git``, a git that cannot run at all — is git declining to answer, so the
+    reader must see git's real reason rather than a wrong one.
 
     Args:
         directory: The directory whose repository lookup failed.
@@ -89,7 +88,7 @@ def _rev_parse(flag: str, directory: str) -> str:
             declines to answer.
     """
     try:
-        return run_git(["rev-parse", flag], directory).strip()
+        return run_git(["rev-parse", flag], directory, allow_interrupt=True).strip()
     except (subprocess.SubprocessError, OSError) as error:
         # Bound first: ruff's DOC501 reads ``raise <call>()`` as raising the
         # callee's name and would demand it in ``Raises:``.
@@ -271,9 +270,8 @@ def baseline_worktree_dir(root: str) -> str:
     return _session_path(root, WORKTREES_DIR_NAME, BASELINE_WORKTREE_NAME)
 
 
-def baseline_worktree_label() -> str:
-    """The baseline worktree's path relative to the repository root, with ``/`` separators."""
-    return f"{SESSION_DIR_NAME}/{WORKTREES_DIR_NAME}/{BASELINE_WORKTREE_NAME}"
+BASELINE_WORKTREE_LABEL = f"{SESSION_DIR_NAME}/{WORKTREES_DIR_NAME}/{BASELINE_WORKTREE_NAME}"
+"""The baseline worktree's path relative to the repository root, with ``/`` separators."""
 
 
 def _repo_digest(root: str) -> str:

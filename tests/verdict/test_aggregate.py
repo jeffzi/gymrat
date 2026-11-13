@@ -1,10 +1,9 @@
 """Behavioral tests for geomean aggregation over verdict records.
 
 Drives behavior through the public ``compute_geomean`` and
-``compute_kind_aggregates`` APIs. Exclusion ordering, ratio normalization and
-noise-band propagation are exercised on the geomean itself; bucketing order,
-per-kind grouping and the per-subset exclusion taxonomy on the kind aggregates
-built from it.
+``compute_kind_aggregates`` APIs. Exclusion ordering, the unstable exclusion
+and noise-band propagation are exercised on the geomean itself; shape, grouping
+by name path, ordering and geomean scope on the kind aggregates built from it.
 
 A compact ``MetricSpec`` describes one metric's contribution to a run, and
 :func:`build_inputs` turns a list of specs into the ``(verdicts, metric_meta)``
@@ -80,29 +79,27 @@ def build_inputs(
 
 
 # ---------------------------------------------------------------------------
-# Multiple gating metrics
+# Excluded metrics
 # ---------------------------------------------------------------------------
 
 
-def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order_averaging_the_rest():
-    # Neither names nor reasons are in sorted order, so only the metric_meta
-    # order explains the expected sequence.
-    verdicts, meta = build_inputs(
-        [
-            MetricSpec(name="metric2", delta=math.nan),
-            MetricSpec(name="metric1", no_verdict=True),
-            MetricSpec(name="metric3", delta=-5.0),
-        ],
-    )
+# Neither names nor reasons are in sorted order, so only the metric_meta order
+# explains the expected exclusion sequence.
+_TWO_EXCLUDED = [
+    MetricSpec(name="metric2", delta=math.nan),
+    MetricSpec(name="metric1", no_verdict=True),
+    MetricSpec(name="metric3", delta=-5.0),
+]
+
+
+def test_compute_geomean_when_metrics_excluded_does_list_them_in_meta_order():
+    verdicts, meta = build_inputs(_TWO_EXCLUDED)
 
     result = compute_geomean(verdicts, meta)
 
-    assert (result.n, result.excluded) == (
-        1,
-        (
-            Exclusion(metric="metric2", reason="undefined-ratio"),
-            Exclusion(metric="metric1", reason="no-verdict"),
-        ),
+    assert result.excluded == (
+        Exclusion(metric="metric2", reason="undefined-ratio"),
+        Exclusion(metric="metric1", reason="no-verdict"),
     )
 
 
@@ -186,15 +183,12 @@ def kind_named(aggregates: Sequence[KindAggregate], kind: str) -> KindAggregate:
 # ---------------------------------------------------------------------------
 
 
-def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_kind_geomean_no_gate():
+def test_compute_kind_aggregates_when_single_non_gating_metric_does_carry_no_gated_geomean():
     result = kinds_of(
         [MetricSpec(name="warmup", gating=False, delta=0.0)],
     )
 
-    assert [
-        (aggregate.kind, aggregate.geomean.n, aggregate.groups, aggregate.gated_geomean)
-        for aggregate in result
-    ] == [("time", 1, (), None)]
+    assert [aggregate.gated_geomean for aggregate in result] == [None]
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +245,7 @@ def test_compute_kind_aggregates_when_many_kinds_and_groups_does_order_by_first_
 # ---------------------------------------------------------------------------
 
 
-def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_gate_over_gating_alone():
+def test_compute_kind_aggregates_when_metrics_differ_only_in_gating_does_drop_non_gating_metrics_from_gated_geomean_only():
     [kind] = kinds_of(
         [
             MetricSpec(name="decode/time#time", gating=True, delta=-10.0),

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from rich.markup import escape
 
-from gymrat.metric_name import format_inline
+from gymrat.metric_name import escape_literal, format_inline
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.report.display import GLYPHS
 from gymrat.report.format import format_percent_delta, format_value
@@ -63,6 +63,8 @@ class GeomeanPrimary:
             value — a baseline median of zero leaves nothing to normalize
             against, a figure with no direction to read rather than one that
             stood still, so nothing may coerce it to ``0``.
+        kind: Always ``"geomean"``; tells this member of :data:`LoopPrimary`
+            apart from :class:`MetricPrimary`.
     """
 
     delta_pct: float | None
@@ -80,6 +82,8 @@ class MetricPrimary:
         name: The metric's key in the run's comparisons.
         delta_pct: How far the metric moved, or ``None`` where the ratio had no
             value (see :class:`GeomeanPrimary`).
+        kind: Always ``"metric"``; tells this member of :data:`LoopPrimary`
+            apart from :class:`GeomeanPrimary`.
     """
 
     name: str
@@ -319,14 +323,14 @@ class StatusSummary:
     stop: StopConfig | None = None
 
 
-OUTCOME_GLYPHS: dict[Outcome, DisplayClass] = {
+OUTCOME_DISPLAY_CLASSES: dict[Outcome, DisplayClass] = {
     "improved": "improved",
     "regressed": "regressed",
     "no-signal": "within-noise",
 }
-"""The glyph each outcome wears, borrowed from the comparison table's vocabulary.
+"""The comparison table's display class each outcome borrows, which picks the glyph it wears.
 
-A no-signal iteration takes the table's within-noise glyph: both say the same
+A no-signal iteration takes the table's within-noise class: both say the same
 thing — the figure moved by nothing the run can stand behind.
 """
 
@@ -404,7 +408,9 @@ def format_status_iteration(iteration: StatusIteration) -> str:
     Returns:
         The iteration as a single rich-markup line.
     """
-    glyph = markup(GLYPHS[OUTCOME_GLYPHS[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome])
+    glyph = markup(
+        GLYPHS[OUTCOME_DISPLAY_CLASSES[iteration.outcome]], _OUTCOME_STYLES[iteration.outcome]
+    )
     return join_header_parts([
         f"iteration {iteration.seq}",
         f"{glyph}{_format_primary_delta(iteration.delta_pct)}",
@@ -427,7 +433,7 @@ def format_status_baseline(record: BaselineRecord) -> str:
     """
     parts = [f"baseline {escape(record.label)}"]
     parts.extend(
-        f"{escape(name)} {format_value(median)}"
+        f"{escape_literal(name, before_tag=False)} {format_value(median)}"
         for name, median in medians_by_name(record.samples).items()
     )
     return join_header_parts(parts)

@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
-from rich.markup import escape
 from rich.text import Text
 
+from gymrat.metric_name import escape_literal
 from gymrat.model import is_improvement
 from gymrat.report.format import (
     ZERO_PERCENT_DELTA,
@@ -87,7 +87,7 @@ class _ProbeRow:
 
 
 def _delta_style(delta: str, delta_pct: float | None, direction: Direction) -> str | None:
-    """The style a rendered delta wears, or ``None`` where it points nowhere.
+    """The style a rendered delta wears.
 
     Args:
         delta: The delta as :func:`~gymrat.report.format.format_percent_delta` rendered
@@ -123,7 +123,11 @@ def _probe_row(name: str, group: str | None, metric: ProbeMetric) -> _ProbeRow:
 
 def _probe_header(result: ProbeResult, label: str) -> str:
     """The probe report's run header as markup: the worktree, the run, and any scope."""
-    scope = [f"scoped: {escape(', '.join(result.names))}"] if result.names else []
+    scope = (
+        [f"scoped: {escape_literal(', '.join(result.names), before_tag=False)}"]
+        if result.names
+        else []
+    )
     return target_run_header("probe", label, result.samples, result.adapter, scope)
 
 
@@ -133,7 +137,7 @@ def _render_probe_table(result: ProbeResult, label: str, *, color: bool | None) 
         {metric.name: metric for metric in result.metrics},
         _probe_row,
     )
-    skeleton = plan_table_skeleton(layout, None, lambda row: row.measured.value, label)
+    skeleton = plan_table_skeleton(layout, None, None, lambda row: row.measured.value, label)
     reference_fields = value_widths([row.reference for row in layout.ordered])
 
     def reference_cell(row: _ProbeRow) -> str:

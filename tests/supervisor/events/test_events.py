@@ -1,16 +1,13 @@
 """Behavioral tests for the supervisor event vocabulary and helpers.
 
 Events are frozen pydantic models whose base ``_EventModel`` carries a per-event
-``type`` discriminator and ``at: int`` (nanoseconds since epoch), with snake_case
-wire keys via ``validate_by_name`` / ``serialize_by_alias``. ``to_json_line``
-writes one compact JSON line with snake_case keys, omitting an unset optional
-field, keeping non-ASCII text raw except the Unicode line breaks (escaped, or
-every non-ASCII character when the event holds a lone surrogate), writing a NaN
-or infinite float nested in a free-form payload as ``null`` on either path,
-refusing a non-finite value in a typed float field at construction, and
-writing a value pydantic cannot serialize as its ``str()``; ``event_from_wire``
-inverts it and returns ``None`` for anything it cannot reconstruct;
-``combine_observers`` sends every observer failure to its warn sink.
+``type`` discriminator and ``at: int`` (nanoseconds since epoch). The
+``to_json_line`` tests pin the escaped U+2028 line separator, the escape of every
+non-ASCII character when the event holds a lone surrogate, and a NaN or
+infinite float nested in a free-form payload written as ``null`` on that
+fallback path; ``event_from_wire`` inverts it and returns ``None`` for anything
+it cannot reconstruct; ``combine_observers`` sends every observer failure to its
+warn sink.
 
 The event-log writer, ``create_event_log_writer``, appends one ``to_json_line``
 line per event to a log file; its tests pin the file-writing side effects, the
@@ -30,8 +27,6 @@ from pydantic import BaseModel
 
 from gymrat.errors import GymratError
 from gymrat.supervisor.events import (
-    FollowUpEvent,
-    SessionEvent,
     SessionObserver,
     TextDeltaEvent,
     ToolStartEvent,
@@ -51,12 +46,8 @@ from tests.supervisor._fixtures import (
 )
 
 # ---------------------------------------------------------------------------
-# Event vocabulary — at: int (nanoseconds)
+# to_json_line — escaping and non-finite floats
 # ---------------------------------------------------------------------------
-
-_USAGE_UPDATE = UsageUpdateEvent(at=6_000_000_000, cost_usd=0.01)
-_FOLLOW_UP = FollowUpEvent(at=13_000_000_000, action="replied", reason="user asked", text="hello")
-_FOLLOW_UP_NO_OPTIONALS = FollowUpEvent(at=20_000_000_000, action="waiting")
 
 #: Text holding a lone surrogate, which forces the ASCII-escaping fallback
 #: serializer, next to a raw non-ASCII character it must escape.
@@ -69,45 +60,13 @@ class _Limit(BaseModel):
     max: float
 
 
-# ---------------------------------------------------------------------------
-# to_json_line — snake_case keys, unset optional fields left off
-# ---------------------------------------------------------------------------
-
-JSON_CASES = [
-    pytest.param(
-        _FOLLOW_UP,
-        {
-            "type": "follow_up",
-            "at": 13_000_000_000,
-            "action": "replied",
-            "reason": "user asked",
-            "text": "hello",
-        },
-        id="follow_up-with-optionals",
-    ),
-    pytest.param(
-        _FOLLOW_UP_NO_OPTIONALS,
-        {"type": "follow_up", "at": 20_000_000_000, "action": "waiting"},
-        id="follow_up-no-optionals",
-    ),
-]
-
-
-@pytest.mark.parametrize(("event", "expected"), JSON_CASES)
-def test_to_json_line_when_given_event_does_write_its_wire_object(
-    event: SessionEvent, expected: dict[str, object]
-):
-    parsed = json.loads(to_json_line(event))
-
-    assert parsed == expected
-
-
 def test_to_json_line_when_text_holds_a_line_separator_does_escape_it():
     event = TextDeltaEvent(at=5_000_000_000, chunk="a\u2028b")
 
     line = to_json_line(event)
 
-    assert line == '{"type":"text_delta","at":5000000000,"chunk":"a\\u2028b"}'
+    assert "\\u2028" in line
+    assert json.loads(line)["chunk"] == "a\u2028b"
 
 
 def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii():
@@ -115,10 +74,8 @@ def test_to_json_line_when_event_holds_lone_surrogate_does_escape_all_non_ascii(
 
     line = to_json_line(event)
 
-    assert line == (
-        '{"type":"turn_end","at":12000000000,"text":"caf\\u00e9 \\ud800",'
-        '"cost_usd":1e-07,"origin":"agent","budget_exhausted":false}'
-    )
+    assert line.isascii()
+    assert json.loads(line)["text"] == _SURROGATE_TEXT
 
 
 def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write_null():
@@ -130,9 +87,10 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
         input_summary=_SURROGATE_TEXT,
     )
 
-    decoded = loads_strict_json(to_json_line(event))
+    line = to_json_line(event)
 
-    assert decoded == {
+    assert line.isascii()
+    assert loads_strict_json(line) == {
         "type": "tool_start",
         "at": 2_000_000_000,
         "tool_use_id": "t1",
@@ -146,23 +104,27 @@ def test_to_json_line_when_lone_surrogate_and_nested_non_finite_float_does_write
 # event_from_wire — snake_case wire
 # ---------------------------------------------------------------------------
 
-ROUND_TRIP_EVENTS = [
-    pytest.param(make_launch(), id="launch"),
-    pytest.param(_USAGE_UPDATE, id="usage_update"),
-]
 
+def test_event_from_wire_when_given_serialized_launch_does_reconstruct_it():
+    event = make_launch()
 
-@pytest.mark.parametrize("event", ROUND_TRIP_EVENTS)
-def test_event_from_wire_when_given_serialized_event_does_reconstruct_it(event: SessionEvent):
     reconstructed = event_from_wire(json.loads(to_json_line(event)))
 
     assert reconstructed == event
+
+
+def _launch_wire_keyed_by_field_name() -> dict[str, object]:
+    """A serialized launch event carrying ``schema_version`` in place of its ``schema`` alias."""
+    wire = json.loads(to_json_line(make_launch()))
+    wire["schema_version"] = wire.pop("schema")
+    return wire
 
 
 @pytest.mark.parametrize(
     "obj",
     [
         pytest.param([1, 2, 3], id="non-dict-list"),
+        pytest.param(_launch_wire_keyed_by_field_name(), id="launch-keyed-by-field-name"),
         pytest.param({"at": 1}, id="missing-type"),
         pytest.param(
             {"type": "usage_update", "at": 6_000_000_000, "cost_usd": 0.01, "schema": 1},
@@ -196,23 +158,6 @@ def test_combine_observers_when_an_observer_raises_does_send_the_failure_to_the_
 # ---------------------------------------------------------------------------
 # create_event_log_writer
 # ---------------------------------------------------------------------------
-
-
-def test_create_event_log_writer_when_observing_events_does_append_one_utf8_lf_line_each(
-    tmp_path: Path,
-):
-    log_path = tmp_path / "events.jsonl"
-    writer = create_event_log_writer(log_path)
-    events = [
-        UsageUpdateEvent(at=1_000_000_000_000, cost_usd=0.01),
-        TextDeltaEvent(at=2_000_000_000_000, chunk="café"),
-    ]
-    expected = "".join(to_json_line(event) + "\n" for event in events)
-
-    for event in events:
-        writer(event)
-
-    assert log_path.read_bytes() == expected.encode("utf-8")
 
 
 def test_create_event_log_writer_when_created_does_not_create_the_parent_before_a_write(

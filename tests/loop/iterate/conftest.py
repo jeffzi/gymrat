@@ -36,5 +36,5 @@ def settled(repo: str, samples_mock: CollectSamplesRecorder) -> str:
 @pytest.fixture
 def hooks_setup(settled: str) -> tuple[str, str, HookScripts]:
     """A settled session, its experiment worktree, and a hook-script builder scoped to it."""
-    hooks = HookScripts.for_root(settled)
+    hooks = HookScripts(settled)
     return settled, hooks.experiment_dir, hooks

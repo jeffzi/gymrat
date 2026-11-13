@@ -17,6 +17,7 @@ import pytest
 
 from gymrat.config import ResolvedConfig
 from gymrat.errors import GymratError
+from gymrat.loop.keep import KeepResult, keep_session
 from gymrat.loop.start import start_session
 from gymrat.session.paths import experiment_worktree_dir, session_jsonl_path
 from gymrat.session.records import (
@@ -90,23 +91,16 @@ def leave_untouched(_root: str) -> None:
     """Leave the repository as it is: an arrange step that sets nothing up."""
 
 
-def keep_iteration(
-    root: str, seq: int, *, commit: str | None = None, message: str | None = None
-) -> None:
+def keep_iteration(root: str, seq: int, *, commit: str | None = None) -> None:
     """Log iteration ``seq`` and the committed keep that settled it.
 
     Args:
         root: The repository whose session log is appended to.
         seq: The iteration number both records carry.
         commit: The commit the keep names; ``None`` keeps the builder's default.
-        message: The keep's message; ``None`` keeps the builder's default.
     """
-    overrides = {
-        name: value
-        for name, value in (("commit", commit), ("message", message))
-        if value is not None
-    }
-    append_records(root, iteration_record(seq=seq), committed_keep(seq, **overrides))
+    keep = committed_keep(seq) if commit is None else committed_keep(seq, commit=commit)
+    append_records(root, iteration_record(seq=seq), keep)
 
 
 def commit_iteration(root: str, seq: int, message: str) -> str:
@@ -171,6 +165,28 @@ def checks_fail(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     return install_exec(
         monkeypatch, KEEP_EXEC, expected_result(CHECKS_STDOUT, CHECKS_STDERR, exit_code=1)
     )
+
+
+async def keep_an_edit(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+    history: tuple[SessionLogRecord, ...] | None = None,
+) -> KeepResult:
+    """Open a session over ``history``, edit the experiment and keep it with the checks passing.
+
+    Args:
+        repo: The repository the session opens in.
+        monkeypatch: The fixture the passing checks command is installed through.
+        history: The records logged after the session header; ``None`` means one
+            unsettled iteration 1.
+
+    Returns:
+        The result of the keep.
+    """
+    start_with(repo, (iteration_record(seq=1),) if history is None else history)
+    edit_experiment(repo)
+    checks_pass(monkeypatch)
+    return await keep_session(repo, checks_config())
 
 
 #: A result the no-checks path must never reach; installed only to prove exec stayed unused.

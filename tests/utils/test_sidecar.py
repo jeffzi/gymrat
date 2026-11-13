@@ -76,7 +76,7 @@ def test_read_sidecar_when_file_unusable_does_return_none(
 # ---------------------------------------------------------------------------
 
 
-def test_remove_sidecar_when_os_refuses_removal_does_warn_once_naming_label_and_path(
+def test_remove_sidecar_when_os_refuses_removal_does_warn_once_identifying_the_sidecar(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     path = tmp_path / "sidecar.json"

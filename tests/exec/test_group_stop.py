@@ -6,17 +6,21 @@ every running member, not just its leader.
 """
 
 import asyncio
+import os
 import shlex
 import signal
 import sys
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from gymrat import exec as exec_mod
 from gymrat import process_group
-from gymrat.exec import ExecOptions
+from gymrat.exec import FAILURE_EXIT_CODE, ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
 from gymrat.signals import install_termination_cleanup
 from tests._clock import WaitClock, install_wait_clock, within_hang_guard
@@ -72,13 +76,17 @@ _CLEANER_PID_FILE = "cleaner.pid"
 
 _CLEANED_MARKER = "cleaned.marker"
 
-# A stand-in for a nested gymrat run: on SIGTERM it spends ``argv[1]`` seconds
-# cleaning up, writes ``argv[2]``, then exits. It writes its pid to ``argv[3]``
-# once its handler is in place.
+_STOP_REQUESTED_MARKER = "stop-requested.marker"
+
+# A stand-in for a nested gymrat run: on SIGTERM it writes ``argv[4]``, spends
+# ``argv[1]`` seconds cleaning up, writes ``argv[2]``, then exits. It writes its
+# pid to ``argv[3]`` once its handler is in place.
 _CLEANER_SCRIPT = """
 import os, signal, sys, time
 
 def clean_up(_signal_number, _frame):
+    with open(sys.argv[4], "w") as marker:
+        marker.write("stop requested\\n")
     time.sleep(float(sys.argv[1]))
     with open(sys.argv[2], "w") as marker:
         marker.write("cleaned\\n")
@@ -117,6 +125,7 @@ def slow_cleanup_command(
         str(cleanup_s),
         _CLEANED_MARKER,
         _CLEANER_PID_FILE,
+        _STOP_REQUESTED_MARKER,
     ])
     if release_stdio:
         cleaner = f"{cleaner} </dev/null >/dev/null 2>&1"
@@ -148,10 +157,18 @@ async def test_exec_when_second_signal_arrives_before_kill_sweep_runs_does_let_t
     task = asyncio.create_task(run_exec(command, make_opts()))
     await wait_for_pid_file(tmp_path / _CLEANER_PID_FILE)
 
+    started = time.monotonic()
     escalate_termination(raise_signal)
+    escalation_s = time.monotonic() - started
 
     await task
-    assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed before the cleaner finished"
+    # On failure, name which way the cleaner lost: never asked to stop, or asked
+    # but killed before its cleanup ran out, and how long the sweep waited.
+    assert (tmp_path / _CLEANED_MARKER).exists(), (
+        "the group was killed before the cleaner finished "
+        f"(stop requested: {(tmp_path / _STOP_REQUESTED_MARKER).exists()}, "
+        f"escalation took {escalation_s:.2f}s of a {_ROOMY_ESCALATION_GRACE_S}s grace)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +307,65 @@ async def test_exec_when_leader_dies_before_nested_child_does_let_child_clean_up
 
     await task
     assert (tmp_path / _CLEANED_MARKER).exists(), "the group was killed once its leader died"
+
+
+# ---------------------------------------------------------------------------
+# a termination signal between spawn and registration kills the child
+# ---------------------------------------------------------------------------
+
+
+async def test_exec_when_termination_signal_during_spawn_does_still_kill_child_group(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    recorded_exits: list[tuple[int, float]],
+    spawned_processes: list[asyncio.subprocess.Process],
+) -> None:
+    # Hold the spawn-to-register gap open until SIGTERM has been sent, so the
+    # signal always lands inside it. The spawner read here is already the
+    # recording wrapper, so every child lands in ``spawned_processes`` and is
+    # reaped at teardown.
+    real_spawn = asyncio.create_subprocess_shell
+    spawn_barrier = threading.Event()
+    sent = threading.Event()
+
+    async def slow_spawn(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        proc = await real_spawn(command, **kwargs)
+        spawn_barrier.set()
+        await asyncio.to_thread(sent.wait, 5.0)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", slow_spawn)
+
+    uninstall = install_termination_cleanup(exec_mod.kill_live_process_groups)
+
+    def send_signal() -> None:
+        spawn_barrier.wait(5.0)
+        os.kill(os.getpid(), signal.SIGTERM)
+        sent.set()
+
+    sender = threading.Thread(target=send_signal, daemon=True)
+    try:
+        sender.start()
+
+        result = await asyncio.wait_for(
+            run_exec("sleep 30", make_opts(timeout_ms=8000)), timeout=10
+        )
+    finally:
+        # Release the sender even when the spawn never happened, so its 5 s
+        # barrier wait cannot outlast the join — a survivor would fire SIGTERM
+        # after the exit-seam monkeypatch is undone and kill the worker.
+        spawn_barrier.set()
+        sender.join(timeout=6.0)
+        assert not sender.is_alive(), "SIGTERM sender thread outlived its join window"
+        uninstall()
+
+    # The signal mask around spawn+register must cover the gap: a SIGTERM
+    # landing before registration still finds the child in the live-groups
+    # registry and kills it, so exec settles as a normal result, not a timeout.
+    # An empty stderr rules out the spawn-failure result, which carries the
+    # spawn error's message under the same failure code.
+    assert isinstance(result, ExecResult), (
+        "child was not killed by the signal handler — spawn-register window is unmasked"
+    )
+    assert (result.exit_code, result.stderr) == (FAILURE_EXIT_CODE, "")
+    assert recorded_exits, "the termination handler never asked the process to exit"

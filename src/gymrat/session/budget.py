@@ -1,11 +1,12 @@
 """Session time budget: write, read, and clear a deadline-bounded budget file.
 
 The budget file is written atomically via temp-file-and-replace so a concurrent
-reader never sees a partial write.  Reading checks three liveness conditions
-before returning the budget: the file must parse, its deadline must be ahead of
-``now_ms``, and the supervise lock for the repository root must be held.  When
-any condition fails the budget is treated as absent; a supervise lock that
-cannot be probed is an error, not an absent budget.
+reader never sees a partial write.  A budget is held while the file parses and
+the supervise lock for the repository root is held; that alone says a
+supervised run is in progress, deadline or not.  Reading the budget for the
+time it leaves adds a third condition: its deadline must be ahead of
+``now_ms``.  When any condition fails the budget is treated as absent; a
+supervise lock that cannot be probed is an error, not an absent budget.
 """
 
 from collections.abc import Callable, Sequence
@@ -26,7 +27,6 @@ from gymrat.utils import (
     minutes_to_ms,
     read_sidecar,
     remove_sidecar,
-    warn_to_stderr,
     write_text_atomic,
 )
 
@@ -97,7 +97,30 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     return budget
 
 
-def clear_budget(root: str, warn: WarnSink = warn_to_stderr) -> None:
+def read_held_budget(root: str) -> Budget | None:
+    """Read the budget file while a supervised run holds *root*, whatever its deadline.
+
+    The supervise lock is probed only when the file parses, so a repository
+    with no budget never touches the lock.
+
+    Args:
+        root: Repository root under which the budget file lives.
+
+    Returns:
+        The validated budget, or ``None`` when the file is absent, does not
+        parse as a budget, or the supervise lock for *root* is not held.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            a supervised run holds it is unknown.
+    """
+    budget = read_sidecar(Path(budget_path(root)), Budget)
+    if budget is None or not is_held(supervise_lockfile_path(root)):
+        return None
+    return budget
+
+
+def clear_budget(root: str, warn: WarnSink) -> None:
     """Remove the budget file, best-effort.
 
     A missing file is a silent success. A removal the OS refuses is never
@@ -198,10 +221,12 @@ def estimate_iterate_duration(
 def iterate_headroom(
     root: str, load_records: Callable[[], Sequence[SessionLogRecord] | None]
 ) -> tuple[float, DurationEstimate] | None:
-    """Read the live budget's time left beside the estimated cost of one ``iterate``.
+    """Read a supervised run's budget time left beside the estimated cost of one ``iterate``.
 
+    The budget counts while the supervise lock is held, whatever its deadline:
+    a run past its deadline has zero time left, so any estimate outlasts it.
     The clock is read once, before the budget, and the records are loaded
-    only once a live budget is found.
+    only once a held budget is found.
 
     Args:
         root: Repository root whose budget and supervise lock are read.
@@ -210,15 +235,15 @@ def iterate_headroom(
 
     Returns:
         The milliseconds left on the budget and the iterate estimate, or
-        ``None`` when no budget is live, the records cannot be read, or no
+        ``None`` when no budget is held, the records cannot be read, or no
         record carries a duration.
 
     Raises:
         GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+            the budget is held is unknown.
     """
     current_ms = utils.now_ms()
-    budget = read_budget(root, now_ms=current_ms)
+    budget = read_held_budget(root)
     if budget is None:
         return None
     records = load_records()

@@ -80,8 +80,8 @@ def percent_delta(reference: float, value: float) -> float:
 
     Dividing by the magnitude keeps the sign tied to the direction the value
     moved: a negative reference rising toward zero is an increase, and one
-    dropping further below zero is a decrease. When the reference is zero the
-    ratio is undefined, so the caller decides how to treat the ``NaN``.
+    dropping further below zero is a decrease. A zero reference leaves the ratio
+    undefined, and the caller decides how to treat that.
 
     Args:
         reference: The value the change is measured from.

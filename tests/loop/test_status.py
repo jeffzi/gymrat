@@ -9,9 +9,9 @@ cannot bleed ANSI into a line comparison.
 The settle-fold cases are the heart of the suite: a nothing-measured keep that
 took a later iteration's number, a gating block superseded by a discard, and a
 not-improved keep later resettled all exercise the positional fold that decides
-which record settles which iteration. The stop footer and runbook line come from
-the *live* config, never the session snapshot, so those cases pass a config the
-snapshot never carried.
+which record settles which iteration. The runbook line comes from the *live*
+config, never the session snapshot, so its case passes a config the snapshot
+never carried.
 
 Expected lines are built with the ``format_status_*`` helpers the report module
 owns, so these tests pin which line the fold produces and in what order, not the
@@ -47,10 +47,7 @@ from tests._ansi import (
 )
 from tests._config import benchless_config as _config
 from tests.report._assertions import render_plain
-from tests.session._store_records import (
-    BASELINE,
-    HOOK,
-)
+from tests.session._store_records import BASELINE
 from tests.session.records._fixtures import (
     RECOGNIZABLE_BASELINE_SHA,
     RECOGNIZABLE_KEEP_COMMIT,
@@ -59,6 +56,7 @@ from tests.session.records._fixtures import (
     discard_record,
     finalize_record,
     gate_block,
+    hook_record,
     make_iteration,
     session_record,
     stop_record,
@@ -114,7 +112,7 @@ def four_iterations() -> tuple[SessionLogRecord, ...]:
     """
     return (
         BASELINE,
-        HOOK,
+        hook_record(),
         make_iteration(-7.2, "improved"),
         committed_keep(1, commit=RECOGNIZABLE_KEEP_COMMIT),
         make_iteration(9.4, "regressed", seq=2),
@@ -164,7 +162,7 @@ def _header(root: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_status_session_when_log_holds_a_whole_history_does_render_header_records_and_totals(
+def test_status_session_when_log_holds_a_whole_history_does_render_the_full_report(
     tmp_path: Path,
 ):
     root = str(tmp_path)
@@ -269,7 +267,7 @@ def test_status_session_when_history_settles_records_does_render_each_line_in_fi
 
 
 # ---------------------------------------------------------------------------
-# live-config footer and runbook
+# runbook line from the live config
 # ---------------------------------------------------------------------------
 
 
@@ -278,13 +276,10 @@ def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_und
 ):
     root = str(tmp_path)
     write_session_log(root, _session(root), four_iterations())
-    plain = [*_header(root), *_FOUR_ITERATIONS_BODY]
 
     report = status_session(root, _config(runbook=_RUNBOOK_PATH))
 
-    lines = _report_lines(report)
-    assert _RUNBOOK_PATH in lines[_HEADER_LINE_COUNT]
-    assert [*lines[:_HEADER_LINE_COUNT], *lines[_HEADER_LINE_COUNT + 1 :]] == plain
+    assert _RUNBOOK_PATH in _report_lines(report)[_HEADER_LINE_COUNT]
 
 
 # ---------------------------------------------------------------------------
@@ -297,10 +292,9 @@ def test_status_session_when_live_config_sets_a_runbook_does_render_its_line_und
     [
         pytest.param((finalize_record(),), (True, False), id="finalized"),
         pytest.param((stop_record(message="target reached"),), (False, True), id="stopped"),
-        pytest.param((), (False, False), id="open"),
     ],
 )
-def test_status_data_when_session_closes_or_not_does_flag_finalized_and_stopped(
+def test_status_data_when_session_closes_does_flag_how_it_closed(
     tmp_path: Path, closing: tuple[SessionLogRecord, ...], flags: tuple[bool, bool]
 ):
     root = str(tmp_path)

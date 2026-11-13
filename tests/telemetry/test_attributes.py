@@ -1,4 +1,4 @@
-"""Tests for record-to-attribute mapping and the command span a record starts."""
+"""Tests for the attributes of a command span and the span a command record starts."""
 
 from __future__ import annotations
 
@@ -8,20 +8,17 @@ import pytest
 from opentelemetry.context import Context
 from opentelemetry.trace import StatusCode
 
-from gymrat.session.records import (
-    CommandRecord,
-    IterationPrimary,
-    SessionLogRecord,
-    record_event,
+from gymrat.session.records import ITERATION_SEQ, CommandRecord
+from gymrat.telemetry.command_span import (
+    COMMAND_DURATION_MS,
+    COMMAND_EXIT_CODE,
+    COMMAND_NAME,
+    COMMAND_REASON,
+    command_attributes,
+    start_command_span,
 )
-from gymrat.telemetry.command_span import command_attributes, start_command_span
-from tests.session.records._fixtures import (
-    SESSION_ID,
-    baseline_record,
-    command_record,
-    committed_keep,
-    iteration_record,
-)
+from gymrat.telemetry.provider import SESSION_ID as SESSION_ID_KEY
+from tests.session.records._fixtures import SESSION_ID, command_record
 from tests.telemetry._fixtures import memory_tracing, span_by_name
 
 # ---------------------------------------------------------------------------
@@ -50,12 +47,12 @@ from tests.telemetry._fixtures import memory_tracing, span_by_name
                 },
             ),
             {
-                "gymrat.session.id": SESSION_ID,
-                "gymrat.command.name": "measure",
-                "gymrat.command.exit_code": 0,
-                "gymrat.command.duration_ms": 1234,
-                "gymrat.command.reason": "budget-exceeded",
-                "gymrat.iteration.seq": 3,
+                SESSION_ID_KEY: SESSION_ID,
+                COMMAND_NAME: "measure",
+                COMMAND_EXIT_CODE: 0,
+                COMMAND_DURATION_MS: 1234,
+                COMMAND_REASON: "budget-exceeded",
+                ITERATION_SEQ: 3,
                 "gymrat.command.args.ref": "main",
                 "gymrat.command.args.samples": 5,
                 "gymrat.command.args.verbose": True,
@@ -66,16 +63,16 @@ from tests.telemetry._fixtures import memory_tracing, span_by_name
         pytest.param(
             command_record(name="measure", reason=None, seq=None, args={}),
             {
-                "gymrat.session.id": SESSION_ID,
-                "gymrat.command.name": "measure",
-                "gymrat.command.exit_code": 1,
-                "gymrat.command.duration_ms": 1840,
+                SESSION_ID_KEY: SESSION_ID,
+                COMMAND_NAME: "measure",
+                COMMAND_EXIT_CODE: 1,
+                COMMAND_DURATION_MS: 1840,
             },
             id="no-reason-seq-or-args",
         ),
     ],
 )
-def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
+def test_command_attributes_when_record_varies_does_map_its_fields_keeping_only_scalar_args(
     record: CommandRecord, expected: dict[str, object]
 ):
     result = command_attributes(record, session_id=SESSION_ID)
@@ -91,7 +88,7 @@ def test_command_attributes_when_called_does_map_fields_and_scalar_args_only(
 def _start_and_end_command_span(record: CommandRecord) -> Any:
     with memory_tracing(SESSION_ID) as exporter:
         start_command_span(
-            record, session_id=SESSION_ID, line_number=2, context=Context(), start_time=1
+            record, session_id=SESSION_ID, position=2, context=Context(), start_time=1
         ).end()
     return span_by_name(exporter.get_finished_spans(), f"gymrat.command.{record.name}")
 
@@ -133,61 +130,3 @@ def test_start_command_span_when_traceparent_given_or_absent_does_link_only_a_gi
     span = _start_and_end_command_span(record)
 
     assert [link.context.span_id for link in span.links] == expected_links
-
-
-# ---------------------------------------------------------------------------
-# record_event
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        pytest.param(
-            iteration_record(
-                seq=3, outcome="improved", primary=IterationPrimary(kind="geomean", delta_pct=-7.2)
-            ),
-            (
-                "gymrat.iteration",
-                {
-                    "gymrat.iteration.seq": 3,
-                    "gymrat.iteration.outcome": "improved",
-                    "gymrat.iteration.delta_pct": -7.2,
-                },
-            ),
-            id="iteration",
-        ),
-        pytest.param(
-            iteration_record(primary=IterationPrimary(kind="geomean", delta_pct=None)),
-            (
-                "gymrat.iteration",
-                {"gymrat.iteration.seq": 1, "gymrat.iteration.outcome": "improved"},
-            ),
-            id="iteration-without-delta",
-        ),
-        pytest.param(
-            committed_keep(1),
-            (
-                "gymrat.keep",
-                {
-                    "gymrat.iteration.seq": 1,
-                    "gymrat.keep.status": "committed",
-                    "gymrat.keep.commit": "b" * 40,
-                    "gymrat.keep.message": "cache the regex",
-                },
-            ),
-            id="committed-keep",
-        ),
-        pytest.param(
-            baseline_record(label="initial"),
-            ("gymrat.baseline", {"gymrat.baseline.label": "initial"}),
-            id="baseline-has-no-seq",
-        ),
-    ],
-)
-def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
-    record: SessionLogRecord, expected: tuple[str, dict[str, object]]
-):
-    result = record_event(record)
-
-    assert result == expected

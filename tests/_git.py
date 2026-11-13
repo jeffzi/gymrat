@@ -129,20 +129,17 @@ def kill_git_during_worktree_add(repo_dir: str) -> None:
     install_git_hook(repo_dir, "post-checkout", 'exec >/dev/null 2>&1\nkill -9 "$PPID"\nsleep 1\n')
 
 
-def init_scratch_repo(prefix: str) -> str:
+def init_scratch_repo() -> str:
     """Create one temporary git repo on ``main`` with a single committed file.
 
     The directory comes from ``tempfile.mkdtemp`` resolved through
     ``Path.resolve``, so macOS ``/var`` → ``/private/var`` matches what git
     reports in ``worktree list``.
 
-    Args:
-        prefix: How the repository's directory name starts.
-
     Returns:
         The resolved path of the new repository.
     """
-    directory = str(Path(tempfile.mkdtemp(prefix=prefix)).resolve())
+    directory = str(Path(tempfile.mkdtemp(prefix="gymrat-test-")).resolve())
     try:
         run_git(["init", "-b", "main"], directory)
         for key, value in (

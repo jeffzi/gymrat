@@ -36,9 +36,10 @@ import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from gymrat import utils
+
 # Bound at module scope under the builtin's name so a test can substitute the
 # subprocess boundary via ``monkeypatch.setattr`` on this module.
-from gymrat import utils
 from gymrat.exec import (
     FAILURE_EXIT_CODE,
     ExecOptions,
@@ -47,7 +48,6 @@ from gymrat.exec import (
     exec,  # noqa: A004 -- names the subprocess executor `exec`
 )
 from gymrat.loop.iterate.judge import (
-    EXPERIMENT_INDEX,
     Confirmation,
     IterationContext,
     Judged,
@@ -56,7 +56,6 @@ from gymrat.loop.iterate.judge import (
     build_iteration_comparison,
     confirm_regressions,
     gating_regressions,
-    regresses_gating,
     rerun_answer,
     resolve_primary,
     target_reached,
@@ -86,7 +85,7 @@ from gymrat.report.loop import (
 )
 from gymrat.report.style import render_lines
 from gymrat.report.text.render import render_report
-from gymrat.report.types import ComparisonResult, ReportOptions, candidate_at
+from gymrat.report.types import ReportOptions
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.session import budget as _budget
 from gymrat.session import workspace as _workspace
@@ -117,7 +116,6 @@ if TYPE_CHECKING:
 
     from gymrat.config import ResolvedConfig
     from gymrat.progress_events import ProgressCallback
-    from gymrat.report.types import MetricComparisons
     from gymrat.session.records import SessionLogRecord, SessionRecord
     from gymrat.session.schema import HookStage, Outcome
     from gymrat.utils import WarnSink
@@ -139,19 +137,14 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class IterationJudgment:
-    """The outcome, primary figure, and optional confirmation rerun to report.
+    """What the loop concludes from a judged run; the primary and rerun stay on the ``Judged``.
 
     Attributes:
         outcome: The loop outcome derived from the comparison.
-        primary: The primary figure that drives the verdict display.
-        confirmation: What the confirmation rerun found, or ``None`` when no
-            rerun was needed.
         reached_target: Whether the run met its declared target.
     """
 
     outcome: Outcome
-    primary: LoopPrimary
-    confirmation: Confirmation | None
     reached_target: bool
 
 
@@ -209,7 +202,7 @@ def build_iteration_record(
     Args:
         judged: The bench run outputs and comparison result.
         seq: The 1-based iteration sequence number.
-        judgment: The outcome, primary, and optional confirmation.
+        judgment: The outcome and whether the target was reached.
         duration_ms: Wall-clock milliseconds the iteration took.
         measured_tree: The experiment worktree fingerprint at measurement time,
             or ``None`` when fingerprinting failed.
@@ -217,7 +210,7 @@ def build_iteration_record(
     Returns:
         The iteration record ready to append to the session log.
     """
-    confirmation = judgment.confirmation
+    confirmation = judged.confirmation
     confirm: Confirm | None = None
     if confirmation is not None:
         absent = tuple(name for name in confirmation.filtered if name in confirmation.absent)
@@ -227,7 +220,7 @@ def build_iteration_record(
             samples=confirmation.samples,
             absent=absent or None,
         )
-    primary = judgment.primary
+    primary = judged.primary
     return IterationRecord(
         type="iteration",
         seq=seq,
@@ -289,16 +282,7 @@ class IterateResult:
 # ---------------------------------------------------------------------------
 
 
-def _has_gating_regression(metrics: MetricComparisons) -> bool:
-    """Whether any metric the run is gated on came back regressed for the experiment."""
-    for metric in metrics.values():
-        experiment = candidate_at(metric, EXPERIMENT_INDEX)
-        if regresses_gating(metric.meta, None if experiment is None else experiment.verdict):
-            return True
-    return False
-
-
-def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
+def _primary_improved(metric_meta: dict[str, ResolvedMetricMeta], primary: LoopPrimary) -> bool:
     """Whether the primary figure moved the way its direction calls an improvement.
 
     A figure whose ratio had no value moved in no direction at all, so it
@@ -306,8 +290,9 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
     metric is judged in its own direction.
 
     Args:
-        metrics: The run's metric comparisons, used to look up the primary's
-            direction when it names a metric rather than the geomean.
+        metric_meta: The resolved metadata for each measured metric, by name,
+            used to look up the primary's direction when it names a metric
+            rather than the geomean.
         primary: The one figure the iteration is read on.
 
     Returns:
@@ -318,14 +303,18 @@ def _primary_improved(metrics: MetricComparisons, primary: LoopPrimary) -> bool:
         return False
     if isinstance(primary, GeomeanPrimary):
         return is_improvement(primary.delta_pct, GEOMEAN_DIRECTION)
-    metric = metrics.get(primary.name)
-    if metric is None:
+    meta = metric_meta.get(primary.name)
+    if meta is None:
         return False
-    return is_improvement(primary.delta_pct, metric.meta.direction)
+    return is_improvement(primary.delta_pct, meta.direction)
 
 
-def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
-    """What an iteration amounted to, read off its metrics and its primary figure.
+def derive_outcome(
+    verdicts: dict[str, MetricVerdict],
+    metric_meta: dict[str, ResolvedMetricMeta],
+    primary: LoopPrimary,
+) -> Outcome:
+    """What an iteration amounted to, read off its verdicts and its primary figure.
 
     A gating regression settles it whatever the primary did: the run is judged on
     every metric it gates, so a headline that improved while a gate broke is still
@@ -336,15 +325,16 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
     never measured, which reports nothing rather than reporting zero.
 
     Args:
-        metrics: The run's per-metric comparisons.
+        verdicts: The experiment's per-metric verdicts, by name.
+        metric_meta: The resolved metadata for each measured metric, by name.
         primary: The one figure the iteration is read on.
 
     Returns:
         The iteration's outcome.
     """
-    if _has_gating_regression(metrics):
+    if gating_regressions(verdicts, metric_meta):
         return "regressed"
-    return "improved" if _primary_improved(metrics, primary) else "no-signal"
+    return "improved" if _primary_improved(metric_meta, primary) else "no-signal"
 
 
 # ---------------------------------------------------------------------------
@@ -354,15 +344,16 @@ def derive_outcome(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
 
 def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
     return IterationJudgment(
-        outcome=derive_outcome(judged.result.metrics, judged.primary),
-        primary=judged.primary,
-        confirmation=judged.confirmation,
+        outcome=derive_outcome(judged.run.verdicts, judged.run.metric_meta, judged.primary),
         reached_target=target_reached(config, judged.primary, judged.result.metrics),
     )
 
 
 def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
-    """Refuse when a live budget cannot afford another iteration.
+    """Refuse when a supervised run's budget cannot afford another iteration.
+
+    The budget counts while the supervise lock is held over it, so once its
+    deadline has passed no time is left and any estimate refuses.
 
     Args:
         root: Repository root whose budget and supervise lock are read.
@@ -370,9 +361,9 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
 
     Raises:
         BudgetExceededError: When the estimated iteration would outlast the
-            time left on the budget.
+            time left on the budget, none once its deadline has passed.
         GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+            a supervised run holds the budget is unknown.
     """
     headroom = _budget.iterate_headroom(root, lambda: records)
     if headroom is None:
@@ -387,10 +378,7 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
                 f"one iterate needs about {format_duration(estimate.duration_ms)}"
             )
         message = f"{format_duration(remaining)} left; {took} and the cap would cut this one off."
-        raise BudgetExceededError(
-            message,
-            hint="Report what the session measured instead of measuring again.",
-        )
+        raise BudgetExceededError(message)
 
 
 def _guard_ready(
@@ -475,7 +463,7 @@ async def iterate_session(
     measured_tree = _workspace.worktree_fingerprint(session.worktrees.experiment)
     if measured_tree is None:
         opts.warn(
-            "Could not fingerprint the experiment worktree; "
+            "warning: could not fingerprint the experiment worktree; "
             "measured_tree is omitted from the iteration record."
         )
 
@@ -496,7 +484,7 @@ async def iterate_session(
         iteration_count=state.iteration_count + 1,
     )
 
-    iteration_report = render_iteration(judged.result, seq, judgment, color=color)
+    iteration_report = render_iteration(judged, seq, judgment, color=color)
     report = "\n".join(
         part for part in (before_report, iteration_report, after_report) if part != ""
     )
@@ -595,8 +583,6 @@ async def run_hook(invocation: HookInvocation) -> HookRun:
         # before it had one -- so the shared failure code stands in for it.
         exit_code=FAILURE_EXIT_CODE if isinstance(result, ExecTimeoutError) else result.exit_code,
         duration_ms=duration_ms,
-        # What the command wrote, not what was relayed: a figure above the relay
-        # limit is how a reader of the log learns the report was cut.
         stdout_bytes=result.stdout_bytes,
         stderr_bytes=result.stderr_bytes,
         timed_out=timed_out,
@@ -737,7 +723,7 @@ _NEXT_STEPS: dict[Outcome, str] = {
 
 
 def render_iteration(
-    result: ComparisonResult,
+    judged: Judged,
     seq: int,
     judgment: IterationJudgment,
     *,
@@ -746,16 +732,18 @@ def render_iteration(
     """The iteration as it prints: the loop's header, the comparison table, the verdict.
 
     Args:
-        result: The comparison result for this iteration.
+        judged: The judged run: its comparison, primary, and optional
+            confirmation rerun.
         seq: The 1-based iteration sequence number, used for the header.
-        judgment: The outcome, primary, and optional confirmation.
+        judgment: The outcome and whether the target was reached.
         color: Explicit ANSI color choice — ``True`` forces color, ``False``
             suppresses it, ``None`` defers to the environment.
 
     Returns:
         The fully rendered iteration report as a single string.
     """
-    confirmation = judgment.confirmation
+    confirmation = judged.confirmation
+    result = judged.result
     reruns: list[RerunConfirmation] = (
         [
             RerunConfirmation(metric=name, answer=rerun_answer(confirmation, name))
@@ -769,7 +757,7 @@ def render_iteration(
     verdict = render_lines(
         *format_verdict_block(
             outcome=judgment.outcome,
-            primary=judgment.primary,
+            primary=judged.primary,
             next_step=_NEXT_STEPS[judgment.outcome],
             reruns=reruns,
             target_reached=judgment.reached_target,

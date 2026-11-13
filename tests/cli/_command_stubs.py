@@ -6,20 +6,18 @@ They replace config resolution, the render mode, the tty check, and the
 This is test-support code, not a test module: it carries no test functions.
 """
 
-from collections.abc import Sequence
 from typing import Literal
-from unittest.mock import Mock, create_autospec
+from unittest.mock import create_autospec
 
 import pytest
 
 from gymrat.cli.run_setup import resolve_render_mode
 from gymrat.compare import compare
 from gymrat.config import ResolvedConfig, resolve_config
-from gymrat.measure import MeasureOptions
-from gymrat.progress_events import ProgressEvent
+from gymrat.loop.baseline import MeasureOptions
 from gymrat.report.types import ComparisonResult, MeasurementResult
 from tests._config import resolved_config
-from tests.loop._probe import MeasureRecorder, install_measure, measurement
+from tests.loop._probe import install_measure
 from tests.report._comparisons import create_comparison_result
 from tests.report._measurements import create_measurement_result
 
@@ -37,9 +35,7 @@ MEASURE_CONFIG = resolved_config(
 COMPARE_CONFIG = resolved_config(bench="sh bench.sh")
 
 
-def stub_config(
-    monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig
-) -> ResolvedConfig:
+def stub_config(monkeypatch: pytest.MonkeyPatch, command: str, config: ResolvedConfig) -> None:
     """Replace a command's config resolution with one that hands back ``config``.
 
     The stand-in keeps the real resolver's signature, so a call the real
@@ -49,15 +45,11 @@ def stub_config(
         monkeypatch: The fixture that installs the stand-in.
         command: The module under ``gymrat.cli.commands`` whose resolver is replaced.
         config: What every resolution hands back.
-
-    Returns:
-        ``config``, for a test that asserts against it.
     """
     monkeypatch.setattr(
         f"gymrat.cli.commands.{command}.resolve_config",
         create_autospec(resolve_config, return_value=config),
     )
-    return config
 
 
 def force_render_mode(
@@ -99,20 +91,17 @@ def capture_measure(
     return install_measure(monkeypatch, handed_back).calls
 
 
-def stub_measure(
-    monkeypatch: pytest.MonkeyPatch, result: MeasurementResult | None = None
-) -> list[MeasureOptions]:
-    """Stub both config resolution and the ``measure`` seam.
+def stub_measure(monkeypatch: pytest.MonkeyPatch) -> list[MeasureOptions]:
+    """Stub both config resolution and the ``measure`` seam with a default clean run.
 
     Args:
         monkeypatch: The fixture that installs the fakes.
-        result: What the fake hands back; a default clean run when ``None``.
 
     Returns:
         The options each call to the fake ``measure`` received, in call order.
     """
     stub_resolve(monkeypatch)
-    return capture_measure(monkeypatch, result)
+    return capture_measure(monkeypatch)
 
 
 def stub_compare_command(
@@ -126,40 +115,7 @@ def stub_compare_command(
             regressions when ``None``.
     """
     stub_config(monkeypatch, "compare", COMPARE_CONFIG)
-    stub_compare(monkeypatch, result)
-
-
-def stub_compare(monkeypatch: pytest.MonkeyPatch, result: ComparisonResult | None = None) -> Mock:
-    """Replace the ``compare`` seam with a fake that returns a fixed comparison.
-
-    Args:
-        monkeypatch: The fixture that installs the fake.
-        result: What the fake hands back; a comparison with no regressions when ``None``.
-
-    Returns:
-        The installed fake, whose ``call_args`` hold the options each call passed.
-    """
     handed_back = create_comparison_result() if result is None else result
-    fake = create_autospec(compare, return_value=handed_back)
-    monkeypatch.setattr("gymrat.compare.compare", fake)
-    return fake
-
-
-def never_tty(_stream: object) -> bool:
-    """Stand in for ``is_tty`` so the discard command takes its non-interactive path."""
-    return False
-
-
-def stub_probe_measure(
-    monkeypatch: pytest.MonkeyPatch, progress: Sequence[ProgressEvent] = ()
-) -> MeasureRecorder:
-    """Replace the measurement engine with a recorder answering a metric-lines measurement.
-
-    Args:
-        monkeypatch: The fixture the engine is patched through.
-        progress: Events each call reports through the progress callback it was handed.
-
-    Returns:
-        The installed recorder.
-    """
-    return install_measure(monkeypatch, measurement(adapter="metric-lines"), progress=progress)
+    monkeypatch.setattr(
+        "gymrat.compare.compare", create_autospec(compare, return_value=handed_back)
+    )

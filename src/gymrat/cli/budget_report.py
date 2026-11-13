@@ -24,7 +24,7 @@ from gymrat.session.budget import (
     iterate_headroom,
     read_budget,
 )
-from gymrat.session.paths import repo_root
+from gymrat.session.paths import NotAGitRepositoryError, repo_root
 from gymrat.session.records import SessionLogRecord
 from gymrat.session.store import read_session_records
 from gymrat.utils import MS_PER_SECOND, format_duration, format_time_left, warn_to_stderr
@@ -150,7 +150,9 @@ def _repo_root_or_none() -> str | None:
     """The current repository root, or ``None`` outside a git repo or on a read failure."""
     try:
         return repo_root()
-    except (GymratError, OSError):
+    # Any other git failure propagates: dropping the budget silently would hide
+    # git's own diagnostic.
+    except (NotAGitRepositoryError, OSError):
         return None
 
 
@@ -184,8 +186,9 @@ def emit_report[T](
 
     Raises:
         OSError: When the stdout write fails for any reason other than a closed pipe.
-        GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+        GymratError: When git fails the repository lookup for a reason other
+            than being outside a repository, or the supervise lock file cannot
+            be opened, so whether the budget is live is unknown.
     """
 
     def render_text() -> str:
@@ -215,8 +218,9 @@ def warn_duration_over_budget(*, halve: bool) -> None:
             fits does not read as if nothing were wrong.
 
     Raises:
-        GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+        GymratError: When git fails the repository lookup for a reason other
+            than being outside a repository, or the supervise lock file cannot
+            be opened, so whether the budget is live is unknown.
     """
     root = _repo_root_or_none()
     if root is None:

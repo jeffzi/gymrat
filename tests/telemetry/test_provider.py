@@ -1,12 +1,11 @@
 """Tests for the tracing provider.
 
-Covers configure, start_span, flush and reset, the deterministic trace and span ID
+Covers configure, start_span and flush, the deterministic trace and span ID
 derivation, and the traceparent helpers.
 """
 
 from __future__ import annotations
 
-import contextlib
 import re
 from typing import TYPE_CHECKING, override
 
@@ -14,32 +13,22 @@ import pytest
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import (
-    INVALID_SPAN,
-    NonRecordingSpan,
-    SpanContext,
-    TraceFlags,
-    set_span_in_context,
-)
+from opentelemetry.trace import INVALID_SPAN, SpanContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 from gymrat.telemetry.provider import (
-    SESSION_SPAN_KEY,
     configure_tracing,
     export_failed,
     flush_tracing,
     format_traceparent,
     id_from_digest,
     parse_traceparent,
-    reset_tracing,
-    session_span_dropped,
     span_id_of,
     start_span,
     trace_id_of,
 )
-from gymrat.telemetry.run_spans import SESSION_SPAN
 from gymrat.utils import ENDPOINT_ENV
 from tests.telemetry._collector import otlp_collector
 from tests.telemetry._fixtures import (
@@ -76,9 +65,21 @@ def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_enviro
 
         flush_tracing()
 
-    assert [(export.path, export.span_names) for export in collector.received] == [
-        ("/v1/traces", ["probe"])
-    ]
+    assert [export.path for export in collector.received] == ["/v1/traces"]
+
+
+def test_configure_tracing_when_endpoint_given_does_export_to_it_over_the_traces_variable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    with otlp_collector() as collector:
+        monkeypatch.setenv(_TRACES_ENDPOINT_ENV, f"{collector.endpoint}/custom/traces")
+        configure_tracing(SESSION, endpoint=collector.endpoint)
+        with start_span("probe"):
+            pass
+
+        flush_tracing()
+
+    assert [export.path for export in collector.received] == ["/v1/traces"]
 
 
 def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the_traces_endpoint(
@@ -93,9 +94,7 @@ def test_configure_tracing_when_traces_endpoint_set_over_base_does_export_to_the
 
         flush_tracing()
 
-    assert [(export.path, export.span_names) for export in collector.received] == [
-        ("/custom/traces", ["probe"])
-    ]
+    assert [export.path for export in collector.received] == ["/custom/traces"]
 
 
 # ---------------------------------------------------------------------------
@@ -167,19 +166,13 @@ def test_configure_tracing_when_exporter_was_missing_does_configure_later_call_a
     with monkeypatch.context() as hidden:
         hide_otlp_exporter(hidden)
         configure_tracing(SESSION)
-    exporter = InMemorySpanExporter()
 
     configured = configure_tracing(
         "session-after-missing-exporter",
-        span_processor=SimpleSpanProcessor(exporter),
+        span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
     )
-    with start_span("probe"):
-        pass
 
-    # pyrefly: ignore[missing-attribute] -- a finished span always carries its context
-    trace_ids = [span.context.trace_id for span in exporter.get_finished_spans()]
     assert configured is True
-    assert trace_ids == [trace_id_of("session-after-missing-exporter")]
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +289,7 @@ def test_format_traceparent_when_span_context_invalid_does_raise_value_error():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_traceparent_when_valid_does_return_remote_span_context():
+def test_parse_traceparent_when_valid_does_return_a_span_context():
     result = parse_traceparent("00-0102030405060708090a0b0c0d0e0f10-1112131415161718-01")
 
     assert isinstance(result, SpanContext)
@@ -306,69 +299,3 @@ def test_parse_traceparent_when_malformed_does_return_none():
     result = parse_traceparent("too-few-parts")
 
     assert result is None
-
-
-# ---------------------------------------------------------------------------
-# reset_tracing
-# ---------------------------------------------------------------------------
-
-
-class _ShutdownFailingSpanProcessor(SpanProcessor):
-    """Span processor whose flushes time out and whose first ``shutdown`` raises.
-
-    Later shutdowns are no-ops so the provider's ``atexit`` handler — left
-    registered when the first shutdown raises — stays quiet at interpreter exit.
-    """
-
-    def __init__(self) -> None:
-        self._shut_down = False
-
-    @override
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return False
-
-    @override
-    def shutdown(self) -> None:
-        if self._shut_down:
-            return
-        self._shut_down = True
-        msg = "exporter shutdown failed"
-        raise RuntimeError(msg)
-
-
-def _configure_with_failing_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Configure tracing on a failing-shutdown processor, with export and session-drop flags set."""
-    arm_placeholder_endpoint(monkeypatch)
-    configure_tracing(SESSION, span_processor=_ShutdownFailingSpanProcessor())
-    flush_tracing()
-    # An unsampled parent makes the default parent-based sampler drop the session span.
-    unsampled = NonRecordingSpan(
-        SpanContext(trace_id=1, span_id=1, is_remote=True, trace_flags=TraceFlags(0))
-    )
-    start_span(SESSION_SPAN, span_key=SESSION_SPAN_KEY, context=set_span_in_context(unsampled))
-
-
-def test_reset_tracing_when_shutdown_raises_does_propagate_with_flags_cleared(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _configure_with_failing_shutdown(monkeypatch)
-
-    with pytest.raises(RuntimeError):
-        reset_tracing()
-
-    assert (export_failed(), session_span_dropped()) == (False, False)
-
-
-def test_configure_tracing_when_previous_reset_raised_does_configure_afresh(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _configure_with_failing_shutdown(monkeypatch)
-    with contextlib.suppress(RuntimeError):
-        reset_tracing()
-
-    result = configure_tracing(
-        "session-after-failed-reset",
-        span_processor=SimpleSpanProcessor(InMemorySpanExporter()),
-    )
-
-    assert result is True

@@ -14,7 +14,9 @@ import itertools
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.style import Style
 
+from gymrat.cli.style import STYLE_META
 from gymrat.progress_events import (
     ConfirmSkipped,
     ConfirmStarted,
@@ -174,7 +176,7 @@ def test_frame_when_judge_finished_does_style_regressed_names_apart_from_dim_wor
     renderer.report(JudgeFinished(primary_delta_pct=-3.2, regressed=regressed, at_ms=_ms(clock)))
 
     assert _judge_detail_style_runs(renderer.frame()) == [
-        ("-3.2% on geomean · 1 regressed: ", "dim"),
+        ("-3.2% on geomean · 1 regressed: ", str(Style.parse(STYLE_META))),
         ("latency", ""),
     ]
 
@@ -247,7 +249,7 @@ def test_frame_when_compact_layout_does_show_single_row():
     assert result == "⠋ sampling                                            0% · A · 00:00/--:--"
 
 
-def test_frame_when_compact_pass_finished_does_show_progress_with_an_eta():
+def test_frame_when_compact_second_target_starts_does_show_it_with_progress_and_eta():
     _console, clock, renderer = _live(height=10, sample_count=5)
     renderer.report(PrepareFinished(label="bench", at_ms=0))
     report_full_pass(renderer, clock, 1, 5, label="A", duration_s=2)

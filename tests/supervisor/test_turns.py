@@ -17,6 +17,7 @@ import pytest
 
 from gymrat.session.budget import Budget
 from gymrat.supervisor.turns import (
+    CONSECUTIVE_DISCARD_LIMIT,
     FOLLOW_UP_CEILING,
     NO_PROGRESS_LIMIT,
     Decision,
@@ -221,16 +222,16 @@ def test_classify_when_new_outcome_records_appended_does_reset_the_no_progress_s
     assert (guards.no_progress_count, guards.last_record_count) == (0, 2)
 
 
-def test_classify_when_four_stale_turns_does_end_no_progress_on_fourth():
+def test_classify_when_stale_turns_pass_the_limit_does_end_no_progress_after_limit_replies():
     guards = guard_state()
 
     results = [
-        classify_with_defaults(records=[], guards=guards, now_ms=now_ms)
-        for now_ms in (0.0, 1000.0, 2000.0, 3000.0)
+        classify_with_defaults(records=[], guards=guards, now_ms=turn * 1000.0)
+        for turn in range(NO_PROGRESS_LIMIT + 1)
     ]
 
-    assert [type(result) for result in results[:3]] == [Reply] * 3
-    assert results[3] == End(reason="no-progress")
+    assert [type(result) for result in results[:-1]] == [Reply] * NO_PROGRESS_LIMIT
+    assert results[-1] == End(reason="no-progress")
 
 
 def test_classify_when_turns_add_only_command_records_does_end_no_progress():
@@ -269,11 +270,17 @@ def test_outcome_record_count_when_records_mix_commands_does_exclude_command_rec
 # ---------------------------------------------------------------------------
 
 
-_SEVEN_DISCARDS_AFTER_COMMANDS: list[SessionLogRecord] = [
+def _discards(first_seq: int, count: int) -> list[SessionLogRecord]:
+    return [discard_record(seq=seq) for seq in range(first_seq, first_seq + count)]
+
+
+# Three outcome records at launch (two of them discards) leave one discard short
+# of the limit counted, unless the launch skip wrongly counts the commands too.
+_DISCARDS_AFTER_COMMANDS: list[SessionLogRecord] = [
     command_record(),
     discard_record(seq=1),
     command_record(seq=2),
-    *(discard_record(seq=i) for i in range(2, 8)),
+    *_discards(2, CONSECUTIVE_DISCARD_LIMIT + 1),
 ]
 
 
@@ -285,11 +292,7 @@ _SEVEN_DISCARDS_AFTER_COMMANDS: list[SessionLogRecord] = [
                 discard_record(seq=1),
                 iteration_record(seq=2),
                 hook_record(seq=2),
-                discard_record(seq=2),
-                discard_record(seq=3),
-                iteration_record(seq=4),
-                discard_record(seq=4),
-                discard_record(seq=5),
+                *_discards(2, CONSECUTIVE_DISCARD_LIMIT - 1),
             ],
             0,
             True,
@@ -297,12 +300,9 @@ _SEVEN_DISCARDS_AFTER_COMMANDS: list[SessionLogRecord] = [
         ),
         pytest.param(
             [
-                discard_record(seq=1),
-                discard_record(seq=2),
+                *_discards(1, 2),
                 blocked_keep(seq=3),
-                discard_record(seq=4),
-                discard_record(seq=5),
-                discard_record(seq=6),
+                *_discards(4, CONSECUTIVE_DISCARD_LIMIT - 2),
             ],
             0,
             True,
@@ -310,20 +310,16 @@ _SEVEN_DISCARDS_AFTER_COMMANDS: list[SessionLogRecord] = [
         ),
         pytest.param(
             [
-                discard_record(seq=1),
-                discard_record(seq=2),
-                discard_record(seq=3),
-                discard_record(seq=4),
-                committed_keep(seq=5),
-                discard_record(seq=6),
-                discard_record(seq=7),
+                *_discards(1, CONSECUTIVE_DISCARD_LIMIT - 1),
+                committed_keep(seq=CONSECUTIVE_DISCARD_LIMIT),
+                *_discards(CONSECUTIVE_DISCARD_LIMIT + 1, CONSECUTIVE_DISCARD_LIMIT - 1),
             ],
             0,
             False,
             id="committed-keep-resets",
         ),
         pytest.param(
-            _SEVEN_DISCARDS_AFTER_COMMANDS,
+            _DISCARDS_AFTER_COMMANDS,
             3,
             False,
             id="commands-at-launch-not-counted-as-skipped",

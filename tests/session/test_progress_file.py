@@ -95,24 +95,30 @@ def test_read_progress_when_sidecar_cannot_be_stat_does_return_none(unsearchable
 # ---------------------------------------------------------------------------
 
 
+_FIRST_PASS = PassStarted(
+    round=1, total_rounds=5, target_count=2, label="baseline", at_ms=100.0, phase="measure"
+)
+
+
 def test_sidecar_writer_when_pass_started_does_write_snapshot_with_zero_completed(
     root: str,
 ):
     writer = SidecarWriter(root)
-    event = PassStarted(
-        round=1,
-        total_rounds=5,
-        target_count=2,
-        label="baseline",
-        at_ms=100.0,
-        phase="measure",
-    )
 
-    writer(event)
+    writer(_FIRST_PASS)
 
     snapshot = read_progress(root)
     assert snapshot is not None
     assert snapshot.passes_completed == 0
+
+
+def test_sidecar_writer_when_pass_started_does_total_rounds_times_targets(root: str):
+    writer = SidecarWriter(root)
+
+    writer(_FIRST_PASS)
+
+    snapshot = read_progress(root)
+    assert snapshot is not None
     assert snapshot.passes_total == 10
 
 

@@ -9,35 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Show the smallest change a run could have detected for each within-noise metric, as
-  `detects ≥X%` in the text table and as `detectable_pct` in the JSON output and the session log.
-- Add a `samples` check to `gymrat doctor` that lists the target counts from 2 through 8 the
-  configured value balances, and fails on an odd count.
+- Report the smallest change each within-noise metric could have detected, in the text table, the
+  JSON output (`detectable_pct`) and the session log.
+- Add a `samples` check to `gymrat doctor` that lists the target counts the configured value
+  balances, and fails when it balances none.
 - Add a built-in `tinybench` adapter, selected with `--adapter tinybench`, that reads the results a
   tinybench 6 bench script prints.
 
 ### Changed
 
+- **Breaking:** On Linux and macOS, kill every process a `prepare`, `bench`, `checks` or hook
+  command leaves running in its process group when the command ends, so a server it started in the
+  background no longer outlives it.
 - **Breaking:** Raise the default `samples` from 10 to 12; set `samples` in `gymrat.toml` or pass
   `--samples` to choose another count.
 - **Breaking:** Refuse a sample count that cannot balance the run order before any bench or hook
-  runs; use an even count for two targets, a multiple of `N` for an even number `N` of targets, or
-  a multiple of `2N` for an odd number.
+  runs; pick a count `gymrat doctor` reports as balanced for your number of targets.
 - **Breaking:** Rename the `#heap` metric suffix to `#memory`; rename `#heap` to `#memory` in your
   `METRIC` lines and `[metrics]` keys, since a name ending in `#heap` is now a plain number and the
   `mitata` adapter emits `<alias>#memory`.
+- **Breaking:** Exit `supervise` with 1 instead of 2 when a stop condition is already met at launch;
+  update any script that checks for 2.
+- **Breaking:** Name a `mitata` metric whose args hold a float the way JavaScript prints the number;
+  rename any `[metrics]` key built on the old form, such as `1e-05` for `0.00001`.
 - Give each target every run position, and every predecessor, equally often when a comparison has
   three or more targets.
+- Open every plain-mode `supervise` progress line with the time elapsed since launch.
 
 ### Fixed
 
-- Fail a bench run that prints more than 64 MiB to stdout, naming the capture cap, instead of
-  parsing the cut-off output as if it were complete.
-- Label a failed command's stream as truncated whenever it overran the capture cap, including one
-  holding invalid UTF-8.
-- Stop the quantized-readings warning from firing on finely spaced readings that happen to repeat,
-  and have it advise setting `resolution` to the timer's tick divided by the calls each reading
-  averages instead of the bare tick.
+- Fail a bench run whose stdout overran the capture cap instead of parsing the cut-off output, and
+  mark any overrun stream as truncated.
+- Stop the quantized-readings warning from firing on finely spaced readings that repeat, and correct
+  the `resolution` it advises.
+- Trace commands and export spans when only `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set, let
+  `gymrat export --endpoint` override it, and fail the export when spans are dropped.
+- Keep the records another command appends out of a command's trace span.
+- Refuse `iterate` once the supervised deadline has passed, and refuse `iterate` and `probe` typed in
+  a shell for as long as `supervise` holds its lock.
+- Report an oversized integer in `mitata` or `tinybench` output as an adapter error instead of
+  crashing.
+- Let a termination signal end a hung git read or worktree creation.
+- Copy working-tree renames in `gymrat sync`, and refuse a git path outside the worktree instead of
+  writing or removing a file elsewhere on disk.
+- Write files atomically under a umask that strips owner-write and on filesystems without hard
+  links, instead of failing.
+- Report a worktree removal or prune that a termination signal interrupts, instead of losing it.
+- Print times under 100 ns and unitless values below 100 with three significant figures, so a
+  median below 1 no longer reads 0.
+- Refuse `gymrat init` when a file sits where one of its directories belongs, and name the config
+  file `gymrat doctor` read in its runbook hint.
+- Drop `null` defaults the published log schemas' own property types reject.
+- Exit with git's own error from `measure`, `compare` and `probe` when git cannot resolve the
+  repository, instead of silently dropping the budget trailer and over-budget warning.
+- Fail a bench run whose stdin payload could not be written, instead of reporting a normal run.
+- Keep a file that appears while `gymrat init` runs, instead of overwriting it.
+- Keep a failed `start`'s new workspace and session log instead of restoring the closed session's
+  log over them, and warn when removing a stale session worktree fails.
+- End a single-kind comparison with no gating metrics on that kind's geometric mean, instead of
+  reporting no stable metrics.
+- Warn about corrupt supervisor-log lines in `gymrat export` instead of skipping them silently, and
+  ignore a torn last line.
+- Report failed cleanup and shutdown steps as warnings.
 
 ## [0.22.0] - 2026-10-24
 
@@ -71,8 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   looking for the config file and session state in the wrong directory.
 - Wait briefly for a session lock another command holds, and fail on a lock file that cannot be
   opened instead of treating the lock as free.
-- Warn on every failed session-log write, trace span, `supervise` event record or display, and
-  wall-clock cap file removal, instead of staying silent, warning once, or exiting with an error.
+- Warn on every failed log write, trace span or cap-file removal instead of staying silent, warning
+  once, or exiting with an error.
 - Keep the original of a file git reports as copied when `gymrat sync` runs, and never write or
   remove a worktree file through a symlink.
 - Report a negative-valued metric's delta with the sign of its movement, and record an overflowing
@@ -188,7 +221,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Report the action the supervisor took on a cap instead of always saying "interrupting".
 - Stop sending a follow-up to a session a cap is ending.
 
 ## [0.16.0] - 2026-09-07

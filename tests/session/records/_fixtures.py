@@ -451,7 +451,17 @@ def last_command_record(root: str) -> CommandRecord:
 
 
 def session_header_of(root: str) -> SessionRecord:
-    """The session header ``root``'s log opens with, failing when there is none."""
+    """Return the session header ``root``'s log opens with.
+
+    Args:
+        root: Repository root whose session log is read.
+
+    Returns:
+        The log's opening header record.
+
+    Raises:
+        AssertionError: The log is empty or its first record is not a header.
+    """
     records = log_records(root)
     assert records, f"expected a session header in {session_jsonl_path(root)}"
     first = records[0]

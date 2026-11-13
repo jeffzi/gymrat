@@ -27,11 +27,12 @@ from rich.cells import cell_len, set_cell_size
 from rich.markup import escape
 from rich.text import Text
 
-from gymrat.metric_name import format_inline
+from gymrat.metric_name import escape_literal, format_inline
 from gymrat.metric_name import parse as parse_metric_name
 from gymrat.model import PERMUTATION_MIN_N, PERMUTATION_P_THRESHOLD
 from gymrat.report.display import GLYPHS, DisplayClass, display_class
 from gymrat.report.format import (
+    PLUS_MINUS,
     format_evidence,
     format_pair_count,
     format_percent_delta,
@@ -40,6 +41,7 @@ from gymrat.report.format import (
 )
 from gymrat.report.labels import truncate_labels
 from gymrat.report.style import (
+    SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
     VERDICT_STYLES,
     format_hint,
@@ -54,7 +56,7 @@ from gymrat.report.table.grid import (
     plan_table_skeleton,
     render_body,
 )
-from gymrat.report.tally import each_candidate_verdict, verdict_summary_parts
+from gymrat.report.tally import CandidateVerdict, each_candidate_verdict, verdict_summary_parts
 from gymrat.report.text.measure_table import (
     MeasuredRow,
     measured_cells,
@@ -69,24 +71,22 @@ from gymrat.report.types import (
     GeomeanFailOn,
     RegressedFailOn,
     ReportOptions,
-    candidate_at,
 )
 from gymrat.utils import balancing_cycle, collapse_whitespace, pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from gymrat.model import GeomeanResult, MetricVerdict
+    from gymrat.model import GeomeanResult, MetricVerdict, ResolvedMetricMeta
     from gymrat.report.table.grid import SectionedMetric
     from gymrat.report.types import (
         CandidateComparison,
         ComparisonResult,
         FailOnCondition,
         MeasurementResult,
-        MetricComparison,
         MetricComparisons,
     )
-    from gymrat.sampling import WorktreeRemovalFailure
+    from gymrat.worktree_sweep import WorktreeRemovalFailure
 
 GATED_GEOMEAN_LABEL = "gated geomean"
 
@@ -185,21 +185,6 @@ def _render_summaries(result: ComparisonResult) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class MetricHighlight:
-    """A metric worth calling out for one candidate, with the name it is reported under.
-
-    Attributes:
-        name: The metric name the highlight is reported under.
-        metric: The metric's comparison data.
-        verdict: The candidate's verdict that earned the highlight.
-    """
-
-    name: str
-    metric: MetricComparison
-    verdict: MetricVerdict
-
-
 _HIGHLIGHT_RANK: dict[DisplayClass, int | None] = {
     "regressed": 0,
     "improved": 1,
@@ -228,7 +213,7 @@ def _highlight_weight(
 def select_highlights(
     metrics: MetricComparisons,
     candidate_index: int,
-) -> list[MetricHighlight]:
+) -> list[CandidateVerdict]:
     """The metrics worth calling out for one candidate, ordered by class then loudness.
 
     Regressions come first (by delta magnitude, descending), then improvements
@@ -244,16 +229,15 @@ def select_highlights(
     Returns:
         The highlights in report order.
     """
-    ranked: list[tuple[int, float, MetricHighlight]] = []
+    ranked: list[tuple[int, float, CandidateVerdict]] = []
     for judged in each_candidate_verdict(metrics, candidate_index):
         rank = _HIGHLIGHT_RANK[display_class(judged.verdict)]
         if rank is None:
             continue
-        highlight = MetricHighlight(name=judged.name, metric=judged.metric, verdict=judged.verdict)
         weight = _highlight_weight(
             judged.verdict, judged.metric.baseline_median, judged.candidate.median
         )
-        ranked.append((rank, -weight, highlight))
+        ranked.append((rank, -weight, judged))
 
     ranked.sort(key=operator.itemgetter(0, 1))
     return [highlight for _, _, highlight in ranked]
@@ -262,8 +246,8 @@ def select_highlights(
 UNSTABLE_FUTILITY_NOTE = "unstable metrics won't stabilize with more samples"
 
 
-def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
-    """The name a highlight is reported under, its kind named ahead of it when qualified.
+def highlight_label(name: str, meta: ResolvedMetricMeta, *, qualify: bool) -> str:
+    """The name a highlighted metric is reported under, its kind named ahead of it when qualified.
 
     The highlights sit below the table, away from the section titles that told the
     reader which kind a row belonged to, so a multi-kind run has to carry the kind
@@ -272,7 +256,8 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
     with the bare metric name.
 
     Args:
-        highlight: The highlight to name.
+        name: The metric's full name.
+        meta: The metric's metadata, which carries its kind and short name.
         qualify: Whether to prefix the metric's kind and short name, as a run
             spanning several kinds does.
 
@@ -280,9 +265,11 @@ def highlight_label(highlight: MetricHighlight, *, qualify: bool) -> str:
         The reported name.
     """
     if qualify:
-        meta = highlight.metric.meta
-        return scope_label(escape(meta.kind), escape(meta.short_name))
-    return format_inline(parse_metric_name(highlight.name))
+        return scope_label(
+            escape_literal(meta.kind, before_tag=False),
+            escape_literal(meta.short_name, before_tag=False),
+        )
+    return format_inline(parse_metric_name(name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,7 +296,10 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         return HighlightBlock(entries=(), unstable=False)
 
     qualify = spans_many_kinds(metrics)
-    labels = [highlight_label(highlight, qualify=qualify) for highlight in highlights]
+    labels = [
+        highlight_label(highlight.name, highlight.metric.meta, qualify=qualify)
+        for highlight in highlights
+    ]
     # Measure the text the capture console prints: it leaves `:word:` codes as typed.
     label_widths = [cell_len(Text.from_markup(label, emoji=False).plain) for label in labels]
     name_width = max(label_widths) + _HIGHLIGHT_NAME_GUTTER
@@ -322,12 +312,11 @@ def _highlight_entries(metrics: MetricComparisons, candidate_index: int) -> High
         unstable = unstable or shown == "unstable"
         style = VERDICT_STYLES[shown]
         delta = format_verdict_delta(verdict)
-        candidate = candidate_at(highlight.metric, candidate_index)
         evidence = format_evidence(
             verdict,
             highlight.metric.meta.unit,
             highlight.metric.baseline_median,
-            None if candidate is None else candidate.median,
+            highlight.metric.candidates[candidate_index].median,
         )
 
         label_field = f"{label}{' ' * (name_width - width)}"
@@ -374,22 +363,23 @@ def _gate_trip_lines(
     Returns:
         One markup line per kind whose gated geomean exceeded a threshold.
     """
-    thresholds = [condition.pct for condition in conditions if isinstance(condition, GeomeanFailOn)]
+    thresholds = [condition for condition in conditions if isinstance(condition, GeomeanFailOn)]
     style = VERDICT_STYLES["regressed"]
 
     lines: list[str] = []
     for kind in candidate.kinds:
         geomean = kind.gated_geomean
-        tripped = [pct for pct in thresholds if gated_geomean_trips(geomean, pct)]
+        tripped = [
+            condition for condition in thresholds if gated_geomean_trips(geomean, condition.pct)
+        ]
         if geomean is None or not tripped:
             continue
         delta = format_percent_delta(geomean.value)
-        # `:g` states the threshold as it was written, dropping a trailing `.0`.
         lines.extend(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {escape(kind.kind)} "
             f"{GATED_GEOMEAN_LABEL} {markup(delta, style)} "
-            f"exceeded --fail-on geomean:{pct:g}"
-            for pct in tripped
+            f"exceeded --fail-on {condition}"
+            for condition in tripped
         )
     return lines
 
@@ -414,7 +404,10 @@ def _hidden_regression_lines(
     Returns:
         One markup line per gating metric whose hidden regression tripped the gate.
     """
-    if not any(isinstance(condition, RegressedFailOn) for condition in conditions):
+    regressed = next(
+        (condition for condition in conditions if isinstance(condition, RegressedFailOn)), None
+    )
+    if regressed is None:
         return []
     style = VERDICT_STYLES["regressed"]
     qualify = spans_many_kinds(metrics)
@@ -426,14 +419,11 @@ def _hidden_regression_lines(
             continue
         if verdict.verdict != "regressed" or display_class(verdict) == "regressed":
             continue
-        label = highlight_label(
-            MetricHighlight(name=judged.name, metric=judged.metric, verdict=verdict),
-            qualify=qualify,
-        )
+        label = highlight_label(judged.name, judged.metric.meta, qualify=qualify)
         delta = format_percent_delta(verdict.delta)
         lines.append(
             f"  {markup(_GATE_TRIP_GLYPH, style)} {label} regressed {markup(delta, style)} "
-            f"on {pluralize(verdict.n, 'pair')} tripped --fail-on regressed"
+            f"on {pluralize(verdict.n, 'pair')} tripped --fail-on {regressed}"
         )
     return lines
 
@@ -509,7 +499,7 @@ _DROPPED_ROUNDS_HINT = (
     "some rounds were dropped — not all samples produced paired measurements for every metric"
 )
 
-_BAND_METHOD = "noise band ±(half-range × K)"
+_BAND_METHOD = f"noise band {PLUS_MINUS}(half-range × K)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -583,7 +573,7 @@ def _method_lines(data: _FooterData) -> list[str]:
         desc = (
             f"verdicts: sign-flip permutation test on pairs "
             f"({format_pair_count(min(data.permutation))} ≥ {PERMUTATION_MIN_N}) "
-            f"· ~ = no signal at α={PERMUTATION_P_THRESHOLD}"
+            f"{SCOPE_SEPARATOR} ~ = no signal at α={PERMUTATION_P_THRESHOLD}"
         )
         lines.append(markup(desc, "dim"))
     if data.shortage:
@@ -674,7 +664,7 @@ def format_cleanup_failures(
     """Format worktree removal failures and a prune error into indented diagnostic lines.
 
     Each git diagnostic is collapsed onto one line. The lines carry no styling, so
-    a caller outside the report — the sampling layer that logs a dirty cleanup —
+    a caller outside the report — the worktree sweep that logs a dirty cleanup —
     can print them as they are.
 
     Args:
@@ -696,7 +686,7 @@ def format_cleanup_failures(
 
 
 def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> list[str]:
-    """The worktree-cleanup footer as markup, or nothing when the cleanup was clean.
+    """The worktree-cleanup footer as markup.
 
     The lines are plain text escaped for markup rendering: the cleanup footer is
     the same color on or off.
@@ -712,9 +702,8 @@ def _render_worktree_footer(result: ComparisonResult | MeasurementResult) -> lis
     details = format_cleanup_failures(cleanup.failures, cleanup.prune_error)
     if not details:
         return []
-    header = (
-        f"{pluralize(cleanup.removed, 'worktree')} removed · {len(cleanup.failures)} left behind"
-    )
+    removed = f"{pluralize(cleanup.removed, 'worktree')} removed"
+    header = f"{removed} {SCOPE_SEPARATOR} {len(cleanup.failures)} left behind"
     return [escape(line) for line in (header, *details)]
 
 
@@ -741,7 +730,7 @@ def render_measure_table(
         The rendered table lines.
     """
     layout = plan_sections(result.metrics, measured_row)
-    skeleton = plan_table_skeleton(layout, result.config_kinds, lambda row: row.value, label)
+    skeleton = plan_table_skeleton(layout, None, result.config_kinds, lambda row: row.value, label)
     widths = [skeleton.metric_width, skeleton.value_width]
 
     def metric_cells(row: MeasuredRow) -> tuple[Text, Text]:

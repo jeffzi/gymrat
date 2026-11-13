@@ -21,7 +21,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Annotated, NamedTuple, NoReturn, Protocol, Self
 
-from pydantic import BaseModel, Strict, ValidationError, ValidatorFunctionWrapHandler, WrapValidator
+from pydantic import (
+    BaseModel,
+    Field,
+    Strict,
+    TypeAdapter,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    WrapValidator,
+)
 from pydantic_core import ErrorDetails
 
 SECONDS_PER_MINUTE = 60
@@ -35,8 +43,12 @@ MS_PER_SECOND = 1000
 NS_PER_MS = 1_000_000
 """Nanoseconds in one millisecond; shared conversion factor, declared once."""
 _MS_PER_MINUTE = SECONDS_PER_MINUTE * MS_PER_SECOND
+_MINUTES_PER_HOUR = 60
 
 ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+TRACES_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+# The path the OTLP exporter appends to a base endpoint for spans.
+_OTLP_TRACES_PATH = "v1/traces"
 """Environment variable every tracing entry point reads the OTLP endpoint from."""
 
 # The budget is measured in bytes, not characters: downstream consumers size
@@ -62,9 +74,6 @@ carries it, and LF, CR, U+2028, and U+2029 are line terminators to a JavaScript
 regular-expression engine, so an anchored check on a record field could never
 match such a value. Written as escapes so the source stays plain ASCII.
 """
-
-MISSING_DELTA = "—"
-"""What a progress display prints in place of a missing or non-finite delta."""
 
 type WarnSink = Callable[[str], None]
 """Where a caller sends a complaint about output it could not read.
@@ -387,6 +396,42 @@ def coerce_integer(value: object) -> object:
     return value
 
 
+def is_positive_integer(raw: str) -> bool:
+    """Whether ``raw`` names a positive integer written as bare ASCII digits.
+
+    ``int`` alone is too lenient: it accepts surrounding whitespace, a sign,
+    ``_`` separators, and non-ASCII digits.
+
+    Args:
+        raw: The text as the user wrote it.
+
+    Returns:
+        ``True`` when ``raw`` is only ASCII digits and not all of them are zero.
+    """
+    return raw.isascii() and raw.isdigit() and raw.strip("0") != ""
+
+
+def parse_bounded_positive_int(raw: str, maximum: int) -> int | None:
+    """Parse a positive integer no larger than ``maximum``.
+
+    Args:
+        raw: The text as the user wrote it.
+        maximum: Largest accepted value.
+
+    Returns:
+        The integer, or ``None`` when ``raw`` fails :func:`is_positive_integer`
+        or names a value above ``maximum``.
+    """
+    if not is_positive_integer(raw):
+        return None
+    # More significant digits than ``maximum`` means above it; comparing lengths
+    # first keeps ``int`` away from a run past the interpreter's conversion limit.
+    digits = raw.lstrip("0")
+    if len(digits) > len(str(maximum)) or int(digits) > maximum:
+        return None
+    return int(digits)
+
+
 # ---------------------------------------------------------------------------
 # Subprocess output
 # ---------------------------------------------------------------------------
@@ -482,6 +527,31 @@ def otlp_endpoint_from_env(name: str = ENDPOINT_ENV) -> str | None:
         The trimmed endpoint, or ``None`` when the variable is unset or blank.
     """
     return otlp_endpoint(os.environ.get(name))
+
+
+def otlp_traces_url(endpoint: str | None = None) -> str | None:
+    """Resolve the URL spans are posted to, as the OTLP exporter's environment precedence does.
+
+    An explicit endpoint wins, then ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` as
+    written, then ``OTEL_EXPORTER_OTLP_ENDPOINT``; a base endpoint is joined
+    with the traces path.
+
+    Args:
+        endpoint: The OTLP base endpoint passed in, or ``None`` to read the
+            environment.
+
+    Returns:
+        The traces URL, or ``None`` when no endpoint is configured.
+    """
+    if endpoint is None:
+        traces_endpoint = otlp_endpoint_from_env(TRACES_ENDPOINT_ENV)
+        if traces_endpoint is not None:
+            return traces_endpoint
+    base = otlp_endpoint(endpoint) if endpoint is not None else otlp_endpoint_from_env()
+    if base is None:
+        return None
+    separator = "" if base.endswith("/") else "/"
+    return f"{base}{separator}{_OTLP_TRACES_PATH}"
 
 
 def color_from_env() -> bool | None:
@@ -678,26 +748,8 @@ def write_text_atomic(path: Path, text: str) -> None:
         target_mode = stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
         target_mode = None
-    create_mode = 0o666 if target_mode is None else target_mode
-    tmp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
-
-    # Opened directly rather than through tempfile, which forces 0o600: here the
-    # kernel applies the umask to the requested mode, and reading the umask any
-    # other way means changing it for the whole process. Requesting the target's
-    # own mode at creation is what keeps the content out of a wider file; a
-    # chmod after the write would leave it exposed until then.
-    def create_with_mode(name: str, flags: int) -> int:
-        return os.open(name, flags, create_mode)
-
-    # Exclusive creation stays outside the cleanup below: a file that already
-    # holds the temporary name is not this call's to remove.
-    with open(tmp_path, "xb", opener=create_with_mode):
-        pass
+    tmp_path = _synced_temp_sibling(path, text, 0o666 if target_mode is None else target_mode)
     try:
-        with tmp_path.open("wb") as tmp_file:
-            tmp_file.write(text.encode("utf-8"))
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
         if target_mode is not None:
             # Restores the bits the umask removed from the requested mode.
             tmp_path.chmod(target_mode)
@@ -709,15 +761,92 @@ def write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+# Errors a filesystem without hard links returns from link(2). They say nothing
+# about the target, so creation falls back to writing it directly.
+_HARD_LINKS_REFUSED = frozenset({errno.EPERM, errno.ENOTSUP, errno.ENOSYS})
+
+
+def create_text_atomic(path: Path, text: str) -> None:
+    """Create *path* holding *text*, encoded as UTF-8, unless something is already there.
+
+    The text goes to a temporary sibling that is flushed and fsynced, then
+    hard-linked to *path*. Unlike a rename, the link never replaces an entry
+    that appeared after the caller looked, so a reader sees either no file or
+    the full content. The new file gets ``0o666`` filtered by the umask. The
+    temporary file is removed whether or not the link succeeds.
+
+    On a filesystem that refuses hard links, *path* is instead created
+    exclusively and written in place. It still never replaces an existing
+    entry, and a failed write removes the partial file, but a reader may see
+    *path* before it holds the full content.
+
+    Args:
+        path: The file to create. Its directory must already exist.
+        text: The content to write.
+
+    Raises:
+        FileExistsError: When an entry already exists at *path*; it is left
+            untouched.
+        OSError: When the temporary file cannot be created, written, synced,
+            or linked to *path*, or when the direct write fails.
+    """
+    tmp_path = _synced_temp_sibling(path, text, 0o666)
+    try:
+        os.link(tmp_path, path)
+    except OSError as error:
+        if error.errno not in _HARD_LINKS_REFUSED:
+            raise
+    else:
+        return
+    finally:
+        # Once linked, *path* already holds the full content: a stray temporary
+        # file is a lesser harm than reporting a write that happened as failed.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+    _create_synced(path, text, 0o666)
+
+
+def _synced_temp_sibling(path: Path, text: str, mode: int) -> Path:
+    tmp_path = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    _create_synced(tmp_path, text, mode)
+    return tmp_path
+
+
+def _create_synced(path: Path, text: str, mode: int) -> None:
+    # Opened directly rather than through tempfile, which forces 0o600: here the
+    # kernel applies the umask to the requested mode, and reading the umask any
+    # other way means changing it for the whole process. Requesting the target's
+    # own mode at creation is what keeps the content out of a wider file; a
+    # chmod after the write would leave it exposed until then.
+    #
+    # The write goes through the handle that created the file: the umask may
+    # strip owner-write, so reopening the file by name can be refused.
+    #
+    # A file that already holds the name is not this call's to remove, so the
+    # cleanup below runs only once the exclusive creation has succeeded.
+    created = False
+    try:
+        with open(path, "xb", opener=lambda name, flags: os.open(name, flags, mode)) as file:
+            created = True
+            file.write(text.encode("utf-8"))
+            file.flush()
+            os.fsync(file.fileno())
+    except BaseException:
+        if created:
+            # The original error is what the caller needs; a failed cleanup must not mask it.
+            with contextlib.suppress(OSError):
+                path.unlink()
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Durations and ETAs
 # ---------------------------------------------------------------------------
 
-# The formatters are deliberately not unified. format_duration reports elapsed
-# time and floors to whole seconds while always keeping a zero remainder
-# ("1m 0s"); format_clock renders the media-player clock a progress bar ticks
-# through ("07:45", "1:07:45"). Both build on the tier splits below, which the
-# CLI's timestamp and ETA formatters share.
+# format_duration reports elapsed time and floors to whole seconds while always
+# keeping a zero remainder ("1m 0s"). It and the progress bar's media-player
+# clock ("07:45", "1:07:45") build on the tier splits below, which the CLI's
+# timestamp and ETA formatters share.
 
 
 @dataclass(frozen=True, slots=True)
@@ -778,7 +907,7 @@ def hours_minutes_seconds(total_seconds: int) -> tuple[int, int, int]:
         and hours are unbounded.
     """
     minutes, seconds = divmod(total_seconds, SECONDS_PER_MINUTE)
-    hours, minutes = divmod(minutes, SECONDS_PER_MINUTE)
+    hours, minutes = divmod(minutes, _MINUTES_PER_HOUR)
     return hours, minutes, seconds
 
 
@@ -790,11 +919,6 @@ def floored_clock_tiers(ms: float) -> tuple[int, int, int]:
 def minutes_to_ms(minutes: float) -> int:
     """Convert minutes to milliseconds, truncating toward zero via ``int()``."""
     return int(minutes * _MS_PER_MINUTE)
-
-
-def ms_to_minutes(ms: float) -> float:
-    """Convert milliseconds to minutes, keeping fractional precision."""
-    return ms / _MS_PER_MINUTE
 
 
 def format_duration(ms: float) -> str:
@@ -832,25 +956,6 @@ def format_time_left(remaining_ms: float, max_minutes: float) -> str:
     return f"{format_duration(remaining_ms)} left of {max_minutes:g}m"
 
 
-def format_clock(ms: float) -> str:
-    """Format a duration as a media-player clock, flooring to whole seconds.
-
-    Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
-    appears only when there are whole hours (``"1:07:45"``).
-
-    Args:
-        ms: The duration in milliseconds.
-
-    Returns:
-        The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
-    """
-    hours, minutes, seconds = floored_clock_tiers(ms)
-
-    if hours == 0:
-        return f"{minutes:02d}:{seconds:02d}"
-    return f"{hours}:{minutes:02d}:{seconds:02d}"
-
-
 def now_ns() -> int:
     """Nanoseconds since the epoch, the unit every log record and event stamps with."""
     return time.time_ns()
@@ -879,7 +984,7 @@ def read_sidecar[Model: BaseModel](path: Path, model: type[Model]) -> Model | No
     """Read and validate one JSON sidecar file.
 
     A sidecar is advisory state another process may be rewriting or may have
-    left behind, so a file that cannot be used reads as no file at all.
+    left behind, so a file that cannot be used is not an error.
 
     Args:
         path: The sidecar file to read.
@@ -898,8 +1003,7 @@ def read_sidecar[Model: BaseModel](path: Path, model: type[Model]) -> Model | No
 def remove_sidecar(path: Path, label: str, warn: WarnSink) -> None:
     """Remove one sidecar file, best-effort.
 
-    A missing file is a silent success, and a removal the OS refuses is warned
-    about, never raised.
+    A missing file is a silent success, and a refused removal is never raised.
 
     Args:
         path: The sidecar file to remove.
@@ -916,8 +1020,34 @@ def remove_sidecar(path: Path, label: str, warn: WarnSink) -> None:
 # pruned of parent errors whose only fault is a failing child, and the expected-shape
 # phrase an error's ``type`` and ``ctx`` imply.
 
-NON_BLANK_PATTERN = r"\S"
-"""String ``pattern`` constraint that rejects a whitespace-only value."""
+NON_BLANK_PATTERN = r"[^\s\x1c-\x1f]"
+"""String ``pattern`` constraint that rejects a blank value: empty or whitespace-only.
+
+pydantic's regex engine reads ``\\s`` as the Unicode ``White_Space`` property, which
+leaves out the information separators U+001C-U+001F that ``str.strip`` removes as
+whitespace; the pattern names them so a string of them is blank too. Check a value
+outside a pydantic model with :func:`is_blank`, which runs this same pattern, never
+with ``str.strip``.
+"""
+
+_NON_BLANK_STR: TypeAdapter[str] = TypeAdapter(Annotated[str, Field(pattern=NON_BLANK_PATTERN)])
+
+
+def is_blank(value: str) -> bool:
+    """Tell whether ``value`` is blank, as a :data:`NON_BLANK_PATTERN` field would judge it.
+
+    Args:
+        value: The string to check.
+
+    Returns:
+        Whether ``value`` is empty or holds only whitespace.
+    """
+    try:
+        _NON_BLANK_STR.validate_python(value)
+    except ValidationError:
+        return True
+    return False
+
 
 VALUE_ERROR_PREFIX = "Value error, "
 """Prefix pydantic prepends to a model validator's ``ValueError`` message."""
@@ -1034,61 +1164,6 @@ def phrase_for_error(error: ErrorDetails) -> str:
     return _TYPE_PHRASES.get(error_type, "a valid value")
 
 
-# Helpers for readers of a harness's JSON payload: validating its numbers, wording a
-# skipped entry, and storing the metrics that survive.
-
-
-def record_metric(
-    metrics: dict[str, float], name: str, value: float, warn: WarnSink, advice: str
-) -> None:
-    """Store ``value`` under ``name``, warning when it displaces an earlier reading.
-
-    A collision means two readings resolved to one metric name, so the report
-    would otherwise silently show only the last one's value.
-
-    Args:
-        metrics: The readings collected so far, updated in place.
-        name: The resolved metric name.
-        value: The reading to store.
-        warn: The sink that receives the collision warning.
-        advice: How the user separates the colliding readings in their harness,
-            closing the warning.
-    """
-    if name in metrics:
-        warn(f"Duplicate metric name: {name} (keeping the last value; {advice})")
-    metrics[name] = value
-
-
-def _escape_line_terminator(match: re.Match[str]) -> str:
-    return json.dumps(match.group())[1:-1]
-
-
-def describe_error(error: object) -> str:
-    r"""Render a harness's error value (mitata's ``run.error``, tinybench's ``result.error``).
-
-    ``error`` is read from parsed JSON, so it can be any JSON value, not just a
-    string — ``str()`` on a plain dict would print an unhelpful Python repr.
-    ``json.dumps`` renders that case usefully instead, and cannot fail since the
-    value round-trips from ``json.loads``.
-
-    A string is written as-is so a plain message reads naturally, except that
-    each character of ``LINE_TERMINATORS`` becomes its JSON escape (``\n``,
-    ``\u000b``, ``\f``, ``\r``, ``\u001c`` to ``\u001e``, ``\u0085``,
-    ``\u2028``, ``\u2029``): the warning must stay on one line.
-    ``json.dumps`` keeps ``ensure_ascii`` on, so a non-string value is already
-    escaped the same way.
-
-    Args:
-        error: The error value as parsed from JSON.
-
-    Returns:
-        A single-line, human-readable rendering of the error value.
-    """
-    if isinstance(error, str):
-        return LINE_TERMINATORS.sub(_escape_line_terminator, error)
-    return json.dumps(error)
-
-
 def _keep_integer(value: object, handler: ValidatorFunctionWrapHandler) -> float:
     number: float = handler(value)
     # Strict float validation widens an int to float; the int is kept so a
@@ -1098,87 +1173,3 @@ def _keep_integer(value: object, handler: ValidatorFunctionWrapHandler) -> float
 
 Number = Annotated[float, Strict(), WrapValidator(_keep_integer)]
 """A JSON number; strict, so ``bool`` is rejected as JavaScript's ``typeof`` would."""
-
-
-def _invalid_value_tail(key: str, phrase: str, value: object) -> str:
-    """Phrase a rejected value as the tail of a skip warning.
-
-    Args:
-        key: The dotted path of the rejected value; empty for the entry itself.
-        phrase: What was expected, such as ``"a number"``.
-        value: The rejected value.
-
-    Returns:
-        The text that follows the skipped entry's name in the warning.
-    """
-    detail = expected_got(phrase, value)
-    return f" with invalid {key}: {detail}" if key else f": {detail}"
-
-
-def first_problem(exc: ValidationError, prefix: tuple[str, ...] = ()) -> str:
-    """Phrase the first problem pydantic found as the tail of a skip warning.
-
-    Args:
-        exc: The validation failure.
-        prefix: The path of the validated value inside the entry (a mitata run,
-            a tinybench task), prepended to each error location.
-
-    Returns:
-        The text that follows the skipped entry's name in the warning.
-    """
-    error = drop_prefix_errors(exc.errors())[0]
-    key = describe_key((*prefix, *error["loc"]))
-    if error["type"] == "missing":
-        return f" with missing {key}"
-    return _invalid_value_tail(key, phrase_for_error(error), error["input"])
-
-
-def warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
-    """Send a "Skipping <subject><tail>" warning.
-
-    Args:
-        warn: The sink that receives the warning.
-        subject: What is being skipped, e.g. ``'run of "my-bench"'``. Any alias or
-            task name it names is JSON-escaped, so a line terminator in it cannot
-            split the warning.
-        tail: The reason, from :func:`first_problem` or written by the caller.
-    """
-    warn(f"Skipping {subject}{tail}")
-
-
-def is_finite_or_warn(value: float, warn: WarnSink, subject: str, key: str) -> bool:
-    """Tell whether ``value`` is finite, sending a skip warning for ``subject`` when not.
-
-    Args:
-        value: The reading to check.
-        warn: The sink that receives the warning.
-        subject: What is being skipped, as for :func:`warn_skip`.
-        key: The dotted path of ``value``, named in the warning.
-
-    Returns:
-        ``False`` when ``value`` is not finite, or is an integer too large to
-        convert to a float, and the entry is to be skipped.
-    """
-    try:
-        finite = math.isfinite(value)
-    except OverflowError:
-        finite = False
-    if finite:
-        return True
-    warn_skip(warn, subject, _invalid_value_tail(key, "a finite number", value))
-    return False
-
-
-def named_subject(kind: str, entry: object, key: str) -> str:
-    """Name a skipped entry by its ``key`` field when that field is a string.
-
-    Args:
-        kind: What the entry is, e.g. ``"benchmark"``.
-        entry: The raw entry as parsed from JSON.
-        key: The field naming the entry, e.g. ``"alias"``.
-
-    Returns:
-        ``kind`` followed by the JSON-escaped name, or ``kind`` alone.
-    """
-    name = entry.get(key) if isinstance(entry, dict) else None
-    return f"{kind} {json.dumps(name)}" if isinstance(name, str) else kind

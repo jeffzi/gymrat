@@ -9,7 +9,7 @@ tears those down; it holds no session records and reads no JSON.
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Collection
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -24,7 +24,7 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     git_common_dir,
 )
-from gymrat.utils import SHORT_SHA_LENGTH, os_error_reason, warn_to_stderr
+from gymrat.utils import SHORT_SHA_LENGTH, WarnSink, os_error_reason, warn_to_stderr
 
 # create_workspace names every session branch ``<prefix><session_id>``, so
 # changing this renames the branch of every new session.
@@ -35,15 +35,21 @@ BRANCH_PREFIX = "gymrat/"
 INSPECT_STATUS_HINT = "Inspect what is standing there with: git status"
 
 
-# The session header holds both models below: a key the reader does not know is
-# refused, never dropped, the same as on every other session-log record.
-_HEADER_OBJECT_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+# Every session-log record's model config, the header's sub-objects below
+# included: a key the reader does not know is refused, never dropped.
+RECORD_CONFIG = ConfigDict(
+    strict=True,
+    extra="forbid",
+    frozen=True,
+    validate_by_name=True,
+    serialize_by_alias=True,
+)
 
 
 class BaselineRef(BaseModel):
     """A git ref together with the commit it resolved to when the session started."""
 
-    model_config = _HEADER_OBJECT_CONFIG
+    model_config = RECORD_CONFIG
 
     ref: Annotated[str, Field(description="Git ref name the baseline was taken from.")]
     sha: Annotated[str, Field(description="Commit SHA the ref resolved to at session start.")]
@@ -52,7 +58,7 @@ class BaselineRef(BaseModel):
 class Worktrees(BaseModel):
     """The two worktree directories a session runs in."""
 
-    model_config = _HEADER_OBJECT_CONFIG
+    model_config = RECORD_CONFIG
 
     experiment: Annotated[str, Field(description="Path to the experiment worktree.")]
     baseline: Annotated[str, Field(description="Path to the baseline worktree.")]
@@ -71,7 +77,9 @@ class WorkspaceResult:
 # ---------------------------------------------------------------------------
 
 
-def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> WorkspaceResult:
+def create_workspace(
+    root: str, session_id: str, baseline: BaselineRef, *, warn: WarnSink = warn_to_stderr
+) -> WorkspaceResult:
     """Create the branch and both worktrees a session runs in.
 
     The experiment worktree is checked out *on* ``gymrat/<session_id>`` so edits
@@ -84,13 +92,15 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     attempt had already checked out down with it, so a retry starts from the
     state it found instead of tripping over its own leftovers. A worktree
     directory that was already standing survives — see :func:`unwind_workspace`.
-    Each leftover the unwind cannot take back is warned about on stderr; the git
-    step that broke the attempt is still the error raised.
+    Each leftover the unwind cannot take back is warned about; the git step that
+    broke the attempt is still the error raised.
 
     Args:
         root: Repository root to create the branch and worktrees in.
         session_id: Unique session identifier used to name the branch.
         baseline: The ref and commit sha to detach the baseline worktree at.
+        warn: Where a stale worktree entry git would not prune, and each
+            leftover the unwind cannot take back, are reported.
 
     Returns:
         The branch name and worktree paths.
@@ -102,7 +112,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
     branch = f"{BRANCH_PREFIX}{session_id}"
 
     ensure_git_exclude(root)
-    _prune_stale_worktrees(root)
+    _prune_stale_worktrees(root, warn)
 
     run_git_step(
         ["branch", branch, baseline.sha],
@@ -123,7 +133,7 @@ def create_workspace(root: str, session_id: str, baseline: BaselineRef) -> Works
         _add_baseline_worktree(root, baseline.sha)
     except GymratError:
         for warning in unwind_workspace(root, workspace, standing):
-            warn_to_stderr(warning)
+            warn(warning)
         raise
 
     return workspace
@@ -167,7 +177,9 @@ def ensure_git_exclude(root: str) -> None:
         handle.write(separator + line + b"\n")
 
 
-def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
+def recreate_workspace(
+    root: str, branch: str, baseline_sha: str, *, warn: WarnSink = warn_to_stderr
+) -> None:
     """Put back whichever of a session's worktrees is no longer on disk.
 
     Resuming has to survive a worktree the user deleted, so this is a no-op when
@@ -179,6 +191,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
         branch: The session's branch name to reattach the experiment
             worktree to.
         baseline_sha: The commit sha to reattach the baseline worktree to.
+        warn: Where a stale worktree entry git would not prune is reported.
 
     Raises:
         GymratError: When git refuses to add a worktree.
@@ -190,7 +203,7 @@ def recreate_workspace(root: str, branch: str, baseline_sha: str) -> None:
     if not needs_experiment and not needs_baseline:
         return
 
-    _prune_stale_worktrees(root)
+    _prune_stale_worktrees(root, warn)
 
     if needs_experiment:
         _add_experiment_worktree(root, branch)
@@ -215,28 +228,32 @@ def _session_worktrees(root: str) -> tuple[str, str]:
     return experiment_worktree_dir(root), baseline_worktree_dir(root)
 
 
-def _force_remove_worktrees(root: str, should_remove: Callable[[str], bool]) -> None:
-    """Force-remove each session worktree ``should_remove`` selects, best-effort.
-
-    Args:
-        root: The repository root.
-        should_remove: Picks, by directory, the worktrees to remove.
-    """
-    for directory in _session_worktrees(root):
-        if should_remove(directory):
-            try_git(["worktree", "remove", "--force", directory], root)
+# What git answers when asked to remove a path it never registered as a worktree.
+# The prune runs on every new session, so this refusal is the usual case, not a failure.
+_NOT_A_WORKTREE = "is not a working tree"
 
 
-def _prune_stale_worktrees(root: str) -> None:
+def _prune_stale_worktrees(root: str, warn: WarnSink) -> None:
     """Remove the session's own worktree entries whose directories are gone.
 
     Only the session's experiment and baseline paths are touched; a user's
-    temporarily-absent worktree stays registered.
+    temporarily-absent worktree stays registered. Best-effort: an entry git
+    refuses to drop is warned about, and the checkout that follows reports
+    what it blocks.
 
     Args:
         root: The repository root.
+        warn: Where an entry git refuses to drop is reported, with git's error.
     """
-    _force_remove_worktrees(root, lambda directory: not Path(directory).is_dir())
+    for directory in _session_worktrees(root):
+        if Path(directory).is_dir():
+            continue
+        error = try_git(["worktree", "remove", "--force", directory], root)
+        if error is not None and _NOT_A_WORKTREE not in error:
+            warn(
+                f"warning: could not prune the stale worktree entry at {directory}: {error}\n"
+                "  inspect it with: git worktree list"
+            )
 
 
 def _add_experiment_worktree(root: str, branch: str) -> None:
@@ -246,6 +263,7 @@ def _add_experiment_worktree(root: str, branch: str) -> None:
         root,
         f"Cannot create the experiment worktree at {directory}",
         f"Check whether {branch} is already checked out elsewhere: git worktree list",
+        allow_interrupt=True,
     )
 
 
@@ -256,6 +274,7 @@ def _add_baseline_worktree(root: str, sha: str) -> None:
         root,
         f"Cannot create the baseline worktree at {directory}",
         missing_commit_hint(sha),
+        allow_interrupt=True,
     )
 
 
@@ -292,7 +311,7 @@ def unwind_workspace(
     error = try_git(["branch", "-D", workspace.branch], root)
     if error is not None:
         warnings.append(
-            f"Could not delete the session branch '{workspace.branch}': {error}\n"
+            f"warning: could not delete the session branch '{workspace.branch}': {error}\n"
             f"  delete it by hand with: git branch -D {workspace.branch}"
         )
     return warnings
@@ -327,12 +346,14 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
         experiment_dir,
         f"Cannot stage the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     run_git_step(
         ["commit", "-m", message],
         experiment_dir,
         f"Cannot commit the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     return worktree_head(experiment_dir)
 
@@ -358,12 +379,14 @@ def revert_workspace(experiment_dir: str, *, target: str) -> None:
         experiment_dir,
         f"Cannot revert the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     run_git_step(
         ["clean", "-fd"],
         experiment_dir,
         f"Cannot remove the untracked files in {experiment_dir}",
         "Inspect what is standing there with: git status --ignored",
+        allow_interrupt=True,
     )
 
 
@@ -390,7 +413,9 @@ def worktree_fingerprint(directory: str) -> str | None:
         invocation fails (missing repo, bad permissions, …).
     """
     try:
-        real_index = run_git(["rev-parse", "--git-path", "index"], directory).strip()
+        real_index = run_git(
+            ["rev-parse", "--git-path", "index"], directory, allow_interrupt=True
+        ).strip()
         # Resolve relative paths git may print against the worktree root.
         real_index_path = Path(directory, real_index)
 
@@ -401,8 +426,8 @@ def worktree_fingerprint(directory: str) -> str | None:
             shutil.copy2(real_index_path, tmp_index)
 
             env = {"GIT_INDEX_FILE": tmp_index}
-            run_git(["add", "-A"], directory, env=env)
-            return run_git(["write-tree"], directory, env=env).strip()
+            run_git(["add", "-A"], directory, env=env, allow_interrupt=True)
+            return run_git(["write-tree"], directory, env=env, allow_interrupt=True).strip()
     except (subprocess.SubprocessError, OSError):
         return None
 
@@ -424,6 +449,7 @@ def worktree_head(directory: str) -> str:
         directory,
         f"Cannot read the HEAD of the worktree at {directory}",
         "Inspect what is standing there with: git log -1",
+        allow_interrupt=True,
     ).strip()
 
 
@@ -432,9 +458,9 @@ def dirty_file_count(directory: str) -> int:
 
     ``--untracked-files=all`` lists each file inside an untracked directory
     rather than the directory alone, so a new folder of three files counts as
-    three.  A directory that is not there reads as clean: a worktree the user
-    deleted carries no uncommitted work anyone can still act on, and refusing to
-    finalize over a directory that cannot be inspected would strand the session.
+    three.  A worktree the user deleted carries no uncommitted work anyone can
+    still act on, and refusing to finalize over a directory that cannot be
+    inspected would strand the session.
 
     Args:
         directory: The worktree to count dirty entries in.
@@ -498,7 +524,7 @@ def changed_file_count(directory: str, target: str) -> int:
 
 def _git_lines(args: list[str], cwd: str, message: str, hint: str) -> list[str]:
     """Run a git step and split its stdout into non-empty lines."""
-    output = run_git_step(args, cwd, message, hint).strip()
+    output = run_git_step(args, cwd, message, hint, allow_interrupt=True).strip()
     return output.split("\n") if output else []
 
 
@@ -562,6 +588,6 @@ def _remove_worktree(root: str, directory: str) -> str | None:
     if error is None or not Path(directory).is_dir():
         return None
     return (
-        f"Could not remove the worktree at {directory}: {error}\n"
+        f"warning: could not remove the worktree at {directory}: {error}\n"
         f"  remove it by hand with: git worktree remove --force {directory}"
     )

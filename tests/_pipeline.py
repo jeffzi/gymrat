@@ -15,11 +15,12 @@ from unittest.mock import create_autospec
 
 import pytest
 
-from gymrat import sampling
+from gymrat import sampling, worktree_sweep
 from gymrat.exec import ExecOptions, ExecResult
 from gymrat.exec import exec as run_exec
-from gymrat.sampling import CleanupResult, RunOptions, SamplingOptions
+from gymrat.sampling import RunOptions, SamplingOptions
 from gymrat.utils import warn_to_stderr
+from gymrat.worktree_sweep import CleanupResult
 from tests._exec_fixtures import expected_result
 from tests._process_helpers import fake_install
 
@@ -29,10 +30,10 @@ QUANTIZED_STEP_NS = 42.0
 """The step, in nanoseconds, between quantized readings that the warning names."""
 
 QUANTIZED_GAP = f"{QUANTIZED_STEP_NS:g}ns"
+""":data:`QUANTIZED_STEP_NS` as the quantized-readings warning names it."""
 
 # A duration the warning would insert as the step, such as ``42ns`` or ``1.5 µs``.
 _STEP_VALUE = re.compile(r"\d(?:\.\d+)?\s*[nµm]?s\b")
-""":data:`QUANTIZED_STEP_NS` as the quantized-readings warning names it."""
 
 
 def is_quantized_warning(text: str, name: str, gap: str | None) -> bool:
@@ -51,7 +52,7 @@ def is_quantized_warning(text: str, name: str, gap: str | None) -> bool:
         ``True`` when ``text`` opens on ``name`` and names exactly that step.
     """
     names_step = _STEP_VALUE.search(text) is None if gap is None else gap in text
-    return text.startswith(f"{name}:") and names_step
+    return text.startswith(f"warning: {name}:") and names_step
 
 
 def run_options(
@@ -91,8 +92,6 @@ def install_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     root: Path,
     rounds: dict[str, list[dict[str, float]]],
-    *,
-    bench: str = "run",
 ) -> None:
     """Bench in-place directory targets whose bench run reports canned metrics.
 
@@ -108,7 +107,6 @@ def install_pipeline(
         root: The directory the target directories are created under.
         rounds: Each target's per-round metrics, keyed by the target name the
             options name.
-        bench: The bench command the run options carry.
     """
     for name in rounds:
         (root / name).mkdir()
@@ -116,7 +114,7 @@ def install_pipeline(
     benched: Counter[str] = Counter()
 
     async def run(command: str, options: ExecOptions) -> ExecResult:
-        if command != bench:
+        if command != "run":
             return expected_result()
         target = Path(options.cwd).name
         metrics = rounds[target][benched[target]]
@@ -124,4 +122,4 @@ def install_pipeline(
         return expected_result("".join(f"METRIC {key}={value}\n" for key, value in metrics.items()))
 
     monkeypatch.setattr(sampling, "exec", create_autospec(run_exec, side_effect=run))
-    monkeypatch.setattr(sampling, "install_termination_cleanup", fake_install([]))
+    monkeypatch.setattr(worktree_sweep, "install_termination_cleanup", fake_install([]))

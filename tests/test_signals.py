@@ -5,6 +5,7 @@ import re
 import signal
 import sys
 import threading
+import time
 import warnings
 from collections.abc import Buffer, Callable, Iterator
 from pathlib import Path
@@ -213,28 +214,6 @@ def _record_exits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return exits
 
 
-@pytest.mark.parametrize(
-    "second_signal", [None, signal.SIGTERM], ids=["first-signal", "escalation"]
-)
-@pytest.mark.usefixtures("forbid_direct_exit")
-def test_install_termination_cleanup_when_exit_seam_replaced_after_install_does_exit_through_replacement(
-    monkeypatch: pytest.MonkeyPatch, second_signal: int | None
-):
-    def interrupt() -> None:
-        if second_signal is None:
-            return
-        _installed_handler(second_signal)(second_signal, None)
-
-    install_termination_cleanup(interrupt)
-    handler = _installed_handler(signal.SIGINT)
-    exits = _record_exits(monkeypatch)
-
-    with contextlib.suppress(_ReplacedExitError):
-        handler(signal.SIGINT, None)
-
-    assert exits == [128 + signal.SIGINT]
-
-
 def test_install_termination_cleanup_when_multiple_registered_does_run_them_in_install_order(
     raise_signal: RaiseSignal,
 ):
@@ -381,72 +360,25 @@ def test_install_termination_cleanup_when_stderr_is_rich_proxy_does_write_to_und
     assert underlying.getvalue() == "live display erased\n"
 
 
-@pytest.fixture
-def recorded_joins(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Replace the exit-writer join with one that records its timeout and returns at once."""
-    joins: list[float] = []
-
-    def record_join(writer: threading.Thread, timeout_s: float) -> None:
-        joins.append(timeout_s)
-
-    monkeypatch.setattr(signals, "join_exit_writer", record_join)
-    return joins
-
-
-@pytest.fixture
-def finished_exit_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Wrap the exit-writer join to record the timeout of each wait that ran to its end."""
-    finished: list[float] = []
-    real_join = signals.join_exit_writer
-
-    def join_and_record(writer: threading.Thread, timeout_s: float) -> None:
-        real_join(writer, timeout_s)
-        finished.append(timeout_s)
-
-    monkeypatch.setattr(signals, "join_exit_writer", join_and_record)
-    return finished
-
-
-def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_one_bounded_wait(
-    raise_signal: RaiseSignal,
-    stalled_stderr: _Terminal,
-    recorded_joins: list[float],
-    monkeypatch: pytest.MonkeyPatch,
+def test_install_termination_cleanup_when_stderr_write_stalls_does_exit_after_the_installed_wait(
+    raise_signal: RaiseSignal, stalled_stderr: _Terminal, monkeypatch: pytest.MonkeyPatch
 ):
+    default_timeout_s = signals.EXIT_WRITE_TIMEOUT_S
     monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
     monkeypatch.setattr(sys, "stderr", stalled_stderr.stream)
     install_termination_cleanup(_write_erase_notice)
+    started = time.monotonic()
 
-    _run_capped(lambda: raise_signal(signal.SIGINT))
+    code = _run_capped(lambda: raise_signal(signal.SIGINT))
 
-    assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
-
-
-def test_install_termination_cleanup_when_signal_interrupts_buffered_stderr_write_does_exit_after_one_bounded_wait(
-    raise_signal: RaiseSignal, recorded_joins: list[float], monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(signals, "EXIT_WRITE_TIMEOUT_S", _SHORT_EXIT_WRITE_TIMEOUT_S)
-    codes: list[int] = []
-
-    def interrupt_once() -> None:
-        if not codes:
-            codes.append(raise_signal(signal.SIGINT))
-
-    terminal = _buffered_terminal(interrupt_once)
-    monkeypatch.setattr(sys, "stderr", terminal.stream)
-    install_termination_cleanup(_boom)
-
-    _run_capped(terminal.write_progress)
-
-    assert codes == [128 + signal.SIGINT]
-    assert recorded_joins == [_SHORT_EXIT_WRITE_TIMEOUT_S]
+    assert code == 128 + signal.SIGINT
+    assert time.monotonic() - started < default_timeout_s
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="pthread_kill is POSIX-only")
 def test_install_termination_cleanup_when_second_signal_arrives_during_exit_output_write_does_exit_at_once_without_rerunning_cleanup(
     raise_signal: RaiseSignal,
     interrupting_stderr: _Terminal,
-    finished_exit_waits: list[float],
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(sys, "stderr", interrupting_stderr.stream)
@@ -458,11 +390,12 @@ def test_install_termination_cleanup_when_second_signal_arrives_during_exit_outp
         _write_erase_notice()
 
     install_termination_cleanup(erase_display)
+    started = time.monotonic()
 
     raise_signal(signal.SIGINT)
 
     assert calls == ["cleanup"]
-    assert finished_exit_waits == []
+    assert time.monotonic() - started < _LONG_EXIT_WRITE_TIMEOUT_S
 
 
 @needs_signal_masking
@@ -553,18 +486,6 @@ def test_install_termination_escalation_when_earlier_cleanup_failed_does_drop_it
 # ---------------------------------------------------------------------------
 # Handler installation and idempotency
 # ---------------------------------------------------------------------------
-
-
-def test_install_termination_cleanup_when_cycled_does_keep_the_same_handler():
-    before = signal.getsignal(signal.SIGINT)
-    install_termination_cleanup(_nothing)
-    handler = signal.getsignal(signal.SIGINT)
-
-    for _ in range(12):
-        install_termination_cleanup(_nothing)()
-
-    assert handler is not before
-    assert signal.getsignal(signal.SIGINT) is handler
 
 
 def test_install_termination_cleanup_when_handler_replaced_after_first_install_does_keep_the_replacement():

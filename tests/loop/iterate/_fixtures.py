@@ -14,7 +14,6 @@ imported as ``tests.loop.iterate._fixtures``.
 
 from __future__ import annotations
 
-import itertools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,8 +34,6 @@ from gymrat.session.records import (
 )
 from gymrat.session.workspace import Worktrees
 from tests._ansi import stripped_lines
-from tests._exec_fixtures import expected_result
-from tests.adapters._inputs import malformed_line_warning
 from tests.session.records._fixtures import (
     SESSION_ID,
     log_records,
@@ -46,8 +43,6 @@ from tests.session.records._fixtures import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-
-    from gymrat.exec import ExecOptions, ExecResult
 
 #: Where ``iterate_session`` looks up ``collect_samples``, the one sampling seam the stubs replace.
 COLLECT_SAMPLES_TARGET = "gymrat.loop.iterate.judge.collect_samples"
@@ -102,7 +97,7 @@ def improved_rounds() -> list[dict[str, float]]:
     return rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 0.8))
 
 
-def iterate_session_header(root: str, *, experiment: str | None = None) -> SessionRecord:
+def iterate_session_header(root: str) -> SessionRecord:
     """A session header whose worktrees sit beside the default paths.
 
     Placing the worktrees on ``side-experiment`` / ``side-baseline`` rather than
@@ -111,8 +106,6 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
 
     Args:
         root: The repository the worktrees sit under.
-        experiment: The experiment worktree to name instead of
-            ``<root>/side-experiment``; None keeps the side path.
 
     Returns:
         The session header naming the side worktrees.
@@ -120,7 +113,7 @@ def iterate_session_header(root: str, *, experiment: str | None = None) -> Sessi
     return session_record(
         session_id=SESSION_ID,
         worktrees=Worktrees(
-            experiment=str(Path(root) / "side-experiment") if experiment is None else experiment,
+            experiment=str(Path(root) / "side-experiment"),
             baseline=str(Path(root) / "side-baseline"),
         ),
     )
@@ -149,25 +142,17 @@ class PairedRun:
     baseline: list[dict[str, float]]
 
 
-@dataclass(frozen=True, slots=True)
-class _RecordedCall:
-    """The positional arguments one ``collect_samples`` call was handed."""
-
-    targets: list[TargetContext]
-    options: SamplingOptions
-
-
 class CollectSamplesRecorder:
     """A stand-in for ``collect_samples`` that records every call it answers.
 
     The recorder is installed once by :func:`install_collect_samples`; a test
     then configures how it answers with :func:`stub_samples` or
-    :func:`stub_runs`. Every call is stored in ``calls``, so a test can read the
-    targets and options a call was handed.
+    :func:`stub_runs`. Every call's options are stored in ``calls``, so a test
+    can read the bench command a call was handed.
     """
 
     def __init__(self) -> None:
-        self.calls: list[_RecordedCall] = []
+        self.calls: list[SamplingOptions] = []
         self._answer: Any = None
 
     async def __call__(
@@ -181,8 +166,8 @@ class CollectSamplesRecorder:
 
         Args:
             adapter: The adapter the caller passed; ignored.
-            targets: The targets to sample; recorded as a list.
-            options: The sampling options; recorded with the targets.
+            targets: The targets to sample; handed to the stub.
+            options: The sampling options; recorded.
             abort: The caller's abort signal; ignored.
 
         Returns:
@@ -192,7 +177,7 @@ class CollectSamplesRecorder:
             AssertionError: No stub has been installed yet.
         """
         target_list = list(targets)
-        self.calls.append(_RecordedCall(target_list, options))
+        self.calls.append(options)
         if self._answer is None:
             message = "collect_samples was called before a stub was installed"
             raise AssertionError(message)
@@ -397,21 +382,3 @@ def last_iteration_of(root: str) -> IterationRecord:
         f"expected an iteration record at the end of {session_jsonl_path(root)}"
     )
     return last
-
-
-#: What the metric-lines adapter says about the malformed line :func:`bench_malformed_once` prints.
-MALFORMED_LINE_WARNING = malformed_line_warning("METRIC foo=bar")
-
-
-def bench_malformed_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand in for the bench process: every run reports, the first one a malformed line too."""
-    run_indexes = itertools.count()
-
-    async def fake_exec(_command: str, _options: ExecOptions) -> ExecResult:
-        index = next(run_indexes)
-        stdout = f"METRIC total_ms={BASELINE_MS[index % len(BASELINE_MS)]}"
-        if index == 0:
-            stdout += "\nMETRIC foo=bar"
-        return expected_result(stdout)
-
-    monkeypatch.setattr("gymrat.sampling.exec", fake_exec)

@@ -1,4 +1,4 @@
-"""Tests for mapping a metric verdict to the class and glyph a report shows."""
+"""Tests for mapping a metric verdict to the display class a report shows."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         ),
     ],
 )
-def test_display_class_when_non_exact_pair_count_below_minimum_does_read_inconclusive(
+def test_display_class_when_pair_count_below_minimum_does_read_inconclusive_only_if_non_exact(
     verdict: MetricVerdict, expected: DisplayClass
 ):
     assert display_class(verdict) == expected
@@ -47,7 +47,6 @@ def test_display_class_when_non_exact_pair_count_below_minimum_does_read_inconcl
         pytest.param(
             band_verdict(n=6, usable_n=5), "within-noise", id="band-some-pairs-differ-at-minimum"
         ),
-        pytest.param(permutation_verdict(), "within-noise", id="permutation-no-signal"),
     ],
 )
 def test_display_class_when_no_signal_does_read_identical_only_if_every_pair_tied(

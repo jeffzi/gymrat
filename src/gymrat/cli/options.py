@@ -12,15 +12,10 @@ from typing import Annotated
 
 import typer
 
-from gymrat.config import (
-    MAX_SAFE_INTEGER,
-    MAX_TIMEOUT_SECONDS,
-    is_positive_integer,
-    parse_bounded_positive_int,
-)
+from gymrat.config import MAX_SAFE_INTEGER, MAX_TIMEOUT_SECONDS
 from gymrat.report.types import FailOnCondition, GeomeanFailOn, RegressedFailOn
 from gymrat.sampling import TargetSpec
-from gymrat.utils import ASCII_DECIMAL_PATTERN
+from gymrat.utils import ASCII_DECIMAL_PATTERN, is_positive_integer, parse_bounded_positive_int
 
 _GEOMEAN_CONDITION_RE = re.compile(rf"geomean:(-?{ASCII_DECIMAL_PATTERN})")
 
@@ -91,7 +86,7 @@ class PositionalParamType:
 def parse_positive_int(value: str, maximum: int) -> int:
     """Parse a positive integer flag bounded by ``maximum``.
 
-    The value goes through :func:`~gymrat.config.parse_bounded_positive_int`,
+    The value goes through :func:`~gymrat.utils.parse_bounded_positive_int`,
     the rule the matching ``GYMRAT_*`` env var applies too.
 
     Args:

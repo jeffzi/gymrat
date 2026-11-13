@@ -70,7 +70,7 @@ def start_command_span(
     record: CommandRecord,
     *,
     session_id: str,
-    line_number: int,
+    position: int,
     context: Context,
     start_time: int,
 ) -> Span:
@@ -86,7 +86,8 @@ def start_command_span(
         record: The command record the span stands for.
         session_id: The session the command ran in, which keys the span id
             even when tracing was configured for another session.
-        line_number: The record's line in the session log, which keys the span id.
+        position: The record's 1-based position among the session log's
+            records, which keys the span id.
         context: The parent context the span starts under.
         start_time: When the command started, in nanoseconds since the epoch.
 
@@ -98,7 +99,7 @@ def start_command_span(
     link = command_link(record)
     span = start_span(
         f"gymrat.command.{record.name}",
-        span_key=f"command:{line_number}",
+        span_key=f"command:{position}",
         session_id=session_id,
         context=context,
         links=[Link(link)] if link is not None else None,

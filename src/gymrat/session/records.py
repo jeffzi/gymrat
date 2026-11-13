@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self, get_args
 from pydantic import (
     BaseModel,
     BeforeValidator,
-    ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
     Strict,
@@ -63,8 +62,9 @@ from gymrat.session.schema import (
     SchemaVersion,
     WithheldReason,
 )
-from gymrat.session.workspace import BaselineRef, Worktrees
+from gymrat.session.workspace import RECORD_CONFIG, BaselineRef, Worktrees
 from gymrat.utils import (
+    NON_BLANK_PATTERN,
     VALUE_ERROR_PREFIX,
     coerce_integer,
     describe_key,
@@ -82,14 +82,6 @@ if TYPE_CHECKING:
 # Validation and coercion helpers
 # ---------------------------------------------------------------------------
 
-
-_RECORD_CONFIG = ConfigDict(
-    strict=True,
-    extra="forbid",
-    frozen=True,
-    validate_by_name=True,
-    serialize_by_alias=True,
-)
 
 _wire_validation: ContextVar[bool] = ContextVar("_wire_validation", default=False)
 
@@ -131,7 +123,11 @@ def _not_null(member: Any) -> BeforeValidator:  # noqa: ANN401 -- any type form 
 _Number = float | int
 
 _OptStr = Annotated[str | SkipJsonSchema[None], _not_null(str)]
-_OptNonEmptyStr = Annotated[str | SkipJsonSchema[None], _not_null(str), Field(min_length=1)]
+# Blank by the same pattern the config file, flags and env vars are judged by. The
+# pattern sits on the ``str`` itself, not on an optional wrapping it: pydantic
+# leaves a constraint on the union out of the published JSON schema.
+_NonEmptyStr = Annotated[str, Field(pattern=NON_BLANK_PATTERN)]
+_OptNonEmptyStr = Annotated[_NonEmptyStr | SkipJsonSchema[None], _not_null(_NonEmptyStr)]
 _OptBool = Annotated[bool | SkipJsonSchema[None], _not_null(bool)]
 _OptNumber = Annotated[
     _Number | SkipJsonSchema[None],
@@ -160,7 +156,7 @@ class _RecordEnvelope(BaseModel):
     Each subclass declares its own ``type: Literal[...]`` discriminator.
     """
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     at: int = Field(description="Nanoseconds since the Unix epoch when the record was created.")
 
@@ -189,7 +185,7 @@ class _SequencedEnvelope(_RecordEnvelope):
 class SessionHooks(BaseModel):
     """The hook commands a session was started with; an absent stage ran nothing."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     before: _OptNonEmptyStr = Field(
         default=None, description="Command to run before each iteration."
@@ -200,7 +196,7 @@ class SessionHooks(BaseModel):
 class SessionConfig(BaseModel):
     """The settled configuration a session was opened with, kept for provenance."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     bench: str = Field(description="Benchmark command to run.")
     prepare: _OptStr = Field(
@@ -257,7 +253,7 @@ class BaselineRecord(_RecordEnvelope):
 class _DeltaPctSerializer(BaseModel):
     """Shared base for models whose ``delta_pct`` is always emitted, even as ``None``."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     delta_pct: _Number | None = Field(
         description="Percentage change from baseline, or null when undefined."
@@ -320,7 +316,7 @@ class IterationMetricVerdict(_DeltaPctSerializer):
 class PairedSamples(BaseModel):
     """The experiment and baseline sample rounds measured in one iteration."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     experiment: _SampleRounds = Field(description="Sample rounds from the experiment worktree.")
     baseline: _SampleRounds = Field(description="Sample rounds from the baseline worktree.")
@@ -333,7 +329,7 @@ class Confirm(BaseModel):
     ``None`` when the rerun skipped none.
     """
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     ran: bool = Field(description="Whether the confirmation rerun actually executed.")
     filtered: _NameList = Field(description="Metric names the rerun was filtered to.")
@@ -397,7 +393,7 @@ class IterationRecord(_SequencedEnvelope):
 class KeepChecks(BaseModel):
     """The outcome of a keep's configured checks, with relayed output sizes."""
 
-    model_config = _RECORD_CONFIG
+    model_config = RECORD_CONFIG
 
     configured: bool = Field(description="Whether checks were configured for this session.")
     passed: _OptBool = Field(default=None, description="Whether all configured checks passed.")
@@ -476,7 +472,7 @@ class StopRecord(_RecordEnvelope):
     """A user-requested stop: halts the loop without finalizing the session."""
 
     type: Literal["stop"] = Field(description="Record type discriminator.")
-    message: Annotated[str, Field(min_length=1, description="Reason the stop was requested.")]
+    message: Annotated[_NonEmptyStr, Field(description="Reason the stop was requested.")]
 
 
 class CommandRecord(_SequencedEnvelope):
@@ -487,7 +483,7 @@ class CommandRecord(_SequencedEnvelope):
     """
 
     type: Literal["command"] = Field(description="Record type discriminator.")
-    name: Annotated[str, Field(min_length=1, description="CLI command name.")]
+    name: Annotated[_NonEmptyStr, Field(description="CLI command name.")]
     args: dict[str, object] = Field(description="Arguments the command was invoked with.")
     exit_code: Literal[0, 1, 2] = Field(
         description="Process-style exit code: 0 success, 1 or 2 failure."
@@ -606,11 +602,19 @@ def parse_record(value: object) -> SessionLogRecord:
         raise GymratError(message)
     token = _wire_validation.set(True)
     try:
-        return SESSION_LOG_ADAPTER.validate_python(value)
+        return SESSION_LOG_ADAPTER.validate_python(value, by_alias=True, by_name=False)
     except ValidationError as exc:
         errors = exc.errors()
         _raise_discriminator_error(errors, value)
-        error = drop_prefix_errors(errors)[0]
+        remaining = drop_prefix_errors(errors)
+        error = remaining[0]
+        if error["type"] == "missing":
+            # An unknown key next to a missing one is usually the missing key
+            # under the wrong name (a typo, or a field name in place of its
+            # alias), so name the key the record actually carries.
+            error = next(
+                (other for other in remaining if other["type"] == "extra_forbidden"), error
+            )
         raise GymratError(_message_for_error(error, value)) from exc
     finally:
         _wire_validation.reset(token)
@@ -629,8 +633,6 @@ def _raise_discriminator_error(errors: list[ErrorDetails], value: dict[str, obje
     Raises:
         GymratError: When ``errors`` contains a discriminator-mismatch error.
     """
-    if not errors:
-        return
     error_type = errors[0]["type"]
     if error_type not in ("union_tag_not_found", "union_tag_invalid"):
         return

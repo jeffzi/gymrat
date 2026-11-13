@@ -62,25 +62,12 @@ class MeasureFlags(SharedFlags):
     record: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class _MeasureOutcome:
-    """What the locked run produced: the measurement and the session it recorded to.
-
-    Attributes:
-        result: The measurement the run produced.
-        recording: The open session ``--record`` wrote the baseline into, or
-            ``None`` when recording was not asked for — carried out of the lock
-            so the post-report note can name the session by id.
-    """
-
-    result: MeasurementResult
-    recording: RequiredSession | None
-
-
 async def _measure_body(
     flags: MeasureFlags,
     resolved_target: TargetSpec,
-) -> _MeasureOutcome:
+) -> tuple[MeasurementResult, RequiredSession | None]:
+    # The open session ``--record`` wrote the baseline into is carried out of
+    # the lock so the post-report note can name the session by id.
     progress = begin_run(flags, 1, target_labels=[resolved_target.display_label])
     try:
         config_resolved = resolve_config(flags)
@@ -98,7 +85,7 @@ async def _measure_body(
     # Still under the repo lock: only a completed run reaches here.
     if recording is not None:
         append_record(recording.jsonl_path, record)
-    return _MeasureOutcome(result=result, recording=recording)
+    return result, recording
 
 
 def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the shared option surface
@@ -131,7 +118,7 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
 
     async def run() -> None:
         warn_duration_over_budget(halve=True)
-        outcome = await with_repo_lock(
+        result, recording = await with_repo_lock(
             "measure",
             lambda _trace: _measure_body(flags, resolved_target),
             args=config_trace_args(
@@ -139,17 +126,14 @@ def measure(  # noqa: PLR0913 -- one parameter per CLI flag, mirroring the share
             ),
         )
         emit_report(
-            outcome.result,
+            result,
             flags,
             DEFAULT_REPORT_OPTIONS,
             text=render_measure_report,
             json=render_measure_json,
         )
-        if outcome.recording is not None:
-            note = (
-                f'baseline "{outcome.result.label}" '
-                f"recorded to session {outcome.recording.session.session_id}\n"
-            )
+        if recording is not None:
+            note = f'baseline "{result.label}" recorded to session {recording.session.session_id}\n'
             if wants_json(flags):
                 write_and_flush(sys.stderr, note)
             else:

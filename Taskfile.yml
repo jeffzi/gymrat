@@ -9,7 +9,6 @@ vars:
     - .ruff_cache
     - .venv
     - .venv-*
-    - "*.egg-info"
     - coverage.xml
     - dist
 
@@ -79,15 +78,23 @@ tasks:
     desc: Remove build artifacts, caches, virtualenvs, and leaked lock files
     deps: [_require-uv]
     cmds:
-      # Runs before the virtualenvs go, on an interpreter outside them. Removes
+      # Runs in the project environment, before the virtualenvs go. Removes
       # every `__pycache__` under src/ and tests/ with any directory that leaves
       # empty, and the lock files gymrat and its tests leave in the system temp
-      # directory, which only Python can name the way gymrat does.
+      # directory. A lock is removed only while this script holds it, so the
+      # files of a lock a running gymrat command holds stay in place; one file
+      # that cannot be removed is reported and the rest are still cleaned.
       - |
-        uv run --no-project python - <<'PY'
+        uv run python - <<'PY'
+        import os
         import shutil
+        import sys
         import tempfile
         from pathlib import Path
+
+        from filelock import FileLock, Timeout
+
+        from gymrat.session.lock import os_lock_file, publish_lock_file
 
         for tree in (Path("src"), Path("tests")):
             for cache in list(tree.rglob("__pycache__")):
@@ -98,8 +105,47 @@ tasks:
                     if parent == tree or any(parent.iterdir()):
                         break
                     parent.rmdir()
-        for pattern in ("gymrat-lock-*", "gymrat-supervise-lock-*"):
-            for leftover in Path(tempfile.gettempdir()).glob(pattern):
-                leftover.unlink(missing_ok=True)
+        holders = {
+            # The OS and publish lock files extend the holder's ``.json`` name.
+            str(leftover).partition(".json")[0] + ".json"
+            for pattern in ("gymrat-lock-*", "gymrat-supervise-lock-*")
+            for leftover in Path(tempfile.gettempdir()).glob(pattern)
+        }
+
+        def unlink_each(paths):
+            for path in paths:
+                try:
+                    Path(path).unlink(missing_ok=True)
+                except OSError as error:
+                    print(f"warning: could not remove {path}: {error}", file=sys.stderr)
+
+        # Windows refuses to delete a file while any handle, this one's included,
+        # holds it open without delete sharing: there the lock files go after the
+        # release, and one a rival opened in between stays with it.
+        DELETE_WHILE_OPEN = os.name != "nt"
+        for holder in sorted(holders):
+            # The publish lock comes first, as in ``acquire_lock``: a command that
+            # holds it has not yet taken the main lock or written its holder record.
+            locks = [
+                FileLock(path, timeout=0, preserve_lock_file=True)
+                for path in (publish_lock_file(holder), os_lock_file(holder))
+            ]
+            lock_files = [lock.lock_file for lock in locks]
+            try:
+                try:
+                    for lock in locks:
+                        lock.acquire()
+                except Timeout:
+                    continue
+                except OSError as error:
+                    print(f"warning: skipped {holder}: {error}", file=sys.stderr)
+                    continue
+                unlink_each([holder, *(lock_files if DELETE_WHILE_OPEN else [])])
+            finally:
+                for lock in reversed(locks):
+                    if lock.is_locked:
+                        lock.release()
+            if not DELETE_WHILE_OPEN:
+                unlink_each(lock_files)
         PY
       - rm -rf {{.CLEAN_PATHS | join " "}}

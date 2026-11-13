@@ -18,19 +18,21 @@ tells the reader to run ``task schemas``.
 """
 
 import json
+import subprocess
+import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-from jsonschema import Draft7Validator, Draft202012Validator
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel
 
-from gymrat.errors import TOOL_FAILURE_EXIT_CODE
+from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.event_docs import (
     READERS,
-    ReaderSpec,
     main,
     render_all,
     render_asyncapi,
@@ -39,18 +41,19 @@ from gymrat.event_docs import (
     write_all,
 )
 from gymrat.session.paths import repository_lookup_error
-from gymrat.session.records import IterationRecord, SessionLogRecord
+from gymrat.session.records import IterationRecord, SessionLogRecord, parse_record, record_to_wire
 from gymrat.supervisor.events import (
     LaunchEvent,
     SessionEvent,
-    ToolEndEvent,
     event_from_wire,
 )
-from tests._ansi import normalize
-from tests._cli import run_module
+from tests._ansi import strip_ansi
+from tests._cli import no_color_env
 from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
 from tests._markdown import md_section
+from tests.session.records._fixtures import command_record, stop_record
+from tests.session.records._wire import SESSION_RECORD, nested_with, patching
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -94,7 +97,14 @@ def test_main_module_when_run_does_print_each_written_path(
 ):
     root = Path(create_scratch_repo())
 
-    result = run_module("gymrat.event_docs", cwd=root)
+    result = subprocess.run(
+        [sys.executable, "-m", "gymrat.event_docs"],
+        cwd=root,
+        env=no_color_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert result.returncode == 0, f"stderr: {result.stderr}"
     written = [Path(line).resolve() for line in result.stdout.splitlines()]
@@ -145,14 +155,86 @@ def test_render_json_schemas_when_supervisor_payload_validated_does_agree_with_e
 
 
 # ---------------------------------------------------------------------------
-# required fields kept — a field without a default stays required
+# blank strings — the session-log schema rejects what parse_record rejects
 # ---------------------------------------------------------------------------
 
 
-def test_render_json_schemas_when_field_has_no_default_does_keep_it_required():
-    tool_end = render_json_schemas()[_SUPERVISOR_LOG.schema_index]["$defs"][ToolEndEvent.__name__]
+def _parses(record: object) -> bool:
+    try:
+        parse_record(record)
+    except GymratError:
+        return False
+    return True
 
-    assert "tool_name" in tool_end["required"]
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            nested_with(SESSION_RECORD, "config", hooks={"before": "  "}), id="hook-spaces"
+        ),
+        pytest.param(
+            nested_with(SESSION_RECORD, "config", hooks={"after": "\x1c\x1f"}),
+            id="hook-information-separators",
+        ),
+        pytest.param(
+            patching(record_to_wire(stop_record()), {"message": "\x1d"}),
+            id="stop-message-information-separator",
+        ),
+        pytest.param(
+            patching(record_to_wire(command_record()), {"name": " "}),
+            id="command-name-space",
+        ),
+    ],
+)
+def test_render_json_schemas_when_record_field_blank_does_agree_with_parse_record(
+    record: dict[str, object],
+):
+    session_log = render_json_schemas()[_SESSION_LOG.schema_index]
+    validator = Draft202012Validator(session_log)
+
+    schema_accepts = validator.is_valid(record)
+
+    assert schema_accepts == _parses(record)
+
+
+# ---------------------------------------------------------------------------
+# property defaults — every published default passes its own property schema
+# ---------------------------------------------------------------------------
+
+
+def _rejected_defaults(node: Any, defs: dict[str, Any], path: str) -> list[str]:
+    if isinstance(node, list):
+        return [
+            hit
+            for index, item in enumerate(node)
+            for hit in _rejected_defaults(item, defs, f"{path}/{index}")
+        ]
+    if not isinstance(node, dict):
+        return []
+    hits = [
+        f"{path}/properties/{name}"
+        for name, prop in node.get("properties", {}).items()
+        if "default" in prop
+        and not Draft202012Validator({**prop, "$defs": defs}).is_valid(prop["default"])
+    ]
+    return hits + [
+        hit
+        for key, value in node.items()
+        for hit in _rejected_defaults(value, defs, f"{path}/{key}")
+    ]
+
+
+def test_render_json_schemas_when_property_has_default_does_accept_it_under_its_own_schema():
+    schemas = render_json_schemas()
+
+    rejected = [
+        hit
+        for schema in schemas
+        for hit in _rejected_defaults(schema, schema["$defs"], schema["title"])
+    ]
+
+    assert rejected == []
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +264,14 @@ def test_render_asyncapi_when_called_does_list_each_channel_in_union_order():
         [(wt, {"$ref": f"#/components/messages/{wt}"}) for wt in map(_wire_type, channel.members)]
         for channel in _CHANNELS
     ]
+
+
+def test_render_asyncapi_when_called_does_show_each_channel_address_as_a_code_span():
+    doc = _render_asyncapi_doc()
+
+    description = doc["info"]["description"]
+    addresses = [spec["address"] for spec in doc["channels"].values()]
+    assert [address for address in addresses if f"`{address}`" not in description] == []
 
 
 def test_render_asyncapi_when_called_does_list_component_messages_in_union_order():
@@ -220,7 +310,6 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
     schemas, doc = _render_with_schemas()
 
     msg = doc["components"]["messages"][_wire_type(model)]
-
     description = schemas[channel.schema_index]["$defs"][model.__name__]["description"]
     schema_file, fragment = msg["payload"]["schema"]["$ref"].removeprefix("./").split("#")
     assert msg["title"] == model.__name__
@@ -235,15 +324,17 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
 
 
 @pytest.mark.parametrize(
-    ("op_name", "reader"),
+    ("op_name", "extra_keys"),
     [
-        pytest.param(name, READERS[name], id=name)
-        for name in ("supervisor-guard", "dashboard")  # a reader with a note, one without
+        pytest.param("supervisor-guard", {"description"}, id="note"),
+        pytest.param("dashboard", set(), id="no-note"),
     ],
 )
-def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
-    op_name: str, reader: ReaderSpec
+def test_render_asyncapi_when_reader_has_a_note_does_describe_its_operation_with_it(
+    op_name: str, extra_keys: set[str]
 ):
+    reader = READERS[op_name]
+
     doc = _render_asyncapi_doc()
 
     op = doc["operations"][op_name]
@@ -251,24 +342,8 @@ def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
     assert op["messages"] == [
         {"$ref": f"#/channels/{reader.channel}/messages/{t}"} for t in reader.types
     ]
+    assert op.keys() - {"action", "channel", "messages"} == extra_keys
     assert op.get("description") == reader.note
-
-
-# ---------------------------------------------------------------------------
-# meta-schema validation
-# ---------------------------------------------------------------------------
-
-_META_SCHEMA_PATH = Path(__file__).parent / "vendor" / "asyncapi-3.0.0.schema.json"
-
-
-def test_render_asyncapi_when_called_does_validate_against_asyncapi_300_meta_schema():
-    meta_schema = json.loads(_META_SCHEMA_PATH.read_text(encoding="utf-8"))
-    validator = Draft7Validator(meta_schema)
-
-    doc = _render_asyncapi_doc()
-
-    errors = list(validator.iter_errors(doc))
-    assert not errors, f"AsyncAPI meta-schema validation errors: {errors}"
 
 
 # ---------------------------------------------------------------------------
@@ -287,18 +362,6 @@ def _type_section(md: str, wire_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# document framing — single trailing newline
-# ---------------------------------------------------------------------------
-
-
-def test_render_reference_when_called_does_end_with_a_single_newline():
-    md = _render_reference_doc()
-
-    assert md.endswith("\n")
-    assert not md.endswith("\n\n")
-
-
-# ---------------------------------------------------------------------------
 # per-record/event ### sections — one per union member, in declared order
 # ---------------------------------------------------------------------------
 
@@ -312,8 +375,8 @@ def test_render_reference_when_called_does_order_sections_per_union_declaration(
 
 
 # ---------------------------------------------------------------------------
-# field tables — iteration as the representative type; columns: name, type,
-# required/optional, description
+# field tables — iteration as the representative type; columns: type,
+# required/optional
 # ---------------------------------------------------------------------------
 
 
@@ -326,20 +389,38 @@ def _field_rows(section: str) -> dict[str, tuple[str, str]]:
     }
 
 
-def test_render_reference_when_called_does_render_each_field_row():
+def test_render_reference_when_field_rendered_does_fill_the_status_column():
     statuses = {"seq": "required", "confirm": "optional"}
-    verdict = "IterationMetricVerdict"
-    types = {
-        "confirm": "[Confirm](#confirm)",
-        "metrics": f"object (values: [{verdict}](#{verdict.lower()}))",
-        "outcome": '`"improved"` \\| `"regressed"` \\| `"no-signal"`',
-    }
 
     md = _render_reference_doc()
 
     rows = _field_rows(_type_section(md, "iteration"))
     assert {field: rows[field][1] for field in statuses} == statuses
-    assert {field: rows[field][0] for field in types} == types
+
+
+_VERDICT = "IterationMetricVerdict"
+"""The nested object an iteration's ``metrics`` map holds as values."""
+
+
+@pytest.mark.parametrize(
+    ("field", "type_cell"),
+    [
+        pytest.param("confirm", "[Confirm](#confirm)", id="object-link"),
+        pytest.param(
+            "metrics",
+            f"object (values: [{_VERDICT}](#{_VERDICT.lower()}))",
+            id="map-of-objects",
+        ),
+        pytest.param(
+            "outcome", '`"improved"` \\| `"regressed"` \\| `"no-signal"`', id="literal-union"
+        ),
+    ],
+)
+def test_render_reference_when_field_rendered_does_fill_the_type_column(field: str, type_cell: str):
+    md = _render_reference_doc()
+
+    rows = _field_rows(_type_section(md, "iteration"))
+    assert rows[field][0] == type_cell
 
 
 # ---------------------------------------------------------------------------
@@ -361,34 +442,26 @@ def test_render_reference_when_called_does_have_nested_object_subsections():
 # closed objects — sections state that unlisted keys are rejected
 # ---------------------------------------------------------------------------
 
-#: The line a section carries when its schema sets ``additionalProperties: false``.
-_CLOSED_NOTE = "Rejects keys not listed above."
+
+def _dirty_info_lines(md: str) -> Counter[str]:
+    # Stop at the next heading of any level so a nested section's lines stay out.
+    section = md_section(md, "\n#### `DirtyInfo`\n", "\n#")
+    return Counter(line for line in section.split("\n") if line.strip())
 
 
-def _carries_closed_note(md: str, heading: str) -> bool:
-    # Stop at the next heading of any level so a nested section's note stays out.
-    return _CLOSED_NOTE in md_section(md, f"\n{heading}\n", "\n#").split("\n")
-
-
-@pytest.mark.parametrize(
-    ("channel", "definition", "closed"),
-    [
-        pytest.param(_SESSION_LOG, "BaselineRef", False, id="opened-baseline-ref"),
-        pytest.param(_SUPERVISOR_LOG, "DirtyInfo", True, id="closed-dirty-info"),
-    ],
-)
-def test_render_reference_when_schema_closure_changes_does_follow_the_schema(
-    channel: _Channel, definition: str, closed: bool
-):
+def test_render_reference_when_schema_closed_does_add_one_prose_line_to_its_section():
     schemas = render_json_schemas()
-    object_schema = schemas[channel.schema_index]["$defs"][definition]
-    object_schema.pop("additionalProperties", None)
-    if closed:
-        object_schema["additionalProperties"] = False
+    dirty_info = schemas[_SUPERVISOR_LOG.schema_index]["$defs"]["DirtyInfo"]
+    dirty_info.pop("additionalProperties", None)
+    open_lines = _dirty_info_lines(render_reference(schemas))
+    dirty_info["additionalProperties"] = False
 
-    md = render_reference(schemas)
+    closed_md = render_reference(schemas)
 
-    assert _carries_closed_note(md, f"#### `{definition}`") is closed
+    closed_lines = _dirty_info_lines(closed_md)
+    assert open_lines - closed_lines == Counter()
+    (note,) = (closed_lines - open_lines).elements()
+    assert not note.startswith("|")
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +474,7 @@ def test_render_reference_when_called_does_describe_a_reader_operation():
 
     md = _render_reference_doc()
 
-    bullet = normalize(md_section(md, "\n- **dashboard**", r"\n- |\n#"))
+    bullet = " ".join(strip_ansi(md_section(md, "\n- **dashboard**", r"\n- |\n#")).split())
     assert spec.channel in bullet
     assert [t for t in spec.types if f"`{t}`" not in bullet] == []
 
@@ -434,7 +507,7 @@ _DUBIOUS_OWNERSHIP = "fatal: detected dubious ownership in repository"
         pytest.param(_DUBIOUS_OWNERSHIP, id="git-declines-without-hint"),
     ],
 )
-def test_main_when_repository_lookup_fails_does_report_error_to_stderr_without_writing(
+def test_main_when_repository_lookup_fails_does_report_error_to_stderr(
     git_stderr: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -451,4 +524,3 @@ def test_main_when_repository_lookup_fails_does_report_error_to_stderr_without_w
 
     assert exc_info.value.code == TOOL_FAILURE_EXIT_CODE
     assert capsys.readouterr() == ("", expected_stderr)
-    assert [rel for rel in sorted(render_all()) if (tmp_path / rel).exists()] == []

@@ -6,7 +6,6 @@ import dataclasses
 import os
 import shlex
 import signal
-import sys
 from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 from pathlib import Path
 from typing import Any
@@ -15,9 +14,9 @@ from unittest.mock import create_autospec
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError
 from gymrat.exec import exec as run_exec
-from tests._process_helpers import SLEEPER_ARGV, capture_spawns, poll_until
+from tests._process_helpers import capture_spawns, poll_until
 
 type ExecTask = asyncio.Task[ExecResult | ExecTimeoutError]
 
@@ -63,6 +62,99 @@ def capped_result(*, exit_code: int = 0) -> ExecResult:
         stdout_truncated=True,
         stderr_truncated=True,
     )
+
+
+#: The ``exec`` the sampling module calls, which tests of sampling and its callers replace.
+SAMPLING_EXEC = "gymrat.sampling.exec"
+
+
+#: An output cap small enough that a few bytes overrun it.
+SMALL_CAP = 2
+
+#: The three invalid bytes :func:`overrun_with_invalid_kept` writes before it waits.
+OVERRUN_KEPT_BYTES = b"\xff\xff\xff"
+
+
+def wait_for_gate(gate: Path) -> str:
+    """A shell snippet that blocks until ``gate`` exists.
+
+    Args:
+        gate: The file the test creates to let the command go on.
+
+    Returns:
+        The shell snippet.
+    """
+    return f"until [ -e {shlex.quote(str(gate))} ]; do sleep 0.01; done"
+
+
+def open_gate_after_reading(monkeypatch: pytest.MonkeyPatch, gate: Path, marker: bytes) -> None:
+    """Create ``gate`` once a stream read hands the reader a chunk ending in ``marker``.
+
+    A command that writes ``marker`` and then waits on the gate puts its next
+    bytes in a later read, so the chunk boundary comes from the reader, not
+    from a sleep in the child.
+
+    Args:
+        monkeypatch: The fixture that wraps ``asyncio.StreamReader.read``.
+        gate: The file to create.
+        marker: The bytes that end the chunk the command waits to be read.
+    """
+    real_read = asyncio.StreamReader.read
+
+    async def read(self: asyncio.StreamReader, n: int = -1) -> bytes:
+        chunk = await real_read(self, n)
+        if chunk.endswith(marker):
+            await asyncio.to_thread(gate.touch)
+        return chunk
+
+    monkeypatch.setattr(asyncio.StreamReader, "read", read)
+
+
+def overrun_with_invalid_kept(gate: Path) -> str:
+    """Write three invalid bytes, wait on ``gate``, then write ``ab``.
+
+    The three bytes, read before the cap is reached and so kept whole, decode to
+    three U+FFFD that re-encode to nine bytes; the later ``ab`` is dropped. The
+    kept text re-encodes longer than the five bytes written, yet the stream
+    overran.
+
+    Args:
+        gate: The file :func:`open_gate_after_reading` creates once the three
+            bytes are read.
+
+    Returns:
+        The shell command.
+    """
+    return f"printf '\\377\\377\\377'; {wait_for_gate(gate)}; printf ab"
+
+
+def stdout_overruns(gate: Path) -> str:
+    """Write one short invalid byte to stderr, then overrun the cap on stdout.
+
+    Args:
+        gate: The gate :func:`overrun_with_invalid_kept` waits on.
+
+    Returns:
+        The shell command.
+    """
+    return f"{SHORT_WITH_INVALID} >&2; {overrun_with_invalid_kept(gate)}"
+
+
+def stderr_overruns(gate: Path) -> str:
+    """Write one short invalid byte to stdout, then overrun the cap on stderr.
+
+    Args:
+        gate: The gate :func:`overrun_with_invalid_kept` waits on.
+
+    Returns:
+        The shell command.
+    """
+    return f"{SHORT_WITH_INVALID}; {{ {overrun_with_invalid_kept(gate)}; }} >&2"
+
+
+#: One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
+#: three bytes: longer than the one byte written, yet nothing was dropped.
+SHORT_WITH_INVALID = "printf '\\377'"
 
 
 async def wait_for_spawned(
@@ -174,15 +266,6 @@ async def cancel_and_settle(task: "asyncio.Task[object]", timeout_s: float = 5) 
     await settle(task, timeout_s)
 
 
-def fail_stderr_read(
-    task: ExecTask, proc: asyncio.subprocess.Process | None, abort: asyncio.Event
-) -> None:
-    """Tear the run down by failing the pending stderr read."""
-    assert proc is not None
-    assert proc.stderr is not None
-    proc.stderr.set_exception(RuntimeError("stream exploded"))
-
-
 @dataclasses.dataclass(frozen=True, slots=True)
 class Teardown:
     """How a test ends a run: an optional timeout plus an action on the running exec."""
@@ -198,31 +281,6 @@ class Teardown:
 type ExecRun = Callable[[Any, ExecOptions], Coroutine[Any, Any, ExecResult | ExecTimeoutError]]
 
 
-async def run_shell(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run ``args``, a shell command line, through ``exec``."""
-    return await run_exec(args, options)
-
-
-async def run_argv(args: Any, options: ExecOptions) -> ExecResult | ExecTimeoutError:
-    """Run ``args``, a program and its arguments, through ``exec_argv``."""
-    return await exec_argv(args, options)
-
-
-def shell_grandchild(pid_file: Path) -> str:
-    """A shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and waits."""
-    return f"sleep 30 & echo $! > '{pid_file}'; wait"
-
-
-def _argv_grandchild(pid_file: Path) -> tuple[str, ...]:
-    script = (
-        "import subprocess, time\n"
-        f"p = subprocess.Popen({list(SLEEPER_ARGV)!r})\n"
-        f"open({str(pid_file)!r}, 'w').write(str(p.pid) + '\\n')\n"
-        "time.sleep(30)\n"
-    )
-    return (sys.executable, "-c", script)
-
-
 def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str:
     """Build a shell command that backgrounds a ``sleep``, writes its pid to ``pid_file``, and exits.
 
@@ -236,28 +294,6 @@ def shell_leaving_a_descendant(pid_file: Path, *, detached: bool = False) -> str
     """
     redirects = "</dev/null >/dev/null 2>&1" if detached else ">/dev/null"
     return f"sleep 30 {redirects} & echo $! > {shlex.quote(str(pid_file))}; exit 0"
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class Runner:
-    """One entry point and the grandchild-spawning arguments a shared test hands it.
-
-    Attributes:
-        run: The entry point.
-        grandchild: Builds the arguments for a child that starts a sleeping
-            grandchild, writes the grandchild's pid to the given file, then
-            sleeps for 30 s itself.
-    """
-
-    run: ExecRun
-    grandchild: Callable[[Path], str | tuple[str, ...]]
-
-
-SHELL_RUNNER = Runner(run_shell, shell_grandchild)
-"""``exec`` with a shell command line."""
-
-ARGV_RUNNER = Runner(run_argv, _argv_grandchild)
-"""``exec_argv`` with a program and its arguments."""
 
 
 # ---------------------------------------------------------------------------

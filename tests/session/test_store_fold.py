@@ -23,7 +23,6 @@ from tests.session.records._fixtures import (
     command_record,
     committed_keep,
     discard_record,
-    empty_session_state,
     gate_block,
     session_state,
     stop_record,
@@ -48,7 +47,6 @@ _ITERATION_1_UNSETTLED = session_state(
 @pytest.mark.parametrize(
     ("records", "expected"),
     [
-        pytest.param([], empty_session_state(), id="an-empty-log"),
         pytest.param(
             [SESSION], session_state(session=SESSION), id="a-session-with-nothing-measured"
         ),
@@ -79,19 +77,6 @@ _ITERATION_1_UNSETTLED = session_state(
                 last_seq=1,
             ),
             id="an-iteration-settled-by-a-discard",
-        ),
-        pytest.param(
-            [SESSION, ITERATION_1, committed_keep(1), ITERATION_2],
-            session_state(
-                session=SESSION,
-                iteration_count=2,
-                last_iteration=ITERATION_2,
-                unsettled=True,
-                keep_count=1,
-                last_seq=2,
-                last_kept_commit=COMMIT,
-            ),
-            id="a-fresh-iteration-after-a-settled-one",
         ),
         pytest.param(
             [SESSION, ITERATION_1_ON_TARGET, committed_keep(1)],

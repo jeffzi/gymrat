@@ -60,18 +60,15 @@ def write_supervisor_log(path: str, events: list[Any]) -> None:
 def replay_launch_event(
     session_id: str = SESSION_ID,
     at: int = T0,
-    head_sha: str = BASELINE_SHA,
-    **kwargs: Any,
 ) -> LaunchEvent:
     """Build the launch event that opens a supervisor log."""
     return make_launch(
         at=at,
         session_id=session_id,
-        head_sha=head_sha,
+        head_sha=BASELINE_SHA,
         max_minutes=60.0,
         runbook_path="/dev/null",
         kickoff_summary="test",
-        **kwargs,
     )
 
 
@@ -85,19 +82,20 @@ def replay_command(
     *,
     at: int = T2,
     duration_ms: int = 500,
-    exit_code: int = 0,
-    reason: Any = None,
-    seq: int | None = None,
     **kwargs: Any,
 ) -> CommandRecord:
-    """Build a successful ``name`` command record ending at ``T2``, every field overridable."""
+    """Build a successful ``name`` command record with no ``seq``, ending at ``T2``.
+
+    ``at``, ``duration_ms`` and any record field but ``exit_code``, ``reason`` and
+    ``seq`` can be overridden.
+    """
     return command_record(
         name=name,
         at=at,
         duration_ms=duration_ms,
-        exit_code=exit_code,
-        reason=reason,
-        seq=seq,
+        exit_code=0,
+        reason=None,
+        seq=None,
         **kwargs,
     )
 

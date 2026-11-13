@@ -34,20 +34,6 @@ def wait_at_barrier(barrier_path):
 """
 
 
-def _create_barrier(directory: Path) -> Path:
-    """Create the named pipe the racing children park on.
-
-    Args:
-        directory: Where the pipe and the children's ready markers live.
-
-    Returns:
-        The path of the new named pipe.
-    """
-    barrier = directory / "barrier.pipe"
-    os.mkfifo(barrier)
-    return barrier
-
-
 def _release_together(
     barrier: Path,
     count: int,
@@ -58,7 +44,7 @@ def _release_together(
     """Wait for ``count`` children to park on ``barrier``, then release them at once.
 
     Args:
-        barrier: The named pipe from :func:`_create_barrier`.
+        barrier: The named pipe the racing children park on.
         count: How many children must leave a ready marker before the release.
         on_poll: Called on every wait tick, so a caller can fail fast on a
             child that died before reaching the barrier.
@@ -119,7 +105,8 @@ def racing_children(
     Raises:
         AssertionError: Fewer than ``count`` children parked within ``timeout_s``.
     """
-    barrier = _create_barrier(directory)
+    barrier = directory / "barrier.pipe"
+    os.mkfifo(barrier)
     with contextlib.ExitStack() as stack:
         children = [
             stack.enter_context(

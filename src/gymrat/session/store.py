@@ -27,7 +27,7 @@ import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import assert_never
+from typing import NoReturn, assert_never
 
 from pydantic_core import PydanticSerializationError
 
@@ -274,15 +274,21 @@ def is_blank_line(raw: bytes) -> bool:
 def _first_non_blank_line(path: Path) -> tuple[str, int] | None:
     """Read ``path`` up to its first non-blank line, never past it.
 
+    A first non-blank line with no terminating newline is a torn write, dropped
+    exactly as :func:`complete_lines` drops it for :func:`read_records`.
+
     Args:
         path: The session log to read.
 
     Returns:
         That line, decoded, and its 1-based line number, or ``None`` when the
-        log does not exist or holds only blank lines.
+        log does not exist, holds only blank lines, or its first non-blank line
+        is unterminated.
 
     Raises:
         GymratError: When the first non-blank line is not valid UTF-8.
+        OSError: When the log exists but cannot be opened or read, such as a
+            directory or a file without read permission.
     """
     # Binary read: a text-mode read decodes a whole buffered chunk, so bytes on
     # later lines could fail the read of a header that is itself valid.
@@ -292,9 +298,17 @@ def _first_non_blank_line(path: Path) -> tuple[str, int] | None:
         return None
     with handle:
         for line_number, raw in enumerate(handle, start=1):
-            if not is_blank_line(raw):
-                return _decode_utf8_at(raw, f"{path}:{line_number}", line_number), line_number
+            if is_blank_line(raw):
+                continue
+            if not raw.endswith(b"\n"):
+                return None
+            return _decode_utf8_at(raw, f"{path}:{line_number}", line_number), line_number
     return None
+
+
+def _raise_unreadable_log(jsonl_path: str, error: OSError) -> NoReturn:
+    message = f"Cannot read session log at {jsonl_path}"
+    raise GymratError(message, hint=f"{os_error_reason(error)}.") from error
 
 
 def read_session_header(jsonl_path: str) -> SessionRecord | None:
@@ -309,17 +323,21 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
         jsonl_path: Path to the session log file.
 
     Returns:
-        The session record, or ``None`` when the log does not exist or holds
-        only blank lines.
+        The session record, or ``None`` when the log does not exist, holds only
+        blank lines, or its first non-blank line is unterminated — a torn write
+        :func:`read_records` drops too.
 
     Raises:
-        GymratError: When the first non-blank line is not valid UTF-8, is
-            not JSON, matches no record schema, or holds a record other than a
-            session header.
-        OSError: When the log exists but cannot be read, such as a directory
-            or a file without read permission.
+        GymratError: When the log exists but cannot be read, such as a
+            directory or a file without read permission; or when the first
+            non-blank line is not valid UTF-8, is not JSON, matches no record
+            schema, or holds a record other than a session header. A line
+            failure names the log and the 1-based line at fault.
     """
-    found = _first_non_blank_line(Path(jsonl_path))
+    try:
+        found = _first_non_blank_line(Path(jsonl_path))
+    except OSError as error:
+        _raise_unreadable_log(jsonl_path, error)
     if found is None:
         return None
     line, line_number = found
@@ -327,7 +345,28 @@ def read_session_header(jsonl_path: str) -> SessionRecord | None:
 
     value = _decode_log_line_at(line, location, line_number)
 
-    return _require_session_header(parse_record(value), location)
+    return _require_session_header(_parse_record_at(value, location), location)
+
+
+def _parse_record_at(value: object, at: str) -> SessionLogRecord:
+    """Parse one decoded session-log line, naming its ``path:line`` location when invalid.
+
+    Args:
+        value: The line's decoded JSON value.
+        at: The ``path:line`` location the message names.
+
+    Returns:
+        The parsed record.
+
+    Raises:
+        GymratError: When the value matches no record schema, keeping the
+            schema error's hint.
+    """
+    try:
+        return parse_record(value)
+    except GymratError as error:
+        message = f"{error!s} (at {at})"
+        raise GymratError(message, hint=error.hint) from error
 
 
 def _require_session_header(record: SessionLogRecord, at: str) -> SessionRecord:
@@ -353,7 +392,7 @@ def session_header(root: str) -> SessionRecord | None:
     """
     try:
         return read_session_header(session_jsonl_path(root))
-    except (OSError, GymratError):
+    except GymratError:
         return None
 
 
@@ -520,9 +559,8 @@ def complete_lines(raw: bytes) -> list[bytes]:
 def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     """Read every record from the session log at ``jsonl_path``, in file order.
 
-    A log that does not exist reads as no session — an empty list — because the
-    loop commands distinguish "no session" from "corrupt session" and only the
-    latter is a failure.
+    The loop commands distinguish "no session" from "corrupt session", and only
+    the latter is a failure.
 
     Args:
         jsonl_path: Path to the session log file.
@@ -542,8 +580,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
     except FileNotFoundError:
         return []
     except OSError as error:
-        message = f"Cannot read session log at {jsonl_path}"
-        raise GymratError(message, hint=f"{os_error_reason(error)}.") from error
+        _raise_unreadable_log(jsonl_path, error)
 
     records: list[SessionLogRecord] = []
     for line_number, raw_line in enumerate(complete_lines(raw), start=1):
@@ -555,11 +592,7 @@ def read_records(jsonl_path: str) -> list[SessionLogRecord]:
         line = _decode_utf8_at(raw_line, at, line_number)
         value = _decode_log_line_at(line, at, line_number)
 
-        try:
-            record = parse_record(value)
-        except GymratError as error:
-            message = f"{error!s} (at {at})"
-            raise GymratError(message, hint=error.hint) from error
+        record = _parse_record_at(value, at)
 
         if not records:
             record = _require_session_header(record, at)
@@ -812,11 +845,6 @@ def best_kept_iteration(
     return best
 
 
-def _find_stop_message(records: list[SessionLogRecord]) -> str | None:
-    """Return the newest stop record's message, or ``None`` if there is none."""
-    return next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
-
-
 def read_live_session(
     root: str, primary_direction: Direction = GEOMEAN_DIRECTION
 ) -> ReadSessionResult:
@@ -845,7 +873,11 @@ def read_live_session(
         state=state,
         has_baseline=has_baseline,
         best=best_kept_iteration(records, primary_direction, pinned_sha),
-        stop_message=_find_stop_message(records) if state.ends_on_stop else None,
+        stop_message=(
+            next((r.message for r in reversed(records) if isinstance(r, StopRecord)), None)
+            if state.ends_on_stop
+            else None
+        ),
     )
 
 

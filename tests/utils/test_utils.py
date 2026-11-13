@@ -5,6 +5,10 @@ syncs it to disk, then renames it over the target, so a reader sees either the
 previous content or the full new content — never a partial file. On failure
 the target is untouched, the temporary file is removed, and the ``OSError``
 propagates.
+
+``create_text_atomic`` publishes the same way but never replaces: when a file
+already exists at the target it raises ``FileExistsError`` and leaves that file
+as it was. On any failure no temporary file is left behind.
 """
 
 import datetime as dt
@@ -22,6 +26,7 @@ from typing import override
 import pytest
 from pydantic import TypeAdapter
 
+from gymrat.config import MAX_SAFE_INTEGER
 from gymrat.utils import (
     LINE_TERMINATORS,
     NonFiniteNumberError,
@@ -32,27 +37,25 @@ from gymrat.utils import (
     balancing_cycle,
     collapse_whitespace,
     color_from_env,
-    describe_error,
+    create_text_atomic,
     expected_got,
     fan_out,
     finite_or_none,
     first_line,
-    format_clock,
     format_duration,
     fraction_of_median,
     is_balanced,
     is_broken_pipe,
-    is_finite_or_warn,
+    is_positive_integer,
     is_tty,
     limit_output,
     loads_strict_json,
     medians_by_name,
-    named_subject,
     os_error_reason,
     otlp_endpoint,
+    parse_bounded_positive_int,
     pluralize,
     point_stream_at_devnull,
-    record_metric,
     stderr_text_of,
     stream_color_from_env,
     warn_to_stderr,
@@ -339,21 +342,20 @@ def _raise_boom(_: _Event) -> None:
 
 
 def test_fan_out_when_called_does_dispatch_to_subscribers_in_order():
-    calls: list[tuple[str, _Event]] = []
+    calls: list[str] = []
     errors: list[Exception] = []
 
-    def first(event: _Event) -> None:
-        calls.append(("first", event))
+    def first(_event: _Event) -> None:
+        calls.append("first")
 
-    def second(event: _Event) -> None:
-        calls.append(("second", event))
+    def second(_event: _Event) -> None:
+        calls.append("second")
 
     dispatch = fan_out([first, second], errors.append)
-    event = _Event()
 
-    dispatch(event)
+    dispatch(_Event())
 
-    assert [name for name, _ in calls] == ["first", "second"]
+    assert calls == ["first", "second"]
 
 
 def test_fan_out_when_subscriber_raises_does_report_the_error():
@@ -439,7 +441,7 @@ def test_write_text_atomic_when_target_absent_does_create_it_with_the_umask_mode
 
 @pytest.fixture
 def stripping_umask() -> Iterator[None]:
-    """A umask that strips the group and other bits a rewritten file would otherwise lose."""
+    """A umask that strips the other bits a rewritten file would otherwise lose."""
     previous = os.umask(0o007)
     yield
     os.umask(previous)
@@ -481,7 +483,7 @@ def test_write_text_atomic_when_target_is_owner_only_does_never_hold_new_content
 # ---------------------------------------------------------------------------
 
 
-def _fail_fsync(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def _fail_fsync(monkeypatch: pytest.MonkeyPatch) -> str:
     def exploding_fsync(fd: int) -> None:
         msg = "disk full"
         raise OSError(msg)
@@ -490,7 +492,7 @@ def _fail_fsync(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return "disk full"
 
 
-def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def _fail_replace(monkeypatch: pytest.MonkeyPatch) -> str:
     def exploding_replace(src: object, dst: object) -> None:
         msg = "Read-only file system"
         raise OSError(msg)
@@ -506,36 +508,187 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
         pytest.param(_fail_replace, id="rename-fails"),
     ],
 )
-def test_write_text_atomic_when_write_fails_does_raise_the_os_error(
+def test_write_text_atomic_when_write_fails_does_leave_the_directory_as_it_was(
     target: Path,
     monkeypatch: pytest.MonkeyPatch,
-    break_write: Callable[[Path, pytest.MonkeyPatch], str],
+    break_write: Callable[[pytest.MonkeyPatch], str],
 ):
-    reason = break_write(target.parent, monkeypatch)
-
-    with pytest.raises(OSError, match=reason):
-        write_text_atomic(target, NEW_TEXT)
-
-
-@pytest.mark.parametrize(
-    "break_write",
-    [
-        pytest.param(_fail_fsync, id="fsync-fails"),
-        pytest.param(_fail_replace, id="rename-fails"),
-    ],
-)
-def test_write_text_atomic_when_write_fails_does_leave_target_and_directory_untouched(
-    target: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    break_write: Callable[[Path, pytest.MonkeyPatch], str],
-):
-    reason = break_write(target.parent, monkeypatch)
+    reason = break_write(monkeypatch)
 
     with pytest.raises(OSError, match=reason):
         write_text_atomic(target, NEW_TEXT)
 
     assert target.read_text(encoding="utf-8") == OLD_TEXT
     assert _entries(target.parent) == ["state.json"]
+
+
+# ---------------------------------------------------------------------------
+# create_text_atomic
+# ---------------------------------------------------------------------------
+
+
+def test_create_text_atomic_when_target_absent_does_write_utf8_text_without_leftover_temp(
+    tmp_path: Path,
+):
+    path = tmp_path / "state.json"
+
+    create_text_atomic(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(tmp_path) == ["state.json"]
+
+
+def test_create_text_atomic_when_target_exists_does_raise_leaving_the_directory_as_it_was(
+    target: Path,
+):
+    with pytest.raises(FileExistsError):
+        create_text_atomic(target, NEW_TEXT)
+
+    assert target.read_text(encoding="utf-8") == OLD_TEXT
+    assert _entries(target.parent) == ["state.json"]
+
+
+def test_create_text_atomic_when_write_fails_does_leave_directory_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reason = _fail_fsync(monkeypatch)
+
+    with pytest.raises(OSError, match=reason):
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert _entries(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# create_text_atomic: filesystem without hard links
+# ---------------------------------------------------------------------------
+
+
+def _refuse_hard_links(monkeypatch: pytest.MonkeyPatch, code: int) -> list[object]:
+    attempts: list[object] = []
+
+    def refusing_link(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        attempts.append(dst)
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr("os.link", refusing_link)
+    return attempts
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param(errno.EPERM, id="not-permitted"),
+        pytest.param(errno.ENOTSUP, id="not-supported"),
+        pytest.param(errno.ENOSYS, id="not-implemented"),
+    ],
+)
+def test_create_text_atomic_when_hard_links_refused_does_still_create_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+):
+    _refuse_hard_links(monkeypatch, code)
+    path = tmp_path / "state.json"
+
+    create_text_atomic(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(tmp_path) == ["state.json"]
+
+
+def test_create_text_atomic_when_link_fails_otherwise_does_raise_creating_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _refuse_hard_links(monkeypatch, errno.EACCES)
+
+    with pytest.raises(OSError, match=os.strerror(errno.EACCES)) as caught:
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert caught.value.errno == errno.EACCES
+    assert _entries(tmp_path) == []
+
+
+def test_create_text_atomic_when_hard_links_refused_and_target_exists_does_raise_keeping_it(
+    target: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _refuse_hard_links(monkeypatch, errno.EPERM)
+
+    with pytest.raises(FileExistsError):
+        create_text_atomic(target, NEW_TEXT)
+
+    assert target.read_text(encoding="utf-8") == OLD_TEXT
+    assert _entries(target.parent) == ["state.json"]
+
+
+def test_create_text_atomic_when_hard_links_refused_and_fallback_write_fails_does_leave_directory_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    link_attempts = _refuse_hard_links(monkeypatch, errno.EPERM)
+    real_fsync = os.fsync
+
+    def fsync_failing_after_link(fd: int) -> None:
+        if link_attempts:
+            msg = "disk full"
+            raise OSError(msg)
+        real_fsync(fd)
+
+    monkeypatch.setattr("os.fsync", fsync_failing_after_link)
+
+    with pytest.raises(OSError, match="disk full"):
+        create_text_atomic(tmp_path / "state.json", NEW_TEXT)
+
+    assert _entries(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# write_text_atomic and create_text_atomic: umask without owner-write
+# ---------------------------------------------------------------------------
+
+needs_non_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores missing write permission"
+)
+
+_ATOMIC_WRITERS = [
+    pytest.param(write_text_atomic, id="write"),
+    pytest.param(create_text_atomic, id="create"),
+]
+
+
+@pytest.fixture
+def dir_under_read_only_umask(tmp_path: Path) -> Iterator[Path]:
+    """``tmp_path``, with a ``0o277`` umask set after it exists so new files lack owner-write."""
+    previous = os.umask(0o277)
+    yield tmp_path
+    os.umask(previous)
+
+
+@needs_posix_file_modes
+@needs_non_root
+@pytest.mark.parametrize("writer", _ATOMIC_WRITERS)
+def test_atomic_text_writers_when_umask_strips_owner_write_does_write_the_text_without_leftover_temp(
+    dir_under_read_only_umask: Path, writer: Callable[[Path, str], None]
+):
+    path = dir_under_read_only_umask / "state.json"
+
+    writer(path, NEW_TEXT)
+
+    assert path.read_bytes() == NEW_TEXT.encode("utf-8")
+    assert _entries(dir_under_read_only_umask) == ["state.json"]
+
+
+@needs_posix_file_modes
+@needs_non_root
+@pytest.mark.parametrize("writer", _ATOMIC_WRITERS)
+def test_atomic_text_writers_when_umask_strips_owner_write_and_write_fails_does_leave_directory_empty(
+    dir_under_read_only_umask: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer: Callable[[Path, str], None],
+):
+    reason = _fail_fsync(monkeypatch)
+
+    with pytest.raises(OSError, match=reason):
+        writer(dir_under_read_only_umask / "state.json", NEW_TEXT)
+
+    assert _entries(dir_under_read_only_umask) == []
 
 
 # ---------------------------------------------------------------------------
@@ -548,7 +701,7 @@ def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> 
 
     advanced = eta.advanced(100.0).advanced(300.0)
 
-    assert (advanced.completed, advanced.total_time_ms, advanced.total) == (2, 400.0, 4)
+    assert (advanced.completed, advanced.total_time_ms) == (2, 400.0)
 
 
 @pytest.mark.parametrize(
@@ -560,7 +713,7 @@ def test_sampling_eta_advanced_when_called_does_return_an_accumulated_copy() -> 
         pytest.param(6, 600.0, 5, None, id="completed-past-total"),
     ],
 )
-def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
+def test_sampling_eta_eta_ms_when_given_state_does_project_the_average_over_remaining_passes_or_none(
     completed: int, total_time_ms: float, total: int, expected: float | None
 ) -> None:
     eta = SamplingEta(completed=completed, total_time_ms=total_time_ms, total=total)
@@ -576,35 +729,16 @@ def test_sampling_eta_eta_ms_when_given_state_does_return_expected_estimate(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        (59_999, "59s"),
-        (60_000, "1m 0s"),
-        (3_900_000, "1h 05m"),
+        pytest.param(59_999, "59s", id="floors-below-a-minute"),
+        pytest.param(60_000, "1m 0s", id="keeps-zero-seconds"),
+        pytest.param(3_900_000, "1h 05m", id="pads-minutes-in-hour-tier"),
         pytest.param(-1, "0s", id="negative-renders-zero"),
     ],
 )
-def test_format_duration_when_given_milliseconds_does_render_expected_duration(
+def test_format_duration_when_given_milliseconds_does_floor_to_two_tiers_keeping_a_zero_remainder(
     ms: float, expected: str
 ) -> None:
     assert format_duration(ms) == expected
-
-
-# ---------------------------------------------------------------------------
-# format_clock
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("ms", "expected"),
-    [
-        pytest.param(9_999, "00:09", id="floors-partial-second"),
-        pytest.param(465_000, "07:45", id="minutes"),
-        pytest.param(4_065_000, "1:07:45", id="hour-tier"),
-    ],
-)
-def test_format_clock_when_given_milliseconds_does_render_expected_clock(
-    ms: float, expected: str
-) -> None:
-    assert format_clock(ms) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +765,11 @@ _HUNDRED_A_LINE = "a" * 100 + "\n"
             "\n" + "a" * 9000,
             "\n" + "a" * (LIMIT_BYTES - 1),
             id="only-newline-at-byte-zero-cuts-at-a-char",
+        ),
+        pytest.param(
+            "\N{EURO SIGN}" * 3000,
+            "\N{EURO SIGN}" * (LIMIT_BYTES // 3),
+            id="cut-inside-a-multi-byte-char-drops-it",
         ),
     ],
 )
@@ -693,7 +832,6 @@ def test_stderr_text_of_when_streams_vary_does_prefer_stderr_then_stdout_then_me
     [
         pytest.param(None, None, None, id="neither-defers"),
         pytest.param(None, "", False, id="no-color-empty-still-present"),
-        pytest.param("1", None, True, id="force-color"),
         pytest.param("1", "1", True, id="force-color-beats-no-color"),
         pytest.param("", None, False, id="force-color-empty"),
         pytest.param("FALSE", None, False, id="force-color-false-uppercase"),
@@ -865,48 +1003,6 @@ def test_collapse_whitespace_when_text_has_whitespace_runs_does_join_words_with_
 
 
 # ---------------------------------------------------------------------------
-# describe_error
-# ---------------------------------------------------------------------------
-
-
-def test_describe_error_when_string_holds_a_line_terminator_does_escape_only_the_terminator():
-    described = describe_error('naïve "x"\nboom')
-
-    assert described == r'naïve "x"\nboom'
-
-
-def test_describe_error_when_value_is_not_a_string_does_render_it_as_json():
-    described = describe_error({"code": 7})
-
-    assert described == '{"code": 7}'
-
-
-# ---------------------------------------------------------------------------
-# record_metric
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("metrics", "warned"),
-    [
-        pytest.param({"total_ms": 1.0}, True, id="name-already-recorded"),
-        pytest.param({"alloc_bytes": 1.0}, False, id="name-new"),
-    ],
-)
-def test_record_metric_when_storing_a_reading_does_keep_it_warning_only_on_a_collision(
-    metrics: dict[str, float], warned: bool
-):
-    warnings: list[str] = []
-
-    record_metric(metrics, "total_ms", 2.0, warnings.append, "rename the runs")
-
-    assert metrics["total_ms"] == 2.0
-    assert [("total_ms" in w, "rename the runs" in w) for w in warnings] == (
-        [(True, True)] if warned else []
-    )
-
-
-# ---------------------------------------------------------------------------
 # Number
 # ---------------------------------------------------------------------------
 
@@ -918,46 +1014,43 @@ def test_number_when_validating_an_integer_does_keep_it_an_integer():
 
 
 # ---------------------------------------------------------------------------
-# named_subject
+# is_positive_integer
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("entry", "expected"),
+    "raw",
     [
-        pytest.param({"alias": "line\u2028break"}, 'benchmark "line\\u2028break"', id="string"),
-        pytest.param({"alias": 3}, "benchmark", id="not-a-string"),
-        pytest.param(None, "benchmark", id="not-an-object"),
+        pytest.param("+5", id="plus-sign"),
+        pytest.param("\N{ARABIC-INDIC DIGIT FIVE}", id="non-ascii-digit"),
+        pytest.param("0", id="zero"),
     ],
 )
-def test_named_subject_when_entry_varies_does_name_it_only_by_a_string_field(
-    entry: object, expected: str
-):
-    assert named_subject("benchmark", entry, "alias") == expected
+def test_is_positive_integer_when_not_bare_positive_digits_does_reject(raw: str):
+    accepted = is_positive_integer(raw)
+
+    assert accepted is False
 
 
 # ---------------------------------------------------------------------------
-# is_finite_or_warn
+# parse_bounded_positive_int
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("value", "finite"),
+    ("raw", "maximum", "expected"),
     [
-        pytest.param(1.5, True, id="finite"),
-        pytest.param(math.inf, False, id="infinity"),
-        pytest.param(10**400, False, id="integer-overflows-float"),
+        pytest.param("1" * 4301, MAX_SAFE_INTEGER, None, id="past-int-conversion-limit"),
+        pytest.param("10", 10, 10, id="ceiling"),
+        pytest.param("007", 10, 7, id="leading-zeros"),
     ],
 )
-def test_is_finite_or_warn_when_checking_a_reading_does_warn_only_when_not_finite(
-    value: float, finite: bool
+def test_parse_bounded_positive_int_when_digits_given_does_return_the_value_within_the_ceiling(
+    raw: str, maximum: int, expected: int | None
 ):
-    warnings: list[str] = []
+    parsed = parse_bounded_positive_int(raw, maximum)
 
-    result = is_finite_or_warn(value, warnings.append, "run", "stats.p50")
-
-    assert result is finite
-    assert ["stats.p50" in w for w in warnings] == ([] if finite else [True])
+    assert parsed == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1037,7 +1130,8 @@ def test_point_stream_at_devnull_when_stream_has_no_descriptor_does_return_witho
 def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descriptor():
     before = _open_descriptors()
 
-    with pytest.raises(OSError, match="Bad file descriptor"):
+    with pytest.raises(OSError, match=os.strerror(errno.EBADF)) as caught:
         point_stream_at_devnull(_BadDescriptorStream())
 
+    assert caught.value.errno == errno.EBADF
     assert _open_descriptors() == before

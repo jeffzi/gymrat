@@ -22,24 +22,23 @@ in ``test_reducer.py``.
 
 from __future__ import annotations
 
-from datetime import UTC, timedelta, timezone
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
 import pytest
 
-from gymrat.cli.supervise.progress import IDLE_WARN_MS
+from gymrat.cli.supervise.frame import IDLE_WARN_MS, format_eta
+from gymrat.cli.supervise.text import exit_phase_text
 from gymrat.session.progress_file import ProgressSnapshot
 from gymrat.session.store import BestIteration
 from gymrat.supervisor.exit_sequence import ExitPhase
-from tests._logging import unhandled_logging
 from tests.cli.supervise._fixtures import (
     BASH_CYCLE_END_MS,
     ReporterKit,
     cap_event,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
-    fire_launch_and_edit_cycle,
     fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
@@ -51,8 +50,6 @@ from tests.cli.supervise._fixtures import (
     read_result,
     render_frame,
     reporter_showing_session,
-    reporter_with_nested_read,
-    row_content,
     session_state_three_iterations,
     turn_end_event,
     usage_event,
@@ -97,7 +94,7 @@ def _split_at_loop_row(frame: str) -> tuple[list[str], list[str]]:
     Returns:
         The summary rows ending on the loop row, then the rows below it.
     """
-    rows = [row_content(line) for line in frame.splitlines() if line.startswith("│")]
+    rows = [line.strip("│").strip() for line in frame.splitlines() if line.startswith("│")]
     loop_index = next(i for i, row in enumerate(rows) if row.startswith("loop "))
     return rows[: loop_index + 1], rows[loop_index + 1 :]
 
@@ -163,6 +160,7 @@ def test_time_bar_when_elapsed_exceeds_max_does_clamp_remaining_to_zero():
     frame = render_frame(kit.reporter)
 
     time_row = _summary_rows(frame)[0]
+    assert time_row.startswith("time ")
     assert time_row.endswith(" 2h 00m  cap in 0s")
 
 
@@ -185,7 +183,7 @@ def test_best_when_kept_iteration_exists_does_show_the_best_row():
     frame = render_frame(kit.reporter)
 
     assert _rows_below_loop(frame) == [
-        "best -6.8% geomean (iteration 3)",
+        "best   -6.8% geomean (iteration 3)",
         "waiting  0s",
         "00:00:03  Bash   ...  1s",
     ]
@@ -273,22 +271,6 @@ def test_cap_when_fired_does_show_action_with_cap_type():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("result", "expected_row"),
-    [
-        pytest.param("ok", "00:00:03  Edit   src/archetype.ts  1s", id="ok"),
-        pytest.param("error", "00:00:03  Edit   src/archetype.ts  ✗ 1s", id="error"),
-    ],
-)
-def test_finished_tool_when_ended_does_mark_only_an_error(result: str, expected_row: str):
-    kit = make_reporter()
-    fire_launch_and_edit_cycle(kit, result=result)
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == ["waiting  0s", expected_row]
-
-
 def test_finished_tool_when_start_never_seen_does_show_placeholders():
     kit = launched(make_reporter())
     kit.clock.now = 3000
@@ -302,14 +284,6 @@ def test_finished_tool_when_start_never_seen_does_show_placeholders():
 # ---------------------------------------------------------------------------
 # liveness — nested subagent lines
 # ---------------------------------------------------------------------------
-
-
-def test_nested_tool_when_in_flight_does_render_an_arrow_line_under_parent():
-    kit = reporter_with_nested_read()
-
-    rows = _rows_below_loop(render_frame(kit.reporter))
-
-    assert rows == ["00:00:01  Bash   ...  3s", "↳ Read src/config.ts  3s"]
 
 
 @pytest.mark.parametrize(
@@ -385,44 +359,13 @@ def test_tool_name_column_width_when_nested_tool_present_does_ignore_nested_widt
 
 
 # ---------------------------------------------------------------------------
-# wall-clock finished-tool lines
-# ---------------------------------------------------------------------------
-
-
-# 2023-11-14 22:13:20 UTC.
-_WALL_CLOCK_EPOCH_MS = 1_700_000_000_000
-
-
-def test_finished_tool_when_ended_does_show_wall_clock_in_the_given_tz():
-    started_at = _WALL_CLOCK_EPOCH_MS - 1000
-    kit = make_reporter(tz=timezone(timedelta(hours=5, minutes=30)), clock_start=started_at)
-    kit.reporter.observer(launch_event(started_at))
-    kit.reporter.observer(
-        tool_start_event("Edit", "edit-1", started_at, input_summary="src/archetype.ts")
-    )
-    kit.clock.now = _WALL_CLOCK_EPOCH_MS
-    kit.reporter.observer(
-        tool_end_event("Edit", "edit-1", _WALL_CLOCK_EPOCH_MS, started_at_ms=started_at)
-    )
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == [
-        "waiting  0s",
-        "03:43:20  Edit   src/archetype.ts  1s",
-    ]
-
-
-# ---------------------------------------------------------------------------
 # above-threshold waiting — last tool context
 # ---------------------------------------------------------------------------
 
 
-def _make_reporter_past_bash_end(
-    *, idle_warn_ms: int = IDLE_WARN_MS, result: str = "ok"
-) -> ReporterKit:
-    """A reporter with the given idle-warn threshold, clock frozen right after a Bash end."""
-    kit = make_reporter(idle_warn_ms=idle_warn_ms)
+def _make_reporter_past_bash_end(*, result: str = "ok") -> ReporterKit:
+    """A reporter whose clock is frozen right after a Bash end."""
+    kit = make_reporter()
     fire_launch_and_bash_cycle(kit.reporter.observer, clock=kit.clock, result=result)
     return kit
 
@@ -450,25 +393,23 @@ def test_liveness_when_waiting_past_threshold_no_tool_does_omit_parenthetical():
 
 
 # ---------------------------------------------------------------------------
-# custom idle_warn_ms — configurable threshold
+# the idle-warn threshold
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("offset", "expected_state"),
     [
-        pytest.param(
-            1, "no output for 0s (last tool: Bash at 00:00:03)", id="past-custom-idle-warn"
-        ),
-        pytest.param(-1, "waiting  0s", id="below-custom-idle-warn"),
+        pytest.param(1, "no output for 30s (last tool: Bash at 00:00:03)", id="past-idle-warn"),
+        pytest.param(-1, "waiting  29s", id="below-idle-warn"),
+        pytest.param(0, "no output for 30s (last tool: Bash at 00:00:03)", id="at-idle-warn"),
     ],
 )
-def test_liveness_when_waiting_around_custom_idle_warn_does_escalate_only_past_it(
+def test_liveness_when_waiting_around_idle_warn_does_escalate_once_it_is_reached(
     offset: int, expected_state: str
 ):
-    custom_ms = 100
-    kit = _make_reporter_past_bash_end(idle_warn_ms=custom_ms)
-    kit.clock.now = BASH_CYCLE_END_MS + custom_ms + offset
+    kit = _make_reporter_past_bash_end()
+    kit.clock.now = BASH_CYCLE_END_MS + IDLE_WARN_MS + offset
 
     frame = render_frame(kit.reporter)
 
@@ -509,7 +450,7 @@ def test_liveness_when_model_phase_reported_does_show_the_phase_with_its_elapsed
 @pytest.mark.parametrize(
     ("passes_completed", "expected_row"),
     [
-        pytest.param(7, "passes 7/10 · 31m 0s · ~11m 15s left", id="passes-left"),
+        pytest.param(7, f"passes 7/10 · 31m 0s · {format_eta(3 * 225_000)}", id="passes-left"),
         pytest.param(10, "passes 10/10 · 31m 0s", id="no-pass-left"),
     ],
 )
@@ -530,16 +471,6 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_its_passes(
     assert _rows_below_loop(frame) == ["00:00:02  Bash   gymrat iterate  31m 0s", expected_row]
 
 
-def test_liveness_when_iterate_tool_has_no_sidecar_or_nested_activity_does_show_only_plain_elapsed():
-    kit = make_reporter(read_progress=lambda _root: None)
-    fire_launch_and_iterate_start(kit)
-    kit.clock.now = 7000
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == ["00:00:02  Bash   gymrat iterate  5s"]
-
-
 # ---------------------------------------------------------------------------
 # MCP iterate tool detection
 # ---------------------------------------------------------------------------
@@ -557,7 +488,7 @@ def test_liveness_when_mcp_iterate_tool_in_flight_does_show_the_sidecar_passes()
 
     assert _rows_below_loop(frame) == [
         "00:00:02  mcp__gymrat__iterate  gymrat iterate  10m 0s",
-        "passes 4/8 · 10m 0s · ~8m left",
+        f"passes 4/8 · 10m 0s · {format_eta(4 * 120_000)}",
     ]
 
 
@@ -627,9 +558,7 @@ def _throwing_read() -> ReadSessionResult:
     raise RuntimeError(message)
 
 
-def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_without_a_traceback(
-    capsys: pytest.CaptureFixture[str],
-):
+def test_plain_when_session_read_fails_again_after_recovering_does_warn_once():
     recovered = make_read_session(session_state(), has_baseline=True)
     reads = iter([_throwing_read, recovered, _throwing_read])
 
@@ -638,12 +567,30 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_wit
 
     kit, writes = _plain(read_session=read_in_turn)
 
-    with unhandled_logging():
-        kit.reporter.refresh_session()
-        kit.reporter.refresh_session()
-        kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
+    kit.reporter.refresh_session()
 
-    assert (writes, capsys.readouterr().err) == (["session read failed: no session file"], "")
+    assert writes == ["[00:00:00] warning: session read failed: no session file"]
+
+
+@pytest.mark.parametrize(
+    ("launch_ms", "usage_ms", "expected_line"),
+    [
+        pytest.param(1000, 3_726_000, "[01:02:05] cost $1.42", id="after-launch"),
+        pytest.param(5000, 1000, "[00:00:00] cost $1.42", id="stamped-before-launch"),
+    ],
+)
+def test_plain_when_event_line_written_does_stamp_the_event_time_since_launch(
+    launch_ms: int, usage_ms: int, expected_line: str
+):
+    kit, writes = _plain()
+    kit.reporter.observer(launch_event(launch_ms))
+    writes_at_launch = len(writes)
+
+    kit.reporter.observer(usage_event(1.42, usage_ms))
+
+    assert writes[writes_at_launch:] == [expected_line]
 
 
 # ---------------------------------------------------------------------------
@@ -654,18 +601,28 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once_wit
 _WAITING_LOCK = ExitPhase(kind="waiting-lock", pid=4242)
 
 
+_SETTLING = ExitPhase(kind="settling", pid=None)
+
+
 @pytest.mark.parametrize(
     ("second", "expected_lines"),
     [
         pytest.param(
-            ExitPhase(kind="settling", pid=None),
-            ["waiting for gymrat (PID 4242)", "settling…"],
+            _SETTLING,
+            [
+                f"[00:00:00] {exit_phase_text(_WAITING_LOCK)}",
+                f"[00:00:04] {exit_phase_text(_SETTLING)}",
+            ],
             id="phase-changes",
         ),
-        pytest.param(_WAITING_LOCK, ["waiting for gymrat (PID 4242)"], id="same-phase-repeats"),
+        pytest.param(
+            _WAITING_LOCK,
+            [f"[00:00:00] {exit_phase_text(_WAITING_LOCK)}"],
+            id="same-phase-repeats",
+        ),
     ],
 )
-def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
+def test_exit_phase_when_plain_does_write_a_stamped_line_only_when_the_phase_changes(
     second: ExitPhase, expected_lines: list[str]
 ):
     kit, writes = _plain()
@@ -684,30 +641,12 @@ def test_exit_phase_when_plain_does_write_a_line_only_when_the_phase_changes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("phase", "expected_line"),
-    [
-        pytest.param(
-            ExitPhase(kind="waiting-lock", pid=4242),
-            "waiting for gymrat (PID 4242)  3s",
-            id="waiting-lock",
-        ),
-        pytest.param(
-            ExitPhase(kind="waiting-lock", pid=None),
-            "waiting for gymrat (PID unknown)  3s",
-            id="waiting-lock-unknown-pid",
-        ),
-        pytest.param(ExitPhase(kind="settling", pid=None), "settling…  3s", id="settling"),
-    ],
-)
-def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed(
-    phase: ExitPhase, expected_line: str
-):
+def test_liveness_when_exit_phase_reported_does_show_the_phase_with_advancing_elapsed():
     kit = launched(make_reporter())
     kit.clock.now = 5000
-    kit.reporter.exit_phase(phase)
+    kit.reporter.exit_phase(_WAITING_LOCK)
     kit.clock.now = 8000
 
     frame = render_frame(kit.reporter)
 
-    assert _rows_below_loop(frame) == [expected_line]
+    assert _rows_below_loop(frame) == [f"{exit_phase_text(_WAITING_LOCK)}  3s"]

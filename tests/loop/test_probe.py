@@ -22,7 +22,7 @@ import pytest
 from gymrat.errors import GymratError
 from gymrat.loop.probe import PROBE_DEFAULT_SAMPLES, ProbeOptions, probe_session
 from gymrat.session.paths import experiment_worktree_dir
-from tests._exec_fixtures import expected_result, install_exec
+from tests._exec_fixtures import SAMPLING_EXEC, expected_result, install_exec
 from tests.loop._probe import BASELINE_SAMPLES
 from tests.loop._settle import checks_config, start_with
 from tests.session.records._fixtures import baseline_record
@@ -44,7 +44,7 @@ SAMPLE_COUNTS = [
 
 def _install_bench(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     """Answer every command the sampler spawns with a zero exit printing one ``total_ms`` metric."""
-    return install_exec(monkeypatch, "gymrat.sampling.exec", expected_result("METRIC total_ms=90"))
+    return install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC total_ms=90"))
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ async def test_probe_session_when_samples_requested_or_unset_does_take_the_count
     assert result.samples == expected
 
 
-async def test_probe_session_when_no_names_does_bench_in_the_experiment_worktree(
+async def test_probe_session_when_probed_does_bench_in_the_experiment_worktree(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))

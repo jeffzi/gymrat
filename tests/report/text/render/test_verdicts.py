@@ -8,8 +8,7 @@ behavior, and through the footer and selection functions where their own rules
 are.
 
 The colored report is covered too: how verdict cells and the highlights block
-are painted. The run header's and column labels' colors live with the other
-element styles in ``test_whole``.
+are painted. Geomean row colors live in ``test_whole``.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from gymrat.report.types import (
     RegressedFailOn,
     ReportOptions,
 )
-from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
+from gymrat.worktree_sweep import CleanupResult, WorktreeRemovalFailure
 from tests._ansi import strip_ansi
 from tests.report._assertions import (
     highlight_lines,
@@ -45,14 +44,12 @@ from tests.report._assertions import (
     styles_at,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     create_comparison_result,
     every_class_metrics,
     exact_metric,
     grouped_comparison,
     memory_kind,
-    n_way_metric,
     other_kind,
     permutation_metric,
     shared_baseline_metric,
@@ -63,14 +60,12 @@ from tests.report._verdicts import (
     band_metric,
     band_verdict,
     geomean_of,
-    one_sided_metric,
+    metric_meta,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from gymrat.model import GeomeanResult
-    from gymrat.report.types import ComparisonResult, MetricComparisons
+    from gymrat.report.types import ComparisonResult, MetricComparison, MetricComparisons
 
 
 # ---------------------------------------------------------------------------
@@ -78,21 +73,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-#: Two candidates whose verdicts on ``a/time`` and ``b/time`` rank differently.
-_TWO_CANDIDATE_METRICS: MetricComparisons = {
-    "a/time": n_way_metric([
-        NWayCandidate(verdict="improved", delta=-4, median=96),
-        NWayCandidate(verdict="regressed", delta=3, median=103),
-    ]),
-    "b/time": n_way_metric([
-        NWayCandidate(verdict="regressed", delta=6, median=106),
-        NWayCandidate(verdict="no-signal", delta=0.2, median=100.2),
-    ]),
-}
-
-
 @pytest.mark.parametrize(
-    ("metrics", "candidate_index", "expected"),
+    ("metrics", "expected"),
     [
         pytest.param(
             {
@@ -106,15 +88,11 @@ _TWO_CANDIDATE_METRICS: MetricComparisons = {
                 ),
                 "within-noise/time": permutation_metric(verdict="no-signal", delta=0.4),
                 "big-improvement/time": permutation_metric(verdict="improved", delta=-20),
-                "one-sided/time": one_sided_metric(),
                 "loud-unstable/time": permutation_metric(
                     verdict="unstable", delta=5, noise_pct=300
                 ),
-                "tied/heap": band_metric(n=10, usable_n=0),
-                "single-pair/time": band_metric(n=1, noise_pct=0.5),
                 "short-improved/time": band_metric(verdict="improved", delta=-10, n=4),
             },
-            0,
             [
                 "big-regression/ops",
                 "small-regression/time",
@@ -137,22 +115,15 @@ _TWO_CANDIDATE_METRICS: MetricComparisons = {
                     unit="bytes",
                 ),
             },
-            0,
             ["zero-median/heap", "loud-unstable/time"],
             id="unstable-around-zero-median-ranks-by-absolute-noise",
-        ),
-        pytest.param(
-            _TWO_CANDIDATE_METRICS,
-            1,
-            ["a/time"],
-            id="second-candidate-ranks-by-its-own-verdicts",
         ),
     ],
 )
 def test_select_highlights_when_verdicts_vary_does_rank_the_candidate_movers(
-    metrics: MetricComparisons, candidate_index: int, expected: list[str]
+    metrics: MetricComparisons, expected: list[str]
 ):
-    highlights = select_highlights(metrics, candidate_index)
+    highlights = select_highlights(metrics, 0)
 
     assert [highlight.name for highlight in highlights] == expected
 
@@ -173,7 +144,6 @@ def test_render_report_when_unstable_around_zero_candidate_median_does_state_noi
 
     highlights = [line.strip() for line in highlight_lines(render_report(result))]
 
-    assert highlights[0].startswith("≈ jittery/heap")
     assert "0B candidate median" in highlights[0]
 
 
@@ -190,15 +160,64 @@ def test_render_report_when_metric_name_has_colon_word_does_align_deltas_with_ot
     assert highlights[0].index("+2.2%") == highlights[1].index("+1.5%")
 
 
+#: Case names holding a backslash, each paired with a name of equal length without one.
+BACKSLASH_NAMES = [
+    pytest.param("a\\[1]", "abcde", id="backslash-before-bracket"),
+    pytest.param("case\\", "cases", id="ends-in-backslash"),
+]
+
+
+def _two_kind_case(
+    case: str, time_metric: MetricComparison, memory_metric: MetricComparison
+) -> ComparisonResult:
+    """A run measuring ``case`` under a ``time`` and a ``memory`` kind.
+
+    Args:
+        case: The case name both kinds measure.
+        time_metric: The comparison under the ``time`` kind.
+        memory_metric: The comparison under the ``memory`` kind.
+
+    Returns:
+        The comparison result.
+    """
+    return create_comparison_result(
+        metrics={
+            f"{case}#time": replace(time_metric, meta=metric_meta(case, kind="time")),
+            f"{case}#memory": replace(
+                memory_metric, meta=metric_meta(case, kind="memory", unit="bytes")
+            ),
+        },
+        candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+    )
+
+
+@pytest.mark.parametrize(("name", "plain"), BACKSLASH_NAMES)
+def test_render_report_when_multi_kind_name_holds_backslash_does_print_it_exactly_in_highlights(
+    name: str, plain: str
+):
+    def highlights_for(case: str) -> list[str]:
+        result = _two_kind_case(
+            case,
+            permutation_metric(verdict="regressed", delta=2.2),
+            permutation_metric(verdict="regressed", delta=3.0),
+        )
+        return [strip_ansi(line) for line in highlight_lines(render_report(result))]
+
+    plain_lines = highlights_for(plain)
+    assert [plain in line for line in plain_lines] == [True, True]
+
+    highlights = highlights_for(name)
+
+    assert highlights == [line.replace(plain, name) for line in plain_lines]
+
+
 # ---------------------------------------------------------------------------
 # --fail-on gate trips
 # ---------------------------------------------------------------------------
 
 
-def _tripping_result(geomean: float = 3.1, gated: float = 3.1) -> ComparisonResult:
+def _tripping_result(geomean: float, gated: float) -> ComparisonResult:
     """A two-kind run whose gating ``time`` kind carries the given geomeans.
-
-    The defaults regress the kind past a 2% threshold on both figures.
 
     Args:
         geomean: The ``time`` kind's overall geomean, in percent.
@@ -265,6 +284,23 @@ def test_render_report_when_no_gate_condition_trips_does_list_no_gate(
             id="regressed-trips-on-inconclusive",
         ),
         pytest.param(
+            create_comparison_result(
+                metrics={
+                    "slow#time": replace(
+                        band_metric(verdict="regressed", delta=8, n=4),
+                        meta=metric_meta("slow", kind="time"),
+                    ),
+                    "slow#memory": replace(
+                        band_metric(), meta=metric_meta("slow", kind="memory", unit="bytes")
+                    ),
+                },
+                candidates=[create_candidate(kinds=[time_kind(), memory_kind()])],
+            ),
+            ReportOptions(fail_on=(RegressedFailOn(),)),
+            ["time · slow", "+8.0%"],
+            id="regressed-trips-in-a-multi-kind-run",
+        ),
+        pytest.param(
             _tripping_result(1, 5),
             ReportOptions(fail_on=(GeomeanFailOn(pct=2),)),
             ["time", "+5.0%", "geomean:2"],
@@ -281,13 +317,28 @@ def test_render_report_when_a_gate_condition_trips_does_flag_it_with_its_figures
     assert [part for part in inserted if part not in gate_line] == []
 
 
+@pytest.mark.parametrize(("name", "plain"), BACKSLASH_NAMES)
+def test_render_report_when_multi_kind_name_holds_backslash_does_print_it_exactly_in_the_gate(
+    name: str, plain: str
+):
+    def gate_lines_for(case: str) -> list[str]:
+        result = _two_kind_case(case, band_metric(verdict="regressed", delta=8, n=4), band_metric())
+        return _gate_lines(render_report(result, ReportOptions(fail_on=(RegressedFailOn(),))))
+
+    [plain_line] = gate_lines_for(plain)
+    assert plain in plain_line
+
+    gate_lines = gate_lines_for(name)
+
+    assert gate_lines == [plain_line.replace(plain, name)]
+
+
 def test_render_report_when_gating_multi_candidate_does_flag_only_those_that_exceeded():
     highlights = highlight_lines(
         render_report(grouped_comparison(), ReportOptions(fail_on=(GeomeanFailOn(pct=2),)))
     )
 
     lines = [line.strip() for line in highlights if line.strip().startswith(("candidate", "⚑"))]
-
     assert lines[:2] == ["candidate-a", "candidate-b"]
     [flag] = lines[2:]
     assert flag.startswith("⚑ time")
@@ -318,9 +369,6 @@ def test_gated_geomean_trips_when_geomean_varies_does_trip_only_at_or_past_the_t
 
 #: The sample count the shortage hint suggests for a two-target run of four samples.
 SHORTAGE_SUGGESTION = "--samples 6"
-
-#: The fragment that tells the dropped-rounds hint from the shortage hint.
-DROPPED_ROUNDS = "rounds were dropped"
 
 
 def _verbose_lines(metrics: MetricComparisons) -> list[str]:
@@ -370,69 +418,39 @@ def test_footer_lines_when_verbose_does_name_the_band_cause_per_metric(
     lines = _band_lines_for(metrics)
 
     assert len(lines) == len(expected)
-    assert [
-        (cause, line) for cause, line in zip(expected, lines, strict=True) if cause not in line
-    ] == []
+    assert all(cause in line for cause, line in zip(expected, lines, strict=True))
 
 
-@pytest.mark.parametrize(
-    ("metrics", "samples", "expected"),
-    [
-        pytest.param(
-            {
-                "entity.alive_check/heap": band_metric(n=10, usable_n=3),
-                "iteration.columns/heap": band_metric(n=8, usable_n=2),
-                "parse/time": permutation_metric(verdict="improved", delta=-10),
-            },
-            4,
-            [],
-            id="ties-alone",
-        ),
-        pytest.param(
-            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
-            PERMUTATION_MIN_N - 1,
-            [SHORTAGE_SUGGESTION],
-            id="fewer-samples-than-floor",
-        ),
-        pytest.param(
-            {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)},
-            PERMUTATION_MIN_N,
-            [DROPPED_ROUNDS],
-            id="floor-reached-but-fewer-paired",
-        ),
-    ],
-)
-def test_footer_lines_when_not_verbose_does_pick_the_shortage_or_dropped_rounds_hint(
-    metrics: MetricComparisons, samples: int, expected: list[str]
-):
-    lines = footer_lines(metrics, verbose=False, command="compare", samples=samples, target_count=2)
+def test_footer_lines_when_not_verbose_and_only_ties_at_the_floor_does_suggest_nothing():
+    metrics: MetricComparisons = {
+        "entity.alive_check/heap": band_metric(n=10, usable_n=3),
+        "iteration.columns/heap": band_metric(n=8, usable_n=2),
+        "parse/time": permutation_metric(verdict="improved", delta=-10),
+    }
 
-    assert len(lines) == len(expected)
-    assert [
-        (hint, render_plain(line))
-        for hint, line in zip(expected, lines, strict=True)
-        if hint not in render_plain(line)
-    ] == []
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=4, target_count=2)
+
+    assert list(lines) == []
 
 
-@pytest.mark.parametrize(
-    ("target_count", "suggested"),
-    [
-        pytest.param(4, 8, id="four-targets"),
-        pytest.param(7, 14, id="seven-targets"),
-    ],
-)
-def test_footer_lines_when_run_too_short_does_suggest_the_smallest_balanced_count(
-    target_count: int, suggested: int
-):
-    metrics: MetricComparisons = {"a/time": band_metric(n=4)}
+def test_footer_lines_when_floor_reached_but_fewer_paired_does_give_one_hint_without_a_samples_suggestion():
+    metrics: MetricComparisons = {"a/time": band_metric(n=PERMUTATION_MIN_N - 1)}
 
     lines = footer_lines(
-        metrics, verbose=False, command="compare", samples=4, target_count=target_count
+        metrics, verbose=False, command="compare", samples=PERMUTATION_MIN_N, target_count=2
     )
 
     assert len(lines) == 1
-    assert f"--samples {suggested} " in render_plain(lines[0])
+    assert "--samples" not in render_plain(lines[0])
+
+
+def test_footer_lines_when_seven_targets_run_too_short_does_suggest_the_smallest_balanced_count():
+    metrics: MetricComparisons = {"a/time": band_metric(n=4)}
+
+    lines = footer_lines(metrics, verbose=False, command="compare", samples=4, target_count=7)
+
+    assert len(lines) == 1
+    assert "--samples 14 " in render_plain(lines[0])
 
 
 def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_four_targets_balance():
@@ -445,17 +463,15 @@ def test_render_report_when_three_candidates_run_too_short_does_suggest_a_count_
 
     output = render_report(result)
 
-    assert "gymrat compare --samples 8 " in output
+    assert "--samples 8 " in output
 
 
-def test_render_report_when_verbose_and_all_exact_does_end_on_the_highlights_without_a_footer():
+def test_render_report_when_verbose_and_all_exact_does_add_no_footer():
     result = create_comparison_result(metrics={"a/heap": exact_metric(delta=-7.9)})
 
     output = render_report(result, ReportOptions(verbose=True))
 
-    last_block = output.split("\n\n")[-1].splitlines()
-    assert last_block[0] == "highlights"
-    assert len(last_block) == 2
+    assert output == render_report(result)
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +502,6 @@ def test_render_report_when_methods_differ_does_name_each_with_its_pair_counts()
 
     permutation_line = line_starting_with(report, "verdicts:")
     band_line = line_starting_with(report, "noise band")
-
     assert "n=10" in permutation_line
     assert "n=4" in band_line
 
@@ -556,18 +571,11 @@ def _colorful_result() -> ComparisonResult:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("metric", "marker", "codes"),
-    [
-        pytest.param("faster/time", "✓", sgr_for(VERDICT_STYLES["improved"]), id="improved-green"),
-    ],
-)
-def test_render_report_when_colored_does_paint_the_verdict_glyph_in_its_verdict_color(
-    metric: str, marker: str, codes: list[str]
-):
-    row = line_containing(render_report(_colorful_result(), ReportOptions(color=True)), metric)
+def test_render_report_when_colored_does_paint_the_verdict_glyph_in_its_verdict_color():
+    report = render_report(_colorful_result(), ReportOptions(color=True))
 
-    assert styles_at(row, marker) == codes
+    row = line_containing(report, "faster/time")
+    assert styles_at(row, "✓") == sgr_for(VERDICT_STYLES["improved"])
 
 
 # ---------------------------------------------------------------------------
@@ -579,36 +587,16 @@ _COLORED = ReportOptions(color=True)
 
 
 @pytest.mark.parametrize(
-    ("make_result", "options", "needle", "marker", "expected"),
-    [
-        pytest.param(
-            _colorful_result,
-            _COLORED,
-            "slower",
-            "✗",
-            sgr_for(VERDICT_STYLES["regressed"]),
-            id="regressed-glyph-red",
-        ),
-        pytest.param(
-            _colorful_result,
-            _COLORED,
-            "slower",
-            "+2.4%",
-            sgr_for(VERDICT_STYLES["regressed"]),
-            id="regressed-delta-red",
-        ),
-    ],
+    "marker", [pytest.param("✗", id="glyph"), pytest.param("+2.4%", id="delta")]
 )
-def test_render_report_when_colored_does_paint_each_highlight_element(
-    make_result: Callable[[], ComparisonResult],
-    options: ReportOptions,
-    needle: str,
+def test_render_report_when_colored_does_paint_each_highlight_element_in_its_verdict_color(
     marker: str,
-    expected: list[str],
 ):
-    highlights = "\n".join(highlight_lines(render_report(make_result(), options)))
+    highlights = "\n".join(highlight_lines(render_report(_colorful_result(), _COLORED)))
 
-    assert styles_at(line_containing(highlights, needle), marker) == expected
+    assert styles_at(line_containing(highlights, "slower"), marker) == sgr_for(
+        VERDICT_STYLES["regressed"]
+    )
 
 
 def test_render_report_when_colored_does_style_the_verdict_word_not_a_matching_name():

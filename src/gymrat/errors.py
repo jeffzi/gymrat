@@ -1,7 +1,9 @@
 """Error hierarchy for gymrat.
 
-Every error raised by gymrat extends :class:`GymratError` rather than a bare
-``Exception``. A single base class lets the CLI boundary catch and route the
+Every error that reaches the CLI boundary extends :class:`GymratError` rather
+than a bare ``Exception``. An error that never leaves the code that raises it
+may extend a builtin instead, provided its callers convert it before it reaches
+the boundary. A single base class lets the CLI boundary catch and route the
 whole family in one place, and it gives every error an optional ``hint`` field
 carrying a human-facing next step alongside the machine-facing message.
 

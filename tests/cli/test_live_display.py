@@ -37,7 +37,6 @@ from tests._rich import (
     KEPT_LINE,
     TERMINATION_SIGNAL,
     console_output,
-    cursor_hidden,
     kept_line_terminal,
     screen_lines,
     sealed_console,
@@ -238,8 +237,6 @@ def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
         frame: RenderableType | None,
         *,
         auto_refresh: bool = False,
-        redirect_stdout: bool = False,
-        redirect_stderr: bool = False,
         get_renderable: Callable[[], RenderableType] | None = None,
     ) -> ErasableLive:
         live = ErasableLive(
@@ -247,8 +244,8 @@ def mounted_live() -> Iterator[Callable[..., ErasableLive]]:
             console=console,
             auto_refresh=auto_refresh,
             refresh_per_second=100,
-            redirect_stdout=redirect_stdout,
-            redirect_stderr=redirect_stderr,
+            redirect_stdout=False,
+            redirect_stderr=False,
             get_renderable=get_renderable,
         )
         mounted.append((live, mount_live(live)))
@@ -293,7 +290,7 @@ def _signal_mid_paint(
 @pytest.mark.parametrize(
     "row_count", [pytest.param(1, id="one-row"), pytest.param(4, id="four-rows")]
 )
-def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_cursor_shown(
+def test_mount_live_when_signal_arrives_does_blank_every_frame_row(
     monkeypatch: pytest.MonkeyPatch,
     mounted_live: Callable[..., ErasableLive],
     raise_signal: Callable[[int], int],
@@ -304,15 +301,12 @@ def test_mount_live_when_signal_arrives_does_blank_every_frame_row_with_the_curs
 
     raise_signal(TERMINATION_SIGNAL)
 
-    out = console_output(console)
-    assert (screen_lines(out), cursor_hidden(out)) == ([KEPT_LINE], False)
+    assert screen_lines(console_output(console)) == [KEPT_LINE]
 
 
 def _live_whose_first_paint_raises() -> ErasableLive:
-    """An auto-refreshing live display whose first frame render raises."""
-    return ErasableLive(
-        _FailingFrame(), console=sealed_console(), auto_refresh=True, refresh_per_second=4
-    )
+    """A live display, with no refresh thread, whose first frame render raises."""
+    return ErasableLive(_FailingFrame(), console=sealed_console(), auto_refresh=False)
 
 
 def _live_on_a_gone_terminal() -> ErasableLive:
@@ -343,7 +337,7 @@ def test_mount_live_when_mounting_raises_does_roll_back_the_mount(
     with pytest.raises(error, match=message):
         mount_live(live)
 
-    assert (live.is_started, registry.live()) == (False, [])
+    assert (live.is_started, registry.live(), registry.uninstall_counts()) == (False, [], [1])
 
 
 def test_mount_live_when_rollback_stop_raises_does_raise_the_mount_failure_with_a_note():

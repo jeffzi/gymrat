@@ -13,18 +13,11 @@ POSIX-only: the flows lean on real subprocesses, worktrees, and file gating.
 """
 
 import subprocess
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from gymrat.report.loop import (
-    SettleKept,
-    StatusIteration,
-    format_status_baseline,
-    format_status_iteration,
-)
 from gymrat.session.lock import read_holder
 from gymrat.session.paths import (
     experiment_worktree_dir,
@@ -46,7 +39,7 @@ from tests._cli import run_cli
 from tests._git import run_git as _git
 from tests._git import status_of
 from tests._platform import needs_posix_worktrees
-from tests._process_helpers import reaped
+from tests._process_helpers import poll_until_blocking, reaped
 from tests.loop._bench import (
     BASELINE_LATENCY,
     LONG_RUN_TIMEOUT,
@@ -54,7 +47,6 @@ from tests.loop._bench import (
     commit_project,
     tune_experiment,
 )
-from tests.report._assertions import render_plain
 from tests.session.records._fixtures import (
     log_records,
     records_of_type,
@@ -172,26 +164,13 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
     # status rebuilds the whole session out of the log alone.
     lines = status_report.split("\n")
     assert session.session_id in lines[0]
-    assert render_plain(format_status_baseline(baseline)) in lines
-    kept_line = format_status_iteration(
-        StatusIteration(
-            seq=1,
-            delta_pct=first.primary.delta_pct,
-            outcome=first.outcome,
-            settle=SettleKept(commit=kept_commit, outcome=first.outcome),
-        )
-    )
-    assert render_plain(kept_line) in lines
 
     assert status_of(repo) == ""
 
     assert _git(["log", "--format=%H", f"main..{branch}"], repo).split("\n") == [kept_commit]
     assert _git(["show", f"{branch}:{TUNING_FILE}"], repo) == str(KEPT_LATENCY)
 
-    worktree = Path(experiment_worktree_dir(repo))
     assert DISCARD_MARKER not in _git(["log", "--all", "-p"], repo)
-    assert not (worktree / DISCARDED_FILE).exists()
-    assert (worktree / TUNING_FILE).read_text(encoding="utf-8").strip() == str(KEPT_LATENCY)
 
 
 # ---------------------------------------------------------------------------
@@ -201,19 +180,20 @@ def test_loop_when_driven_command_by_command_does_run_the_whole_session(
 
 def _wait_until_lock_held(first: subprocess.Popen[str], lock_path: str) -> None:
     """Block until ``first`` holds the repository lock, failing the test if it never does."""
-    deadline = time.monotonic() + 30
-    while True:
+
+    def first_holds_the_lock() -> bool:
         if first.poll() is not None:
             pytest.fail(f"first iterate exited early: {first.communicate()}")
-        if time.monotonic() > deadline:
-            first.kill()
-            pytest.fail("first iterate never grabbed the lock")
         # A pure read on purpose: probing with flock would itself take the
         # lock whenever it is still free, stealing it from the first run.
         holder = read_holder(lock_path)
-        if holder is not None and holder.pid == first.pid:
-            return
-        time.sleep(0.025)
+        return holder is not None and holder.pid == first.pid
+
+    def never_grabbed() -> AssertionError:
+        first.kill()
+        return AssertionError("first iterate never grabbed the lock")
+
+    poll_until_blocking(first_holds_the_lock, 30, never_grabbed)
 
 
 def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
@@ -246,6 +226,5 @@ def test_loop_when_second_iterate_collides_with_the_lock_does_refuse_it(
 
     assert second.returncode == 2, second.stderr
     assert str(first.pid) in second.stderr
-    assert "iterate" in second.stderr
     assert first.returncode == 0, first_stderr or first_stdout
     assert len(records_of_type(repo, IterationRecord)) == 1

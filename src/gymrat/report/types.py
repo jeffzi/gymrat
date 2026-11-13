@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gymrat.config import KindEntry
     from gymrat.model import MetricVerdict, ResolvedMetricMeta
-    from gymrat.sampling import CleanupResult
     from gymrat.verdict import KindAggregate
+    from gymrat.worktree_sweep import CleanupResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +165,10 @@ class MeasurementResult:
 class RegressedFailOn:
     """A ``--fail-on`` condition that trips on any regression."""
 
+    def __str__(self) -> str:
+        """The condition as the user writes it on the command line."""
+        return "regressed"
+
 
 @dataclass(frozen=True, slots=True)
 class GeomeanFailOn:
@@ -176,12 +180,10 @@ class GeomeanFailOn:
 
     pct: float
 
-
-def candidate_at(metric: MetricComparison, index: int) -> CandidateMetric | None:
-    """The candidate slice at ``index``, or ``None`` when the metric has no such entry."""
-    if 0 <= index < len(metric.candidates):
-        return metric.candidates[index]
-    return None
+    def __str__(self) -> str:
+        """The condition as the user writes it on the command line."""
+        # `:g` states the threshold as it was written, dropping a trailing `.0`.
+        return f"geomean:{self.pct:g}"
 
 
 type FailOnCondition = RegressedFailOn | GeomeanFailOn

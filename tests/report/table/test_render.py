@@ -61,6 +61,17 @@ def test_render_body_when_two_rules_have_no_row_between_does_draw_one_rule_line_
     assert lines == snapshot
 
 
+def test_render_body_when_table_wider_than_200_cells_does_print_every_cell_in_full():
+    metric, value = "m" * 150, "v" * 80
+
+    def wide_cells(line: BodyLine[str, str]) -> tuple[Text, ...]:
+        return (Text(metric), Text(value))
+
+    lines = render_body([HeaderLine()], [150, 80], wide_cells, color=False)
+
+    assert lines == [f"{metric} │ {value}"]
+
+
 # ---------------------------------------------------------------------------
 # join_value_cell
 # ---------------------------------------------------------------------------

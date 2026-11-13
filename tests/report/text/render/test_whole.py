@@ -1,18 +1,21 @@
-"""Whole-report assembly and layout tests for the comparison report.
+"""Whole-report tests for the comparison and measurement reports.
 
 Representative layouts are pinned byte for byte as plain golden outputs, so a
 change to how the table is drawn cannot shift a padding space or a rule dash
 unnoticed. Footer and worktree lines are pinned in ``test_verdicts``.
 
 Color is pinned per element with ``styles_at`` rather than as escape bytes, so
-a change in how rich encodes a style does not read as a regression. The run
-header, column labels, section and group titles and aggregate rows are styled
-here; verdict-cell colors live in ``test_verdicts`` and multi-candidate cell
-colors in ``test_multi``.
+a change in how rich encodes a style does not read as a regression. Geomean
+aggregate rows are styled here; verdict-cell colors live in ``test_verdicts``
+and multi-candidate cell colors in ``test_multi``.
+
+The comparison table's run header override and label truncation, and the
+measurement report's golden output, are pinned here too.
 """
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -20,17 +23,19 @@ import pytest
 
 from gymrat.config import KindEntry
 from gymrat.model import Exclusion
+from gymrat.report.labels import truncate_labels
 from gymrat.report.style import EMPHASIZED_DIRECTION_STYLES
-from gymrat.report.text.render import render_report
+from gymrat.report.text.render import render_measure_report, render_report
 from gymrat.report.types import CandidateMetric, MetricComparison, ReportOptions
-from gymrat.sampling import CleanupResult, WorktreeRemovalFailure
 from tests.report._assertions import (
     line_containing,
+    line_starting_with,
     sgr_for,
+    stripped_cells,
     styles_at,
+    table_region,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     create_comparison_result,
     entity_time_metrics,
@@ -38,13 +43,13 @@ from tests.report._comparisons import (
     gating_kind,
     grouped_comparison,
     informational_kind,
-    kind_metric,
     mixed_methods_result,
     n_way_kind_metric,
     other_kind,
+    permutation_candidate,
     two_kind_result,
-    undefined_ratio_metric,
 )
+from tests.report._measurements import two_kind_measurement
 from tests.report._verdicts import (
     band_verdict,
     exact_verdict,
@@ -74,18 +79,6 @@ def _one_kind_result() -> ComparisonResult:
     )
 
 
-def _non_gating_result() -> ComparisonResult:
-    """One ``time`` kind that gates nothing, so its geomean has no stable metrics."""
-    return create_comparison_result(
-        metrics={
-            "warmup#time": kind_metric(
-                kind="time", short_name="warmup", verdict="improved", delta=-10, gating=False
-            ),
-        },
-        candidates=[create_candidate(kinds=[informational_kind("time", geomean_of(-10, 1))])],
-    )
-
-
 def _non_gating_two_candidate_result() -> ComparisonResult:
     """Two candidates over one ``time`` kind that gates nothing."""
     return create_comparison_result(
@@ -94,8 +87,8 @@ def _non_gating_two_candidate_result() -> ComparisonResult:
                 kind="time",
                 short_name="warmup",
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-10, median=90),
-                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                    permutation_candidate(verdict="improved", delta=-10, median=90),
+                    permutation_candidate(verdict="regressed", delta=4, median=104),
                 ],
                 gating=False,
             ),
@@ -123,8 +116,8 @@ def _per_candidate_geomean_result() -> ComparisonResult:
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
-                    NWayCandidate(verdict="no-signal", delta=-9, median=91),
-                    NWayCandidate(verdict="improved", delta=-12, median=88),
+                    permutation_candidate(verdict="no-signal", delta=-9, median=91),
+                    permutation_candidate(verdict="improved", delta=-12, median=88),
                 ],
             ),
             "encode#memory": n_way_kind_metric(
@@ -132,8 +125,8 @@ def _per_candidate_geomean_result() -> ComparisonResult:
                 short_name="encode",
                 gating=False,
                 candidates=[
-                    NWayCandidate(verdict="no-signal", delta=-1, median=99),
-                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                    permutation_candidate(verdict="no-signal", delta=-1, median=99),
+                    permutation_candidate(verdict="improved", delta=-2, median=98),
                 ],
             ),
         },
@@ -170,7 +163,15 @@ def _degenerate_result() -> ComparisonResult:
             "zero-median/time": exact_metric(
                 delta=0, n=4, unit="ns", baseline_median=0, short_name="zero-median/time"
             ),
-            "nan-delta/count": undefined_ratio_metric("nan-delta/count", n=4),
+            # A unitless exact metric whose zero baseline leaves its delta undefined.
+            "nan-delta/count": exact_metric(
+                delta=math.nan,
+                n=4,
+                unit=None,
+                baseline_median=0,
+                median=120,
+                short_name="nan-delta/count",
+            ),
             "old-side-only/time": MetricComparison(
                 baseline_median=2048,
                 baseline_spread=2,
@@ -201,13 +202,6 @@ def _degenerate_result() -> ComparisonResult:
                 ]
             )
         ],
-        cleanup=CleanupResult(
-            removed=1,
-            failures=(
-                WorktreeRemovalFailure(dir="/tmp/gymrat-abc123", error="contains modified files"),
-            ),
-            prune_error="could not lock config file",
-        ),
     )
 
 
@@ -294,9 +288,8 @@ def _two_candidate_result() -> ComparisonResult:
         pytest.param(_two_candidate_result, id="flat-two-candidates-plain"),
         pytest.param(two_kind_result, id="sectioned-single-candidate-plain"),
         pytest.param(grouped_comparison, id="sectioned-multi-candidate-plain"),
-        pytest.param(_non_gating_result, id="flat-no-stable-metrics-plain"),
         pytest.param(
-            _non_gating_two_candidate_result, id="flat-two-candidates-no-stable-metrics-plain"
+            _non_gating_two_candidate_result, id="flat-two-candidates-informational-plain"
         ),
         pytest.param(partial(mixed_methods_result, n=10), id="flat-mixed-methods-plain"),
     ],
@@ -341,9 +334,44 @@ def test_render_report_when_colored_does_style_each_element(
     assert styles_at(line, marker) == expected
 
 
-def test_render_report_when_header_part_holds_a_dot_does_leave_it_out_of_dimming():
-    result = create_comparison_result(adapter="metric·lines")  # cspell:disable-line
+# ---------------------------------------------------------------------------
+# run header and column labels
+# ---------------------------------------------------------------------------
 
-    header = line_containing(render_report(result, ReportOptions(color=True)), "gymrat compare")
 
-    assert styles_at(header, "metric·lines") == []  # cspell:disable-line
+def test_render_report_when_header_override_given_does_replace_the_compare_header():
+    result = create_comparison_result()
+
+    report = render_report(result, ReportOptions(header="iteration 3 · experiment vs baseline"))
+
+    assert table_region(report)[:2] == ["iteration 3 · experiment vs baseline", "metric"]
+
+
+def test_render_report_when_variant_label_overflows_does_truncate_it():
+    result = create_comparison_result(
+        baseline_label="main",
+        candidates=[create_candidate(label="feature/entity-spawn-fastpath")],
+    )
+    shown = truncate_labels(["main", "feature/entity-spawn-fastpath"])[1]
+
+    output = render_report(result)
+
+    header = output.split("\n")[0]
+    assert shown in header
+    assert stripped_cells(line_starting_with(output, "metric")) == [
+        "metric",
+        "main",
+        shown,
+        "vs main",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# measurement report — golden
+# ---------------------------------------------------------------------------
+
+
+def test_render_measure_report_when_rendered_does_match_its_golden(snapshot: SnapshotAssertion):
+    report = render_measure_report(two_kind_measurement(), ReportOptions(color=False))
+
+    assert report.split("\n") == snapshot

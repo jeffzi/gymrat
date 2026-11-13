@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from gymrat.cli.supervise.frame import build_best_text
 from gymrat.cli.supervise.reducer import loop_plain_text
 from gymrat.cli.supervise.summary import build_summary
 from gymrat.cli.supervise.text import NO_SESSION_TEXT
@@ -82,11 +83,14 @@ def _session_result() -> ReadSessionResult:
 
 
 def test_summary_when_run_has_a_best_iteration_does_render_the_best_row():
+    best = build_best_text(_session_result())
+
     summary = _summary(session_result=_session_result())
 
+    assert best is not None
     assert frame_text(summary, width=FRAME_WIDTH) == (
         "✓ completed · 1m 0s · $0.05\n"
-        "  best    -4.2% wall_time vs baseline a1b2c3d (iteration 3)\n"
+        f"  best    {best.plain}\n"
         f"  loop    {loop_plain_text(_session_result(), None)}\n"
         f"{_LOG_ROW}"
     )
@@ -125,32 +129,21 @@ def test_summary_when_run_capped_or_errored_does_hide_the_agent_row(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("final_text", "expected_lines"),
-    [
-        pytest.param(
-            "Line one.\nLine two.",
-            [
-                "✓ completed · 1m 0s · $0.05",
-                "  agent   Line one.",
-                "          Line two.",
-                _NO_SESSION_ROW,
-                _LOG_ROW,
-            ],
-            id="single-newline",
-        ),
-    ],
-)
-def test_summary_agent_row_when_final_text_given_does_indent_continuation_lines_under_content(
-    final_text: str, expected_lines: list[str]
-) -> None:
+def test_summary_agent_row_when_final_text_spans_lines_does_indent_continuation_lines_under_content():
     summary = _summary(
-        make_supervision_result(reason="completed", ended_by="session"), final_text=final_text
+        make_supervision_result(reason="completed", ended_by="session"),
+        final_text="Line one.\nLine two.",
     )
 
     text = frame_text(summary, width=FRAME_WIDTH)
 
-    assert text.splitlines() == expected_lines
+    assert text.splitlines() == [
+        "✓ completed · 1m 0s · $0.05",
+        "  agent   Line one.",
+        "          Line two.",
+        _NO_SESSION_ROW,
+        _LOG_ROW,
+    ]
 
 
 # ---------------------------------------------------------------------------

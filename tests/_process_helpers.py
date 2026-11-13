@@ -164,26 +164,6 @@ def _process_state(pid: int) -> str | None:
     return state[:1] or None
 
 
-def _has_exited(pid: int) -> bool:
-    """Probe whether ``pid`` has exited.
-
-    ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
-    its process group looks alive until whoever inherited it calls ``wait``.
-    That reap is scheduled by the kernel, not by the test, so treating a zombie
-    as alive makes every kill assertion race against an unrelated reaper. The
-    reap can also land between that probe and this check, leaving no entry to
-    read.
-
-    Args:
-        pid: The process to probe.
-
-    Returns:
-        True when ``pid`` is a zombie waiting to be reaped or is no longer
-        listed.
-    """
-    return _process_state(pid) in {None, "Z"}
-
-
 def is_zombie(pid: int) -> bool:
     """Report whether ``pid`` has exited and still waits to be reaped, checked without reaping it.
 
@@ -220,7 +200,12 @@ def is_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
-    return not _has_exited(pid)
+    # ``os.kill(pid, 0)`` still succeeds for a zombie, so a grandchild killed with
+    # its process group looks alive until whoever inherited it calls ``wait``.
+    # That reap is scheduled by the kernel, not by the test, so treating a zombie
+    # as alive makes every kill assertion race against an unrelated reaper. The
+    # reap can also land between that probe and the state read, leaving no entry.
+    return _process_state(pid) not in {None, "Z"}
 
 
 async def poll_until(
@@ -402,31 +387,7 @@ async def wait_for_file(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) 
     Raises:
         TimeoutError: ``path`` has not appeared within ``timeout_s``.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    while not await asyncio.to_thread(path.exists):
-        if loop.time() > deadline:
-            message = f"file never appeared at {path}"
-            raise TimeoutError(message)
-        await asyncio.sleep(_POLL_INTERVAL_S)
-
-
-def wait_for_file_blocking(path: pathlib.Path, timeout_s: float = _DEFAULT_WAIT_S) -> None:
-    """Block until ``path`` exists.
-
-    The synchronous twin of ``wait_for_file``, for tests that drive a
-    subprocess without an event loop.
-
-    Args:
-        path: The file to wait for.
-        timeout_s: Seconds to poll before giving up.
-
-    Raises:
-        TimeoutError: ``path`` has not appeared within ``timeout_s``.
-    """
-    poll_until_blocking(
-        path.exists, timeout_s, lambda: TimeoutError(f"file never appeared at {path}")
-    )
+    await poll_until(path.exists, timeout_s, lambda: TimeoutError(f"file never appeared at {path}"))
 
 
 @contextlib.contextmanager
@@ -659,7 +620,7 @@ def track_cleanups(monkeypatch: "pytest.MonkeyPatch", module: str) -> CleanupReg
     Args:
         monkeypatch: The fixture that installs the swap.
         module: The dotted name of the module whose ``install_termination_cleanup``
-            binding is swapped, e.g. ``"gymrat.sampling"``.
+            binding is swapped, e.g. ``"gymrat.worktree_sweep"``.
 
     Returns:
         The registry recording every cleanup ``module`` installs.
@@ -725,8 +686,8 @@ class ProcessExit(BaseException):
 class InterruptedTerminal(StringIO):
     """A terminal file that runs a signal handler at one chosen write, then exits.
 
-    ``interrupt_write`` arms it for the next write whose text contains *marker*.
-    The handler runs in place of that write, or right after the text lands when
+    ``interrupt_write`` arms it for the next write. The handler runs in place of
+    that write, or right after the text lands when
     *lands* is true. ``at_exit`` then keeps what reached the terminal, and the
     write raises ``ProcessExit`` where the real process would end, so nothing
     written while the exception unwinds counts.
@@ -736,28 +697,23 @@ class InterruptedTerminal(StringIO):
         super().__init__()
         self.at_exit = ""
         self._handler: Callable[[], object] | None = None
-        self._marker = ""
         self._lands = False
 
-    def interrupt_write(
-        self, handler: Callable[[], object], *, marker: str = "", lands: bool = False
-    ) -> None:
-        """Arm the terminal to run *handler* at the next matching write.
+    def interrupt_write(self, handler: Callable[[], object], *, lands: bool = False) -> None:
+        """Arm the terminal to run *handler* at the next write.
 
         Args:
-            handler: Runs in place of the matching write, or right after its text
+            handler: Runs in place of the next write, or right after its text
                 lands when *lands* is true.
-            marker: Text the write must contain to trigger the handler; the empty
-                string matches every write.
             lands: Whether the write's text reaches the terminal before the
                 handler runs.
         """
-        self._handler, self._marker, self._lands = handler, marker, lands
+        self._handler, self._lands = handler, lands
 
     @override
     def write(self, text: str) -> int:
         handler = self._handler
-        if handler is None or self._marker not in text:
+        if handler is None:
             return super().write(text)
         self._handler = None
         if self._lands:

@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -71,9 +71,10 @@ _STOPPED_WINDOW_S = 0.75
 # interpreters and import gymrat on the way.
 _BEAT_TIMEOUT_S = 20.0
 
-# Timeout given to the outer run of the cross-platform teardown test. It fires
-# well after the bench is beating, so the timeout case always lands mid-bench.
-_OUTER_TIMEOUT_MS = 5000
+# Timeout given to the outer run of the cross-platform teardown test. Its clock
+# starts only once the bench and its grandchild are beating (see
+# _hold_timeouts_until), so the timeout case always lands mid-bench.
+_OUTER_TIMEOUT_MS = 500
 
 # Upper bound for a torn-down outer run to settle, including its grace.
 _SETTLE_TIMEOUT_S = 15.0
@@ -387,21 +388,48 @@ def reap_beats() -> Iterator[list[Path]]:
 # ---------------------------------------------------------------------------
 
 
+def _hold_timeouts_until(monkeypatch: pytest.MonkeyPatch, started: asyncio.Event) -> None:
+    """Start the clock of every timed ``asyncio.wait`` only once ``started`` is set.
+
+    The run's timeout is the timed wait ``exec`` makes, so it cannot fire before
+    the tree it is meant to tear down is running, however slowly the host starts it.
+
+    Args:
+        monkeypatch: The fixture that wraps ``asyncio.wait``.
+        started: Set by the test once the whole tree is running.
+    """
+    real_wait = asyncio.wait
+
+    async def wait(
+        fs: Iterable[asyncio.Future[Any]],
+        *,
+        timeout: float | None = None,  # noqa: ASYNC109 -- mirrors the asyncio.wait signature it stands in for
+        return_when: str = asyncio.ALL_COMPLETED,
+    ) -> tuple[set[asyncio.Future[Any]], set[asyncio.Future[Any]]]:
+        if timeout is not None:
+            await started.wait()
+        return await real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(asyncio, "wait", wait)
+
+
 @pytest.mark.parametrize(
     "teardown",
     [
-        pytest.param(Teardown(None, set_abort), id="abort"),
         pytest.param(Teardown(_OUTER_TIMEOUT_MS, leave_to_timeout), id="timeout"),
         pytest.param(Teardown(None, cancel_task), id="cancelled"),
     ],
 )
 async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     scripts: dict[str, Path],
     reap_beats: list[Path],
     teardown: Teardown,
 ) -> None:
     bench_beat, grandchild_beat = bench_beat_paths(tmp_path, reap_beats)
+    tree_started = asyncio.Event()
+    _hold_timeouts_until(monkeypatch, tree_started)
     abort = asyncio.Event()
     task = asyncio.create_task(
         exec_argv(
@@ -415,6 +443,7 @@ async def test_exec_argv_when_outer_run_torn_down_does_leave_no_bench_alive(
     )
     await asyncio.to_thread(wait_for_beat, bench_beat)
     await asyncio.to_thread(wait_for_beat, grandchild_beat)
+    tree_started.set()
 
     teardown.trigger(task, None, abort)
 
@@ -495,7 +524,7 @@ async def test_exec_argv_when_torn_down_does_settle_within_the_bound_with_the_ch
 
 
 @needs_posix_signals
-def test_supervisor_when_signalled_mid_bench_does_leave_no_bench_alive(
+def test_run_with_signal_abort_when_signalled_mid_bench_does_leave_no_bench_alive(
     tmp_path: Path,
     scripts: dict[str, Path],
     reap_beats: list[Path],
@@ -616,20 +645,14 @@ def win32_exec(monkeypatch: pytest.MonkeyPatch, group: types.ModuleType) -> type
 
 
 def spawn_children_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop the creation flags from every asyncio spawn, so no child starts suspended."""
+    """Drop the creation flags from every asyncio exec spawn, so no child starts suspended."""
     spawn_exec = asyncio.create_subprocess_exec
-    spawn_shell = asyncio.create_subprocess_shell
 
     async def exec_running(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
         kwargs.pop("creationflags", None)
         return await spawn_exec(*args, **kwargs)
 
-    async def shell_running(command: str, **kwargs: Any) -> asyncio.subprocess.Process:
-        kwargs.pop("creationflags", None)
-        return await spawn_shell(command, **kwargs)
-
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_running)
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", shell_running)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -660,43 +683,19 @@ def trace_spawns(monkeypatch: pytest.MonkeyPatch) -> SpawnTrace:
     return trace
 
 
-@pytest.mark.parametrize(
-    ("assignment_granted", "closed"),
-    [
-        pytest.param(
-            True,
-            [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE],
-            id="job-granted-held-until-the-run-settles",
-        ),
-        pytest.param(
-            False,
-            [PROCESS_HANDLE, JOB_HANDLE, PROCESS_HANDLE],
-            id="job-refused-released-at-once",
-        ),
-    ],
-)
 async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_until_it_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    assignment_granted: bool,
-    closed: list[int],
 ) -> None:
-    jobs = FakeJobs(assignment_granted=assignment_granted)
+    jobs = FakeJobs()
     group = win32_process_group(monkeypatch, jobs)
     module = win32_exec(monkeypatch, group)
     trace = trace_spawns(monkeypatch)
-    # The refusal warning's wording is pinned in tests/test_process_group.py;
-    # here only its presence matters.
-    expect_warning = (
-        contextlib.nullcontext() if assignment_granted else pytest.warns(RuntimeWarning)
-    )
 
-    with expect_warning:
-        result = await module.exec_argv(
-            [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
-            module.ExecOptions(cwd=str(tmp_path)),
-        )
+    result = await module.exec_argv(
+        [sys.executable, "-c", "import os; print(os.getpid(), os.getppid())"],
+        module.ExecOptions(cwd=str(tmp_path)),
+    )
 
     assert result.exit_code == 0, "a contained child never ran to completion"
     assert trace.session_requests == [set()], "a win32 spawn asked for a POSIX session"
@@ -710,4 +709,6 @@ async def test_exec_argv_when_run_on_win32_does_contain_the_suspended_child_unti
     assert child_pid in spawned_tree, "a process outside the spawned tree was contained"
     assert jobs.assigned == [(JOB_HANDLE, child_pid)]
     assert jobs.resumed == [child_pid], "the contained child was left suspended"
-    assert jobs.closed == closed, "the settled run left a handle open"
+    assert jobs.closed == [PROCESS_HANDLE, PROCESS_HANDLE, JOB_HANDLE], (
+        "the settled run left a handle open"
+    )

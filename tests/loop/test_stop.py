@@ -1,8 +1,8 @@
 """Behavioral tests for ``stop_session``.
 
-Appending a stop record to the session log, with refusals for an unsettled
-iteration, a gating block, and an already-stopped session. The no-session and
-finalized refusals come from the shared session guard, pinned in
+Appending a stop record to the session log, with refusals for a gating block
+and an already-stopped session. The no-session, finalized, and unsettled
+refusals come from the shared session guards, pinned in
 ``tests/session/test_store.py``.
 
 Every test drives the real ``stop_session`` against a throwaway repository from
@@ -21,7 +21,6 @@ from tests.loop._settle import (
     start_with,
 )
 from tests.session.records._fixtures import (
-    iteration_record,
     log_records,
     settled_history,
     stop_record,
@@ -58,7 +57,7 @@ def test_stop_session_when_message_multiline_does_report_only_its_first_line(rep
 
 
 # ---------------------------------------------------------------------------
-# when the session cannot be stopped: unsettled, blocked, or already stopped
+# when the session cannot be stopped: blocked or already stopped
 # ---------------------------------------------------------------------------
 
 
@@ -67,7 +66,6 @@ def test_stop_session_when_message_multiline_does_report_only_its_first_line(rep
     [
         pytest.param(gating_blocked_history(), "gating-block", id="gating-block-stands"),
         pytest.param((*settled_history(), stop_record()), "already-stopped", id="already-stopped"),
-        pytest.param((iteration_record(seq=1),), "unsettled", id="last-iteration-unsettled"),
     ],
 )
 def test_stop_session_when_session_cannot_be_stopped_does_refuse_writing_no_record(

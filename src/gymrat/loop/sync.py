@@ -21,8 +21,10 @@ from gymrat.session.store import require_open_session
 from gymrat.utils import pluralize
 
 # ``git status -z`` prefixes each entry with two status characters and a space
-# (``XY<space>``), then the NUL-delimited path. Rename/copy entries (``R`` or
-# ``C`` in X) carry a second NUL-delimited field: ``XY<space>new\0old\0``.
+# (``XY<space>``), then the NUL-delimited path. Rename/copy entries carry a
+# second NUL-delimited field: ``XY<space>new\0old\0``. The code sits in X for a
+# staged rename and in Y for a working-tree rename whose new path is marked
+# intent-to-add, so both columns are checked.
 _STATUS_PREFIX_LEN = 3
 
 # Status codes that carry a second path field (the original name). Only a
@@ -88,18 +90,24 @@ def _dirty_entries(directory: str, error_message: str, hint: str) -> list[_Dirty
     Raises:
         GymratError: When git cannot read the status of ``directory``.
     """
-    raw = run_git_step(["status", "-z", "--untracked-files=all"], directory, error_message, hint)
+    raw = run_git_step(
+        ["status", "-z", "--untracked-files=all"],
+        directory,
+        error_message,
+        hint,
+        allow_interrupt=True,
+    )
     entries: list[_DirtyEntry] = []
     fields: Iterator[str] = iter(raw.split("\0"))
     for field in fields:
         if len(field) < _STATUS_PREFIX_LEN:
             continue
-        status_x = field[0]
+        codes = set(field[: _STATUS_PREFIX_LEN - 1])
         path = field[_STATUS_PREFIX_LEN:]
         renamed_from: str | None = None
-        if status_x in _RENAME_COPY_CODES:
+        if codes & _RENAME_COPY_CODES:
             original = next(fields, None)
-            if status_x == _RENAME_CODE:
+            if _RENAME_CODE in codes:
                 renamed_from = original
         entries.append(_DirtyEntry(path=path, renamed_from=renamed_from))
     return entries
@@ -109,6 +117,36 @@ def _exclude_session_dir(entries: list[_DirtyEntry]) -> list[_DirtyEntry]:
     """Drop any entry rooted under the session directory."""
     prefix = f"{SESSION_DIR_NAME}/"
     return [e for e in entries if not e.path.startswith(prefix) and e.path != SESSION_DIR_NAME]
+
+
+def _refuse_escaping_entries(entries: list[_DirtyEntry]) -> None:
+    """Refuse the whole sync when any entry names a path outside the worktree.
+
+    Git reports paths relative to the worktree root, so an absolute path or a
+    ``..`` component means the status output cannot be trusted; joining it onto
+    the experiment worktree would write or remove a file elsewhere on disk.
+
+    Args:
+        entries: The dirty main-tree entries about to be synced.
+
+    Raises:
+        GymratError: When an entry's path, or the path a rename moved it from,
+            is rooted, names a drive, or holds a ``..`` component.
+    """
+    touched_paths = (
+        touched
+        for entry in entries
+        for touched in (entry.path, entry.renamed_from)
+        if touched is not None
+    )
+    for touched in touched_paths:
+        candidate = Path(touched)
+        # A root or a drive alone escapes the join: on Windows ``/x`` keeps the
+        # worktree's drive and lands at its root, and ``D:x`` changes drive.
+        if candidate.root or candidate.drive or ".." in candidate.parts:
+            message = f"Cannot sync '{touched}': the path is outside the worktree"
+            hint = "Check that the repository is not corrupt."
+            raise GymratError(message, hint=hint)
 
 
 def _is_real_directory(path: Path) -> bool:
@@ -202,8 +240,8 @@ def sync_to_experiment(root: str) -> SyncResult:
             source path of a rename, when an entry is a directory on either
             side, when a file or a symlink in the experiment worktree sits
             where an entry needs a directory, when the experiment worktree is
-            missing, or when git itself fails. Nothing is written in any of
-            these cases.
+            missing, when git reports a path outside the worktree, or when git
+            itself fails. Nothing is written in any of these cases.
     """
     required = require_open_session(root, "syncing changes")
 
@@ -214,6 +252,7 @@ def sync_to_experiment(root: str) -> SyncResult:
     )
     if not main_entries:
         return SyncResult(files=())
+    _refuse_escaping_entries(main_entries)
 
     main_paths = {e.path for e in main_entries}
 

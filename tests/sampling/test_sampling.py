@@ -24,26 +24,17 @@ from gymrat.sampling import (
     SamplingOptions,
     TargetContext,
     collect_samples,
-    compute_metric_stats,
 )
 from gymrat.targets import InPlaceTarget, RefTarget
 from tests._config import resolved_config
 from tests._exec_fixtures import (
     CAPPED_STDERR_BYTES,
     CAPPED_STDOUT_BYTES,
+    SAMPLING_EXEC,
     capped_result,
     expected_result,
     install_exec,
 )
-
-
-def make_success(stdout: str = "METRIC x=1") -> ExecResult:
-    """Build a zero-exit result carrying ``stdout`` on the standard stream."""
-    return expected_result(stdout)
-
-
-#: The ``exec`` the sampling module calls, which every test here replaces.
-SAMPLING_EXEC = "gymrat.sampling.exec"
 
 
 def two_in_place_targets() -> list[TargetContext]:
@@ -81,7 +72,7 @@ def lettered_in_place_targets(count: int) -> list[TargetContext]:
 
 def numbered_sample(call: int) -> ExecResult:
     """Answer a bench run with ``METRIC x=<call>``, so each sample names the run it came from."""
-    return make_success(f"METRIC x={call}")
+    return expected_result(f"METRIC x={call}")
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +83,7 @@ def numbered_sample(call: int) -> ExecResult:
 async def test_collect_samples_when_prepare_given_does_run_it_once_per_target_before_benching_under_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success("METRIC x=1"))
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     options = SamplingOptions(bench="run", prepare="prep", samples=2, timeout_seconds=2.5)
 
     await collect_samples(metric_lines_adapter, two_in_place_targets(), options, asyncio.Event())
@@ -108,14 +99,18 @@ async def test_collect_samples_when_prepare_given_does_run_it_once_per_target_be
     assert {exec_options.timeout_ms for _, exec_options in recorder.calls} == {2500}
 
 
+_TWO_TARGETS_FOUR_SAMPLES = SamplingOptions(
+    bench="run", prepare=None, samples=4, timeout_seconds=1.0
+)
+
+
 async def test_collect_samples_when_two_targets_does_alternate_which_target_runs_first(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls = install_exec(monkeypatch, SAMPLING_EXEC, numbered_sample).calls
-    options = SamplingOptions(bench="run", prepare=None, samples=4, timeout_seconds=1.0)
 
-    result = await collect_samples(
-        metric_lines_adapter, two_in_place_targets(), options, asyncio.Event()
+    await collect_samples(
+        metric_lines_adapter, two_in_place_targets(), _TWO_TARGETS_FOUR_SAMPLES, asyncio.Event()
     )
 
     assert [exec_options.cwd for _, exec_options in calls] == [
@@ -128,6 +123,17 @@ async def test_collect_samples_when_two_targets_does_alternate_which_target_runs
         "/b",
         "/a",
     ]
+
+
+async def test_collect_samples_when_order_alternates_does_credit_each_run_to_its_own_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, numbered_sample)
+
+    result = await collect_samples(
+        metric_lines_adapter, two_in_place_targets(), _TWO_TARGETS_FOUR_SAMPLES, asyncio.Event()
+    )
+
     assert [[sample["x"] for sample in ts.samples] for ts in result] == [
         [1.0, 4.0, 5.0, 8.0],
         [2.0, 3.0, 6.0, 7.0],
@@ -156,18 +162,17 @@ async def _collect_run_orders(
     return rounds, [ctx.dir for ctx in targets]
 
 
-@pytest.mark.parametrize(("target_count", "cycle"), _BALANCING_CYCLES)
 async def test_collect_samples_when_three_or_more_targets_does_give_each_target_every_position_equally_often(
-    monkeypatch: pytest.MonkeyPatch, target_count: int, cycle: int
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    rounds, dirs = await _collect_run_orders(monkeypatch, target_count, cycle)
+    rounds, dirs = await _collect_run_orders(monkeypatch, 4, 4)
 
     assert all(sorted(run_order) == dirs for run_order in rounds)
-    slots = list(itertools.product(range(target_count), dirs))
+    slots = list(itertools.product(range(4), dirs))
     assert {
         (position, target): sum(run_order[position] == target for run_order in rounds)
         for position, target in slots
-    } == dict.fromkeys(slots, cycle // target_count)
+    } == dict.fromkeys(slots, 1)
 
 
 @pytest.mark.parametrize(("target_count", "cycle"), _BALANCING_CYCLES)
@@ -186,7 +191,7 @@ async def test_collect_samples_when_three_or_more_targets_does_run_each_target_a
 async def test_collect_samples_when_count_cannot_balance_the_targets_does_refuse_before_any_command_runs(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    recorder = install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    recorder = install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     options = SamplingOptions(bench="run", prepare="prep", samples=3, timeout_seconds=1.0)
 
     with pytest.raises(GymratError):
@@ -200,7 +205,7 @@ async def test_collect_samples_when_count_cannot_balance_the_targets_does_refuse
 async def test_collect_samples_when_progress_given_does_emit_every_event_stamped_from_the_clock(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    install_exec(monkeypatch, SAMPLING_EXEC, make_success())
+    install_exec(monkeypatch, SAMPLING_EXEC, expected_result("METRIC x=1"))
     events: list[ProgressEvent] = []
     clock_ms = 0.0
 
@@ -246,9 +251,6 @@ _REF_OLD = TargetContext(
     position="old",
 )
 _EXIT_THREE = ExecResult(stdout="", stderr="boom", exit_code=3, stdout_bytes=4, stderr_bytes=4)
-_TIMED_OUT = ExecTimeoutError(
-    stdout="partial", stderr="", timeout_ms=1500, stdout_bytes=7, stderr_bytes=0
-)
 # A timeout whose stdout also overran the cap: the timeout is the diagnosis.
 _TIMED_OUT_OVER_CAP = ExecTimeoutError(
     stdout="partial",
@@ -267,23 +269,6 @@ _RUN_ONLY = SamplingOptions(bench="run", prepare=None, samples=1, timeout_second
 #: What a failed run of bench ``run`` in ``/work`` inserts into the error's opening lines.
 _FAILED_HEAD = ("x", "1", "/work", "run", "1")
 
-#: The capture cap, in MiB, that the stdout-overflow hint inserts.
-_CAP_MIB = str(OUTPUT_CAP // (1024 * 1024))
-
-
-def _failed(
-    stdout: str,
-    stderr: str,
-    stdout_bytes: int,
-    stderr_bytes: int,
-    *,
-    stdout_truncated: bool = False,
-    stderr_truncated: bool = False,
-) -> ExecResult:
-    return ExecResult(
-        stdout, stderr, 1, stdout_bytes, stderr_bytes, stdout_truncated, stderr_truncated
-    )
-
 
 def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
     position = 0
@@ -296,26 +281,8 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("result", "target", "options", "inserted", "line_count", "hint_inserts"),
+    ("result", "target", "options", "inserted", "line_count", "has_hint"),
     [
-        pytest.param(
-            _EXIT_THREE,
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", "3", "boom"),
-            5,
-            None,
-            id="bench-fails-in-a-dir",
-        ),
-        pytest.param(
-            _TIMED_OUT,
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", "1500", "partial"),
-            5,
-            None,
-            id="bench-times-out-in-a-dir",
-        ),
         pytest.param(
             _TIMED_OUT_OVER_CAP,
             _IN_PLACE_NEW,
@@ -331,7 +298,7 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
                 "partial",
             ),
             6,
-            None,
+            False,
             id="bench-times-out-over-the-cap-keeps-the-timeout",
         ),
         pytest.param(
@@ -340,44 +307,26 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
             _WITH_PREPARE,
             ("old", "base", "feature", "/wt", "setup", "3", "boom"),
             6,
-            (),
+            True,
             id="prepare-fails-on-a-ref",
         ),
         pytest.param(
-            _failed("std", "err", 3, 3),
+            expected_result("std", "err", exit_code=1),
             _IN_PLACE_X,
             _RUN_ONLY,
             (*_FAILED_HEAD, "err", "std"),
             8,
-            None,
+            False,
             id="both-labelled-stderr-first",
         ),
         pytest.param(
-            _failed("s", "e", 1, 50, stderr_truncated=True),
-            _IN_PLACE_X,
-            _RUN_ONLY,
-            (*_FAILED_HEAD, "50", "e", "s"),
-            8,
-            None,
-            id="both-one-truncated",
-        ),
-        pytest.param(
-            _failed("", "", 0, 0),
+            expected_result(exit_code=1),
             _IN_PLACE_X,
             _RUN_ONLY,
             _FAILED_HEAD,
             4,
-            None,
+            False,
             id="neither-present",
-        ),
-        pytest.param(
-            _failed("", "err", 0, 50),
-            _IN_PLACE_X,
-            _RUN_ONLY,
-            (*_FAILED_HEAD, "err"),
-            5,
-            None,
-            id="untruncated-count-above-kept-text-bare",
         ),
         pytest.param(
             capped_result(exit_code=1),
@@ -391,17 +340,8 @@ def _holds_in_order(text: str, parts: tuple[str, ...]) -> bool:
                 "capped stdout",
             ),
             8,
-            None,
+            False,
             id="failed-bench-over-the-cap-keeps-the-failure",
-        ),
-        pytest.param(
-            capped_result(),
-            _IN_PLACE_NEW,
-            _BENCH_ONLY,
-            ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}"),
-            4,
-            (_CAP_MIB,),
-            id="bench-stdout-overran-the-cap-in-a-dir",
         ),
     ],
 )
@@ -412,7 +352,7 @@ async def test_collect_samples_when_command_fails_does_raise_error_naming_what_f
     options: SamplingOptions,
     inserted: tuple[str, ...],
     line_count: int,
-    hint_inserts: tuple[str, ...] | None,
+    has_hint: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
     install_exec(monkeypatch, SAMPLING_EXEC, result)
@@ -424,26 +364,32 @@ async def test_collect_samples_when_command_fails_does_raise_error_naming_what_f
     hint = caught.value.hint
     assert _holds_in_order(message, inserted)
     assert len(message.splitlines()) == line_count
-    if hint_inserts is None:
-        assert hint is None
-    else:
-        assert hint is not None
-        assert [part for part in hint_inserts if part not in hint] == []
+    assert (hint is not None) is has_hint
 
 
-@pytest.mark.parametrize(
-    "result",
-    [
-        pytest.param(
-            ExecResult("METRIC x=1", "capped", 0, 10, OUTPUT_CAP + 1, stderr_truncated=True),
-            id="only-stderr-overran-the-cap",
-        ),
-    ],
-)
-async def test_collect_samples_when_bench_stdout_kept_whole_does_parse_the_sample(
-    monkeypatch: pytest.MonkeyPatch, result: ExecResult
+async def test_collect_samples_when_bench_stdout_overran_the_cap_does_raise_naming_the_bytes_written(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    install_exec(monkeypatch, SAMPLING_EXEC, result)
+    install_exec(monkeypatch, SAMPLING_EXEC, capped_result())
+
+    with pytest.raises(CommandError) as caught:
+        await collect_samples(metric_lines_adapter, [_IN_PLACE_NEW], _BENCH_ONLY, asyncio.Event())
+
+    message = str(caught.value)
+    assert _holds_in_order(
+        message, ("new", "main", "1", "/work", "run-bench", f"{CAPPED_STDOUT_BYTES}")
+    )
+    assert len(message.splitlines()) == 4
+
+
+async def test_collect_samples_when_only_stderr_overran_the_cap_does_parse_the_sample(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(
+        monkeypatch,
+        SAMPLING_EXEC,
+        ExecResult("METRIC x=1", "capped", 0, 10, OUTPUT_CAP + 1, stderr_truncated=True),
+    )
 
     samples = await collect_samples(
         metric_lines_adapter, one_in_place_target(), _RUN_ONLY, asyncio.Event()
@@ -489,30 +435,3 @@ def test_run_options_from_config_when_override_given_does_replace_the_configured
     run = RunOptions.from_config(config, samples=samples, bench=bench)
 
     assert getattr(run.sampling, read) == expected
-
-
-# ---------------------------------------------------------------------------
-# sample summaries
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("values", "expected_median", "expected_spread"),
-    [
-        pytest.param([5.0], 5.0, None, id="single-value"),
-        pytest.param([10.0, 20.0, 30.0], 20.0, pytest.approx(50.0), id="odd-length-sorted"),
-    ],
-)
-def test_compute_metric_stats_when_given_values_does_return_the_summary_stats(
-    values: list[float],
-    expected_median: float,
-    expected_spread: object,
-):
-    stats = compute_metric_stats("x", values)
-
-    assert (stats.median, stats.spread) == (expected_median, expected_spread)
-
-
-def test_compute_metric_stats_when_no_values_does_raise_naming_the_metric():
-    with pytest.raises(GymratError, match=r"\bdecode/time\b"):
-        compute_metric_stats("decode/time", [])

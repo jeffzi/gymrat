@@ -19,6 +19,7 @@ from gymrat.errors import GymratError
 from gymrat.model import DEFAULT_UNSTABLE_NOISE_PCT
 from gymrat.sample_balance import require_balanced_samples
 from gymrat.sampling import TargetSpec
+from gymrat.verdict import compute_verdicts
 from tests._git import (
     emit_bench,
     list_worktree_dirs,
@@ -32,23 +33,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _options(
-    *,
-    samples: int,
-    baseline: TargetSpec | None = None,
-    candidate_targets: tuple[str, ...] = ("cand",),
-    candidates: list[TargetSpec] | None = None,
-) -> CompareOptions:
-    resolved_baseline = baseline if baseline is not None else TargetSpec(label=None, target="base")
-    resolved_candidates = (
-        candidates
-        if candidates is not None
-        else [TargetSpec(label=None, target=name) for name in candidate_targets]
-    )
+def _ignore(_message: str) -> None:
+    pass
+
+
+def _options(*, samples: int, candidate_targets: tuple[str, ...] = ("cand",)) -> CompareOptions:
     return CompareOptions(
         run=run_options(samples=samples),
-        baseline=resolved_baseline,
-        candidates=resolved_candidates,
+        baseline=TargetSpec(label=None, target="base"),
+        candidates=[TargetSpec(label=None, target=name) for name in candidate_targets],
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     )
 
@@ -63,18 +56,22 @@ async def test_compare_when_candidates_judged_does_use_shared_baseline(
 
     result = await compare(_options(samples=6, candidate_targets=("a", "b")))
 
-    # Against the shared baseline (median 10.35) a moves about +97% and b about
-    # -51%; judging b against a instead would put b near -75%.
-    outcomes = [
-        None if candidate.verdict is None else (candidate.verdict.verdict, candidate.verdict.delta)
+    # Against the shared baseline a moves about +97% and b about -51%; judging
+    # b against a instead would put b near -75%.
+    meta = {"x": result.metrics["x"].meta}
+    expected = [
+        compute_verdicts(
+            baseline, samples, meta, unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT, warn=_ignore
+        )["x"].delta
+        for samples in (cand_a, cand_b)
+    ]
+    deltas = [
+        None if candidate.verdict is None else candidate.verdict.delta
         for candidate in result.metrics["x"].candidates
     ]
-    assert outcomes == [
-        ("regressed", pytest.approx(96.6, abs=0.1)),
-        ("improved", pytest.approx(-51.4, abs=0.1)),
-    ]
-    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == pytest.approx(
-        [96.6, -51.4], abs=0.1
+    assert deltas == expected
+    assert [candidate.kinds[0].geomean.value for candidate in result.candidates] == (
+        pytest.approx(expected)
     )
 
 
@@ -91,17 +88,17 @@ async def test_compare_when_metric_on_one_side_only_does_include_it_with_that_si
     assert result.metrics["y"].candidates[0].median == 3.5
 
 
-async def test_compare_when_baseline_round_unpaired_does_median_each_side_over_paired_rounds(
+async def test_compare_when_round_unpaired_on_either_side_does_median_each_side_over_paired_rounds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    baseline = [{"x": 1.0}, {"x": 2.0}, {"x": 100.0}, {"x": 200.0}]
-    candidate = [{"x": 10.0}, {"x": 20.0}, {"y": 1.0}, {"y": 1.0}]
+    baseline = [{"x": 1.0}, {"x": 2.0}, {"x": 100.0}, {"y": 1.0}]
+    candidate = [{"x": 10.0}, {"x": 20.0}, {"y": 1.0}, {"x": 500.0}]
     install_pipeline(monkeypatch, tmp_path, {"base": baseline, "cand": candidate})
 
     result = await compare(_options(samples=4))
 
-    # Rounds 2 and 3 report no candidate ``x``, so they are dropped from the
-    # displayed baseline median; over all four rounds it would be 51.0.
+    # Round 2 has no candidate ``x`` and round 3 no baseline ``x``, so both are
+    # dropped from each side's displayed median.
     assert result.metrics["x"].baseline_median == 1.5
     assert result.metrics["x"].candidates[0].median == 15.0
 
@@ -161,5 +158,5 @@ async def test_compare_when_two_refs_given_does_compare_them_in_disposable_workt
 
     assert result.metrics["x"].baseline_median == 1.0
     assert result.metrics["x"].candidates[0].median == 2.0
-    assert result.cleanup.removed >= 2
+    assert result.cleanup.removed == 2
     assert list_worktree_dirs(repo, include_main=False) == []

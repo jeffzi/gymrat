@@ -1,4 +1,4 @@
-"""Hook-script builders and record helpers shared by the hooks tests.
+"""Hook-script builders and report helpers shared by the hooks tests.
 
 Every builder writes a numbered Python script into a scratch directory and
 returns the command that runs it under the current interpreter: no shell
@@ -14,10 +14,9 @@ imported as ``tests.loop.iterate._hooks``.
 import json
 import sys
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal
 
 from gymrat.loop.iterate.run import HookInvocation
-from gymrat.session.records import HookRecord
 from gymrat.session.schema import HookStage
 from tests.loop.iterate._fixtures import iterate_session_header
 
@@ -29,34 +28,19 @@ class HookScripts:
     """Builders for hook commands scoped to a scratch directory.
 
     A private counter numbers the scripts so repeated builders in one test never
-    collide on a filename.
+    collide on a filename. Building one creates the experiment worktree directory
+    named by :func:`iterate_session_header` so an invocation can run in it.
 
     Args:
-        temp_dir: The directory holding the scripts and any parked payload files.
-        experiment_dir: The worktree an invocation runs in.
+        root: The repository the side worktrees sit under; it also holds the
+            scripts and any parked payload files.
     """
 
-    def __init__(self, temp_dir: str, experiment_dir: str) -> None:
-        self.temp_dir = temp_dir
-        self.experiment_dir = experiment_dir
+    def __init__(self, root: str) -> None:
+        self.temp_dir = root
+        self.experiment_dir = iterate_session_header(root).worktrees.experiment
+        Path(self.experiment_dir).mkdir(parents=True, exist_ok=True)
         self._count = 0
-
-    @classmethod
-    def for_root(cls, root: str) -> Self:
-        """A builder whose scripts sit in ``root`` and whose worktree is the session's side one.
-
-        Creates the experiment worktree directory named by
-        :func:`iterate_session_header` so an invocation can run in it.
-
-        Args:
-            root: The repository the side worktrees sit under.
-
-        Returns:
-            The builder scoped to ``root``.
-        """
-        experiment_dir = iterate_session_header(root).worktrees.experiment
-        Path(experiment_dir).mkdir(parents=True, exist_ok=True)
-        return cls(root, experiment_dir)
 
     def hook_command(self, body: str) -> str:
         """Write ``body`` as a script and give back the command that runs it."""
@@ -113,7 +97,7 @@ class HookScripts:
 
     def invocation_of(self, command: str, **overrides: Any) -> HookInvocation:
         """A ``before`` invocation on the scratch worktree, overridable field by field."""
-        session = iterate_session_header(self.temp_dir, experiment=self.experiment_dir)
+        session = iterate_session_header(self.temp_dir)
         fields: dict[str, Any] = {
             "command": command,
             "stage": "before",
@@ -124,31 +108,6 @@ class HookScripts:
         }
         fields.update(overrides)
         return HookInvocation(**fields)
-
-
-def expected_hook_record(**overrides: Any) -> HookRecord:
-    """The ``HookRecord`` ``run_hook`` produces, with ``at`` and ``duration_ms`` normalized to 0.
-
-    ``at`` and ``duration_ms`` are both nondeterministic, so each defaults to 0
-    here and callers compare against a record whose own ``at`` and
-    ``duration_ms`` they have replaced with 0.
-
-    Args:
-        **overrides: The record's fields. ``timed_out`` defaults to ``False``
-            and ``stderr_bytes`` to 0; every other field is the caller's to name.
-
-    Returns:
-        The expected hook record.
-    """
-    fields: dict[str, Any] = {
-        "type": "hook",
-        "at": 0,
-        "timed_out": False,
-        "stderr_bytes": 0,
-        "duration_ms": 0,
-    }
-    fields.update(overrides)
-    return HookRecord(**fields)
 
 
 def labeled_lines(report: str, stage: HookStage) -> list[str]:

@@ -7,13 +7,15 @@ feasibility check.
 Everything after the warning runs as the ``supervise`` command's preflight
 stage, which appends its own ``command`` record to the session log.
 The module raises :class:`GymratError` for refusals and lets the command's
-boundary route them to exit 2, except the doctor gate, which renders its own
-report to stderr and leaves with code 2 itself.
+boundary route them to exit 2, except a met stop condition, raised as a
+:class:`LoopStopError` the boundary routes to exit 1, and the doctor gate,
+which renders its own report to stderr and leaves with code 2 itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -28,14 +30,15 @@ from gymrat.config import CliFlags, ResolvedConfig, config_trace_args
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
+from gymrat.loop.keep import gate_off_warning
 from gymrat.loop.start import start_session
 from gymrat.loop.stop_condition import stop_condition
 from gymrat.report.loop import format_start_summary
 from gymrat.sampling import RunOptions, TargetSpec
 from gymrat.session.budget import estimate_iterate_duration
 from gymrat.session.paths import (
+    BASELINE_WORKTREE_LABEL,
     baseline_worktree_dir,
-    baseline_worktree_label,
     session_jsonl_path,
 )
 from gymrat.session.store import (
@@ -46,7 +49,14 @@ from gymrat.session.store import (
     unmeasured_edit_count,
 )
 from gymrat.session.workspace import dirty_file_count
-from gymrat.utils import minutes_to_ms, ms_to_minutes, pluralize, warn_to_stderr, write_and_flush
+from gymrat.utils import (
+    MS_PER_SECOND,
+    SECONDS_PER_MINUTE,
+    minutes_to_ms,
+    pluralize,
+    warn_to_stderr,
+    write_and_flush,
+)
 
 if TYPE_CHECKING:
     from gymrat.loop.start import StartResult
@@ -92,23 +102,26 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
         it was resumed.
 
     Raises:
+        LoopStopError: When a stop condition is already met (without
+            ``force``). It carries the agent-facing stop hint; the command
+            replaces it with one addressed to whoever launched ``supervise``.
         GymratError: When the main working tree is dirty (without
             ``allow_dirty``), the experiment worktree holds unsettled or
-            unmeasured changes, the session cannot be started or resumed, a
-            stop condition is met (without ``force``), the baseline cannot be
-            measured, the feasibility check refuses, or another process holds
-            the repository lock.
+            unmeasured changes, the session cannot be started or resumed, the
+            baseline cannot be measured, the feasibility check refuses, or
+            another process holds the repository lock.
         CommandError: When a prepare or bench command of the baseline
             measurement times out or exits non-zero, or a bench run's stdout
             overran the capture cap.
     """
     if config.checks is None:
-        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
+        warn_to_stderr(gate_off_warning(color=resolve_stream_color(None, sys.stderr)))
 
     async def body(_trace: CommandTrace) -> StartResult:
         _working_tree_gate(root, allow_dirty=flags.allow_dirty)
         validate_experiment_worktree(root)
-        result = _session_step(root, config, flags.baseline_ref)
+        result = start_session(root, flags.baseline_ref, config, warn=warn_to_stderr)
+        write_stdout(format_start_summary(result, config.runbook) + "\n")
         _stop_condition_gate(config, result.state, force=flags.force)
         await _baseline_step(root, config)
         _check_feasibility(root, max_minutes=flags.max_minutes, force=flags.force)
@@ -141,36 +154,6 @@ def doctor_gate(root: str, *, color: bool | None = None) -> None:
     raise typer.Exit(TOOL_FAILURE_EXIT_CODE)
 
 
-def _session_step(
-    root: str,
-    config: ResolvedConfig,
-    baseline_ref: str | None,
-) -> StartResult:
-    """Open, resume, or archive-and-reopen the session.
-
-    The caller holds the repository lock for the full session-through-feasibility span.
-
-    Args:
-        root: The repository root path.
-        config: The resolved configuration for the session.
-        baseline_ref: The git ref to measure as baseline, or ``None`` to reuse the existing
-            baseline.
-
-    Returns:
-        The session start result.
-
-    Raises:
-        GymratError: When the baseline ref names no commit or a directory, when
-            the log is corrupt, or when git refuses to create or recreate the
-            workspace.
-    """
-    result = start_session(root, baseline_ref, config, warn=warn_to_stderr)
-
-    summary = format_start_summary(result, config.runbook)
-    write_stdout(summary + "\n")
-    return result
-
-
 def _stop_condition_gate(
     config: ResolvedConfig,
     state: SessionState,
@@ -182,12 +165,10 @@ def _stop_condition_gate(
     if error is None:
         return
 
-    message = str(error)
-    hint = "Start a new session, or raise the limit in gymrat.toml."
     if force:
-        warn_to_stderr(f"warning: {message}")
+        warn_to_stderr(f"warning: {error}")
         return
-    raise GymratError(message, hint=hint)
+    raise error
 
 
 async def _baseline_step(
@@ -211,7 +192,7 @@ async def _baseline_step(
     if latest_baseline(read_session_records(root)) is not None:
         return
 
-    target = TargetSpec(label=baseline_worktree_label(), target=baseline_worktree_dir(root))
+    target = TargetSpec(label=BASELINE_WORKTREE_LABEL, target=baseline_worktree_dir(root))
     progress = begin_run(SharedFlags(), 1, command="supervise")
     try:
         run_options = RunOptions.from_config(
@@ -221,6 +202,10 @@ async def _baseline_step(
         append_record(session_jsonl_path(root), record)
     finally:
         progress.stop()
+
+
+def _ms_to_minutes(ms: float) -> float:
+    return ms / (SECONDS_PER_MINUTE * MS_PER_SECOND)
 
 
 def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
@@ -239,9 +224,11 @@ def _check_feasibility(root: str, *, max_minutes: float, force: bool) -> None:
     if needed_ms <= cap_ms or force:
         return
 
-    source_minutes = round(ms_to_minutes(estimate.source_duration_ms))
-    needed_minutes = round(ms_to_minutes(needed_ms))
-    cap_minutes = round(ms_to_minutes(cap_ms))
+    # Rounding away from each other keeps a refused launch from printing a
+    # needed figure that reads as fitting inside the cap.
+    source_minutes = round(_ms_to_minutes(estimate.source_duration_ms))
+    needed_minutes = math.ceil(_ms_to_minutes(needed_ms))
+    cap_minutes = math.floor(_ms_to_minutes(cap_ms))
     message = (
         f"the {estimate.source} took {source_minutes}m; "
         f"one iterate needs about {needed_minutes}m; "
@@ -280,7 +267,7 @@ def validate_experiment_worktree(root: str) -> None:
 
     Raises:
         GymratError: When the experiment worktree has unsettled or unmeasured
-            changes.
+            changes, or the session log cannot be read or parsed.
     """
     state = fold_session(read_session_records(root))
     if state.finalized is not None or state.session is None:

@@ -15,9 +15,11 @@ which differs between ``measure`` (half an iterate, so per-side) and ``compare``
 """
 
 import json
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -28,10 +30,16 @@ from gymrat.errors import GymratError
 from gymrat.report.json_doc import BudgetSummary
 from gymrat.report.types import ReportOptions
 from gymrat.session.budget import Budget
-from gymrat.session.paths import repo_root, session_jsonl_path, supervise_lockfile_path
+from gymrat.session.paths import (
+    repo_root,
+    repository_lookup_error,
+    session_jsonl_path,
+    supervise_lockfile_path,
+)
 from gymrat.session.records import IterationRecord
-from gymrat.utils import format_time_left
+from gymrat.utils import format_duration, format_time_left
 from tests._clock import freeze_now_ms
+from tests._git import refuse_git_lookups
 from tests._lock import held_supervise_lock, lock_probe_error
 from tests.session._budget import LIVE_BUDGET, block_supervise_lock, write_budget_file
 from tests.session.records._fixtures import (
@@ -122,11 +130,7 @@ def _outside_a_repository(request: pytest.FixtureRequest) -> None:
 
 def _fail_getcwd(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
     """Make reading the process working directory raise ``error``."""
-
-    def getcwd() -> str:
-        raise error
-
-    monkeypatch.setattr("os.getcwd", getcwd)
+    monkeypatch.setattr("os.getcwd", create_autospec(os.getcwd, side_effect=error))
 
 
 def _repo_root_io_error(request: pytest.FixtureRequest) -> None:
@@ -221,9 +225,8 @@ def _warn() -> None:
 
 
 def test_emit_report_when_repo_root_fails_unexpectedly_does_propagate(
-    session_root: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    _seed_session(session_root, budget=_budget_left(MEASURE_REMAINING_MS))
     _fail_getcwd(monkeypatch, RuntimeError("patched wrong"))
 
     with pytest.raises(RuntimeError, match="patched wrong"):
@@ -243,17 +246,35 @@ def test_warn_duration_over_budget_when_reading_records_fails_unexpectedly_does_
             raise RuntimeError(message)
         return real_read_bytes(path)
 
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(
+        Path, "read_bytes", create_autospec(Path.read_bytes, side_effect=read_bytes)
+    )
 
     with pytest.raises(RuntimeError, match="patched wrong"):
         _warn()
 
 
-def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(repo: str):
+@pytest.mark.usefixtures("_in_non_repo")
+def test_emit_report_when_git_declines_the_repository_lookup_does_raise_git_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    refusal = refuse_git_lookups(monkeypatch)
+    expected = str(repository_lookup_error(str(Path.cwd()), refusal))
+
+    with pytest.raises(GymratError) as exc:
+        _emit("text")
+
+    assert str(exc.value) == expected
+
+
+def test_emit_report_when_supervise_lock_cannot_be_probed_does_raise_the_lock_error(
+    repo: str,
+):
     _seed_session(repo, budget=LIVE_BUDGET)
 
     with block_supervise_lock(repo):
         expected = lock_probe_error(supervise_lockfile_path(repo))
+
         with pytest.raises(GymratError) as exc:
             _emit("text")
 
@@ -267,6 +288,7 @@ def test_warn_duration_over_budget_when_supervise_lock_cannot_be_probed_does_rai
 
     with block_supervise_lock(repo):
         expected = lock_probe_error(supervise_lockfile_path(repo))
+
         with pytest.raises(GymratError) as exc:
             _warn()
 
@@ -294,14 +316,18 @@ def test_warn_duration_over_budget_when_estimate_fits_the_budget_does_stay_silen
         pytest.param(
             True,
             MEASURE_REMAINING_MS,
-            ("12m 0s", "24m 0s per side"),
-            ("(",),
+            (format_duration(MEASURE_REMAINING_MS), format_duration(ITERATE_MS / 2)),
+            (format_duration(ITERATE_MS),),
             id="halving-names-the-per-side-cost",
         ),
         pytest.param(
             False,
             COMPARE_REMAINING_MS,
-            ("30m 0s", "48m 0s (24m 0s per side)"),
+            (
+                format_duration(COMPARE_REMAINING_MS),
+                format_duration(ITERATE_MS),
+                format_duration(ITERATE_MS / 2),
+            ),
             (),
             id="whole-names-the-full-cost-with-the-per-side-one",
         ),

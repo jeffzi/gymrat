@@ -347,7 +347,7 @@ def event_from_wire(obj: object) -> SessionEvent | None:
     if obj.get("type") != "launch" and _SCHEMA_KEY in obj:
         return None
     try:
-        return SESSION_EVENT_ADAPTER.validate_python(obj)
+        return SESSION_EVENT_ADAPTER.validate_python(obj, by_alias=True, by_name=False)
     except ValidationError:
         return None
 

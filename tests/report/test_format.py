@@ -40,11 +40,74 @@ def test_format_value_when_finite_does_scale_to_its_unit_tier(
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        pytest.param(1199.6, "1200", id="rounds-up"),
+        pytest.param(1.4, "1.4ns", id="drops-trailing-zeros"),
+        pytest.param(12.34, "12.3ns", id="rounds-to-three-figures"),
+        pytest.param(2.0, "2ns", id="whole-value"),
+        pytest.param(99.94, "99.9ns", id="just-below-the-integer-tier"),
     ],
 )
-def test_format_value_when_unitless_does_round_to_an_integer(value: float, expected: str):
+def test_format_value_when_ns_below_100_does_keep_three_significant_figures(
+    value: float, expected: str
+):
+    assert format_value(value, "ns") == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(99.96, "100ns", id="rounds-onto-the-integer-tier"),
+        pytest.param(123.6, "124ns", id="above-100"),
+    ],
+)
+def test_format_value_when_ns_at_least_100_does_round_to_whole_nanoseconds(
+    value: float, expected: str
+):
+    assert format_value(value, "ns") == expected
+
+
+@pytest.mark.parametrize("value", [pytest.param(0.0, id="zero"), pytest.param(-0.0, id="neg-zero")])
+def test_format_value_when_ns_zero_does_render_an_unsigned_zero(value: float):
+    assert format_value(value, "ns") == "0ns"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(1199.6, "1200", id="rounds-up"),
+        pytest.param(99.96, "100", id="rounds-onto-the-integer-tier"),
+        pytest.param(-1199.6, "-1200", id="negative"),
+    ],
+)
+def test_format_value_when_unitless_at_least_100_does_round_to_an_integer(
+    value: float, expected: str
+):
     assert format_value(value, None) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(0.42, "0.42", id="below-one"),
+        pytest.param(0.0042, "0.0042", id="smallest-fixed-point"),
+        pytest.param(1.5, "1.5", id="drops-trailing-zeros"),
+        pytest.param(12.34, "12.3", id="rounds-to-three-figures"),
+        pytest.param(99.94, "99.9", id="just-below-the-integer-tier"),
+        pytest.param(-0.42, "-0.42", id="negative"),
+    ],
+)
+def test_format_value_when_unitless_below_100_does_keep_three_significant_figures(
+    value: float, expected: str
+):
+    assert format_value(value, None) == expected
+
+
+@pytest.mark.parametrize("value", [pytest.param(0.0, id="zero"), pytest.param(-0.0, id="neg-zero")])
+def test_format_value_when_unitless_zero_does_render_an_unsigned_zero(value: float):
+    assert format_value(value, None) == "0"
+
+
+def test_format_value_when_unitless_below_one_ten_thousandth_does_use_exponent_form():
+    assert format_value(0.000042, None) == "4.2e-05"
 
 
 @pytest.mark.parametrize(
@@ -121,10 +184,9 @@ def test_format_metric_cell_parts_when_spread_exceeds_the_cap_does_state_absolut
 @pytest.mark.parametrize(
     ("delta", "expected"),
     [
-        pytest.param(2.2, "+2.2%", id="signs-a-regression"),
         pytest.param(-17.9, "-17.9%", id="signs-an-improvement"),
         pytest.param(-0.04, "0.0%", id="negative-rounds-to-zero-unsigned"),
-        pytest.param(0.06, "+0.1%", id="just-above-rounding-floor"),
+        pytest.param(0.06, "+0.1%", id="signs-a-regression-just-above-rounding-floor"),
     ],
 )
 def test_format_percent_delta_when_finite_does_round_to_a_signed_one_decimal_percentage(

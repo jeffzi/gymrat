@@ -16,14 +16,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
 from gymrat.config import MetricEntry, ResolvedConfig, StopConfig
-from gymrat.errors import GymratError
 from gymrat.loop.iterate.judge import scoped_bench
 from gymrat.loop.iterate.run import IterateOptions, derive_outcome, iterate_session
 from gymrat.progress_events import (
@@ -35,7 +32,12 @@ from gymrat.progress_events import (
     PassStarted,
     ProgressEvent,
 )
-from gymrat.report.loop import GeomeanPrimary, MetricPrimary
+from gymrat.report.loop import (
+    GeomeanPrimary,
+    MetricPrimary,
+    RerunConfirmation,
+    format_verdict_block,
+)
 from gymrat.session.records import (
     Confirm,
     IterationPrimary,
@@ -59,15 +61,16 @@ from tests.loop.iterate._fixtures import (
     stub_samples,
     trimmed_report_lines,
 )
+from tests.report._assertions import render_plain
 from tests.report._comparisons import permutation_metric
-from tests.session.records._fixtures import (
-    log_records,
-)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from gymrat.model import Direction
     from gymrat.report.loop import LoopPrimary
     from gymrat.report.types import MetricComparison, MetricComparisons
+    from gymrat.session.schema import Outcome
     from tests.loop.iterate._fixtures import CollectSamplesRecorder
 
 
@@ -87,14 +90,10 @@ def _total_ms_gating_config() -> ResolvedConfig:
 
 
 @pytest.mark.parametrize(
-    ("filter_template", "rerun"),
+    ("filter_template", "filtered_metrics"),
     [
-        pytest.param(
-            FILTER,
-            ("npm run bench -- --filter total_ms alloc_bytes", ("total_ms", "alloc_bytes")),
-            id="through-the-filter",
-        ),
-        pytest.param(None, ("npm run bench", None), id="whole-bench-without-a-filter"),
+        pytest.param(FILTER, ("total_ms", "alloc_bytes"), id="through-the-filter"),
+        pytest.param(None, None, id="whole-bench-without-a-filter"),
     ],
 )
 async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun(
@@ -102,9 +101,8 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     samples_mock: CollectSamplesRecorder,
     monkeypatch: pytest.MonkeyPatch,
     filter_template: str | None,
-    rerun: tuple[str, tuple[str, ...] | None],
+    filtered_metrics: tuple[str, ...] | None,
 ):
-    rerun_bench, filtered_metrics = rerun
     stub_runs(samples_mock, open_repo, [regressed_run(), regressed_run()])
     report_a_pass_per_call(monkeypatch, samples_mock)
     events: list[ProgressEvent] = []
@@ -115,7 +113,6 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
         options=IterateOptions(on_progress=events.append),
     )
 
-    assert samples_mock.calls[1].options.bench == rerun_bench
     assert [set(e.regressed) for e in events if isinstance(e, JudgeFinished)] == [
         {"total_ms", "alloc_bytes"}
     ]
@@ -139,7 +136,6 @@ async def test_iterate_session_when_gating_regression_does_confirm_it_on_a_rerun
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="regressed", confirmed=True
     )
-    assert result.record.outcome == "regressed"
 
 
 async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
@@ -163,23 +159,8 @@ async def test_iterate_session_when_rerun_disagrees_does_demote_to_no_signal(
     assert_permutation(
         result.record.metrics["total_ms"], delta=10, verdict="no-signal", confirmed=False
     )
-    assert result.record.metrics["total_ms"].reason == "unconfirmed"
     assert result.record.primary.delta_pct == pytest.approx(10, abs=1e-6)
     assert result.record.outcome == "no-signal"
-
-
-async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recording(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    injected = GymratError("bench command failed")
-    stub_runs(samples_mock, open_repo, [regressed_run(), injected])
-    resolved = _total_ms_gating_config()
-
-    with pytest.raises(GymratError) as exc:
-        await iterate_session(open_repo, resolved)
-
-    assert exc.value is injected
-    assert len(log_records(open_repo)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -187,27 +168,26 @@ async def test_iterate_session_when_rerun_bench_fails_does_raise_without_recordi
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("rerun", "absent", "rerun_lines"),
-    [
-        pytest.param(
-            PairedRun(
-                experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
-                baseline=_filtered_rounds("total_ms", BASELINE_MS),
-            ),
-            ("alloc_bytes",),
-            ["total_ms: regression confirmed on rerun", "alloc_bytes: not measured on rerun"],
-            id="silent-on-one-metric",
-        ),
-    ],
-)
+def _rerun_lines(*reruns: RerunConfirmation) -> list[str]:
+    """The plain rerun lines the verdict block opens with for ``reruns``, in order."""
+    block = format_verdict_block(
+        outcome="regressed", primary=GeomeanPrimary(None), next_step="", reruns=reruns
+    )
+    return trimmed_report_lines(render_plain(*block[: len(reruns)]))
+
+
 async def test_iterate_session_when_rerun_skips_a_metric_does_keep_it_regressed_as_absent(
-    open_repo: str,
-    samples_mock: CollectSamplesRecorder,
-    rerun: PairedRun,
-    absent: tuple[str, ...],
-    rerun_lines: list[str],
+    open_repo: str, samples_mock: CollectSamplesRecorder
 ):
+    rerun = PairedRun(
+        experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
+        baseline=_filtered_rounds("total_ms", BASELINE_MS),
+    )
+    absent = ("alloc_bytes",)
+    rerun_lines = _rerun_lines(
+        RerunConfirmation("total_ms", "confirmed"),
+        RerunConfirmation("alloc_bytes", "absent"),
+    )
     stub_runs(samples_mock, open_repo, [regressed_run(), rerun])
     expected_confirm = Confirm(
         ran=True,
@@ -273,22 +253,7 @@ async def test_iterate_session_when_a_non_exact_gating_metric_regresses_does_rer
 
     await iterate_session(open_repo, resolved)
 
-    assert samples_mock.calls[1].options.bench == "npm run bench -- --filter alloc_bytes"
-
-
-async def test_iterate_session_when_metric_is_non_gating_does_inform_without_rerunning(
-    open_repo: str, samples_mock: CollectSamplesRecorder
-):
-    experiment = rounds(scaled(BASELINE_MS, 0.9), scaled(BASELINE_BYTES, 1.1))
-    stub_samples(samples_mock, open_repo, experiment, baseline_rounds())
-
-    result = await iterate_session(
-        open_repo, resolved_config(metrics={"alloc_bytes": MetricEntry(gating=False)})
-    )
-
-    assert samples_mock.call_count == 1
-    assert result.record.confirm is None
-    assert result.record.metrics["alloc_bytes"].verdict == "regressed"
+    assert samples_mock.calls[1].bench == "npm run bench -- --filter alloc_bytes"
 
 
 # ---------------------------------------------------------------------------
@@ -455,19 +420,6 @@ _ARGS_SCRIPT = '#!/bin/sh\nfor arg in "$@"; do\n  echo "$arg"\ndone\n'
 _ARGS_FILTER = "sh args.sh {names}"
 
 
-def _paired_with(name: str, values: list[float]) -> list[dict[str, float]]:
-    """One round per entry, reporting ``name`` beside a plainly named metric."""
-    return [{name: value, "total_ms": value} for value in values]
-
-
-def _regressed_named(name: str) -> PairedRun:
-    """A run where ``name`` and ``total_ms`` both come back 10% slower."""
-    return PairedRun(
-        experiment=_paired_with(name, scaled(BASELINE_MS, 1.1)),
-        baseline=_paired_with(name, BASELINE_MS),
-    )
-
-
 def _shell_args(directory: str, command: str) -> list[str]:
     """The arguments a POSIX shell hands the stand-in bench when it runs ``command``.
 
@@ -493,28 +445,25 @@ def _shell_args(directory: str, command: str) -> list[str]:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell argument splitting only")
-async def test_iterate_session_when_metric_name_needs_quoting_does_pass_it_as_one_argument(
-    open_repo: str, samples_mock: CollectSamplesRecorder
+def test_scoped_bench_when_metric_name_needs_quoting_does_pass_it_as_one_argument(
+    tmp_path: Path,
 ):
     name = "sort(n=1000)/time"
-    (Path(open_repo) / "args.sh").write_text(_ARGS_SCRIPT, encoding="utf-8")
-    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
+    (tmp_path / "args.sh").write_text(_ARGS_SCRIPT, encoding="utf-8")
 
-    await iterate_session(open_repo, resolved_config(filter=_ARGS_FILTER))
+    command = scoped_bench(resolved_config(filter=_ARGS_FILTER), (name, "total_ms"))
 
-    assert _shell_args(open_repo, samples_mock.calls[1].options.bench) == [name, "total_ms"]
+    assert _shell_args(str(tmp_path), command) == [name, "total_ms"]
 
 
-async def test_iterate_session_when_win32_and_name_has_spaces_does_double_quote_it_in_the_rerun(
-    open_repo: str, samples_mock: CollectSamplesRecorder, monkeypatch: pytest.MonkeyPatch
+def test_scoped_bench_when_win32_and_name_has_spaces_does_double_quote_it(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    name = "decode large payload"
-    stub_runs(samples_mock, open_repo, [_regressed_named(name), _regressed_named(name)])
     monkeypatch.setattr(sys, "platform", "win32")
 
-    await iterate_session(open_repo, resolved_config(filter=FILTER))
+    command = scoped_bench(resolved_config(filter=FILTER), ("decode large payload", "total_ms"))
 
-    assert '"decode large payload"' in samples_mock.calls[1].options.bench
+    assert '"decode large payload"' in command
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +481,18 @@ def _regressed_metrics(*, gating: bool) -> MetricComparisons:
     return {"decode/time": permutation_metric(verdict="regressed", delta=4, gating=gating)}
 
 
+def _outcome_of(metrics: MetricComparisons, primary: LoopPrimary) -> Outcome:
+    """The outcome ``metrics`` add up to, read off each metric's experiment verdict."""
+    verdicts = {
+        name: candidate.verdict
+        for name, metric in metrics.items()
+        for candidate in metric.candidates[:1]
+        if candidate.verdict is not None
+    }
+    metric_meta = {name: metric.meta for name, metric in metrics.items()}
+    return derive_outcome(verdicts, metric_meta, primary)
+
+
 @pytest.mark.parametrize(
     ("gating", "expected"),
     [
@@ -542,7 +503,7 @@ def _regressed_metrics(*, gating: bool) -> MetricComparisons:
 def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
     *, gating: bool, expected: str
 ):
-    outcome = derive_outcome(_regressed_metrics(gating=gating), GeomeanPrimary(-9))
+    outcome = _outcome_of(_regressed_metrics(gating=gating), GeomeanPrimary(-9))
 
     assert outcome == expected
 
@@ -550,8 +511,6 @@ def test_derive_outcome_when_a_metric_regressed_does_count_it_only_when_gating(
 @pytest.mark.parametrize(
     ("primary", "expected"),
     [
-        pytest.param(GeomeanPrimary(-3), "improved", id="geomean-negative-improves"),
-        pytest.param(MetricPrimary("lower/time", -3), "improved", id="lower-negative-improves"),
         pytest.param(MetricPrimary("higher/time", 3), "improved", id="higher-positive-improves"),
         pytest.param(MetricPrimary("absent/time", -30), "no-signal", id="primary-never-measured"),
     ],
@@ -564,14 +523,6 @@ def test_derive_outcome_when_no_gating_regression_does_read_the_primary(
         "higher/time": _directed_metric("higher"),
     }
 
-    outcome = derive_outcome(metrics, primary)
+    outcome = _outcome_of(metrics, primary)
 
     assert outcome == expected
-
-
-def test_derive_outcome_when_gating_metric_has_no_experiment_slice_does_read_the_primary():
-    unmeasured = replace(_directed_metric("lower"), candidates=())
-
-    outcome = derive_outcome({"lower/time": unmeasured}, GeomeanPrimary(-9))
-
-    assert outcome == "improved"

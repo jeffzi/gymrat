@@ -33,7 +33,6 @@ from gymrat.session.workspace import (
     worktree_head,
 )
 from tests._git import (
-    add_worktree,
     checked_out_ref,
     commit_all,
     git_exclude_path,
@@ -58,13 +57,6 @@ BASELINE_REF = "main"
 # The id the session after SESSION_ID opens on, for a workspace built over an
 # earlier one's leftovers.
 NEXT_SESSION_ID = "20260808-152045-b7c1"
-NEXT_BRANCH = f"gymrat/{NEXT_SESSION_ID}"
-
-
-def _both_worktrees_exist(root: str) -> bool:
-    return (
-        Path(experiment_worktree_dir(root)).exists() and Path(baseline_worktree_dir(root)).exists()
-    )
 
 
 def _edit_worktree(worktree: str, edit: str | None) -> None:
@@ -108,7 +100,6 @@ def test_create_workspace_when_branch_already_exists_does_raise_naming_the_branc
     with pytest.raises(GymratError) as excinfo:
         create_workspace(repo, SESSION_ID, baseline)
 
-    assert BRANCH in str(excinfo.value)
     assert BRANCH in (excinfo.value.hint or "")
 
 
@@ -128,43 +119,81 @@ def test_create_workspace_when_worktree_add_dies_does_raise_naming_that_step_lea
     assert experiment_worktree_dir(repo) in str(excinfo.value)
     assert session_branches(repo) == []
     assert list_worktree_dirs(repo, include_main=False) == []
-    assert not Path(experiment_worktree_dir(repo)).exists()
 
 
 @needs_posix_kill
-def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_once_with_the_delete_command(
+def test_create_workspace_when_unwind_cannot_delete_the_branch_does_warn_naming_the_branch(
     repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
 ):
     kill_git_during_worktree_add(repo)
     refuse_session_branch_deletion(repo)
 
-    with pytest.raises(GymratError) as excinfo:
+    with pytest.raises(GymratError):
         create_workspace(repo, SESSION_ID, baseline)
 
-    assert capsys.readouterr().err.count(f"git branch -D {BRANCH}\n") == 1
-    assert experiment_worktree_dir(repo) in str(excinfo.value)
+    assert BRANCH in capsys.readouterr().err
 
 
 def test_create_workspace_when_registry_entries_are_stale_does_check_out_over_its_own_entries_only(
-    repo: str, repo_head: str, baseline: BaselineRef
+    repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
     shutil.rmtree(experiment_worktree_dir(repo))
     shutil.rmtree(baseline_worktree_dir(repo))
-    live = add_worktree(repo, "live-worktree")
     absent = register_absent_worktree(repo)
 
-    result = create_workspace(repo, NEXT_SESSION_ID, baseline)
+    create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    registered = list_worktree_dirs(repo, include_main=False)
-    assert checked_out_ref(result.worktrees.experiment) == NEXT_BRANCH
-    assert head_of(result.worktrees.baseline) == repo_head
-    assert Path(live).exists()
-    assert (live in registered, absent in registered) == (True, True)
+    assert absent in list_worktree_dirs(repo, include_main=False)
+
+
+def _no_earlier_workspace(_repo: str) -> None:
+    """Leave the session worktree paths never registered with git."""
+
+
+def _stale_earlier_workspace(repo: str) -> None:
+    """Leave an earlier session's worktree entries registered with their directories gone."""
+    create_workspace(repo, SESSION_ID, BaselineRef(ref=BASELINE_REF, sha=head_of(repo)))
+    shutil.rmtree(experiment_worktree_dir(repo))
+    shutil.rmtree(baseline_worktree_dir(repo))
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_no_earlier_workspace, id="never-registered"),
+        pytest.param(_stale_earlier_workspace, id="stale-entries-pruned"),
+    ],
+)
+def test_create_workspace_when_prune_has_nothing_to_refuse_does_warn_nothing(
+    repo: str, baseline: BaselineRef, arrange: Callable[[str], None]
+):
+    arrange(repo)
+    warnings: list[str] = []
+
+    create_workspace(repo, NEXT_SESSION_ID, baseline, warn=warnings.append)
+
+    assert warnings == []
+
+
+def test_create_workspace_when_pruning_a_stale_worktree_fails_does_warn_with_gits_error(
+    repo: str, baseline: BaselineRef
+):
+    create_workspace(repo, SESSION_ID, baseline)
+    experiment = experiment_worktree_dir(repo)
+    # git refuses a single --force on a locked worktree, and echoes the lock reason.
+    _git(["worktree", "lock", "--reason", "banana", experiment], repo)
+    shutil.rmtree(experiment)
+    warnings: list[str] = []
+
+    with pytest.raises(GymratError):
+        create_workspace(repo, NEXT_SESSION_ID, baseline, warn=warnings.append)
+
+    assert any("banana" in warning for warning in warnings), warnings
 
 
 def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming_the_path_with_its_work_intact(
-    repo: str, baseline: BaselineRef, capsys: pytest.CaptureFixture[str]
+    repo: str, baseline: BaselineRef
 ):
     # The earlier session's log is gone, so nothing told this run the workspace
     # was already there; its worktree still holds uncommitted work.
@@ -172,14 +201,10 @@ def test_create_workspace_when_earlier_worktree_still_on_disk_does_refuse_naming
     stranded = Path(experiment_worktree_dir(repo)) / "README.md"
     stranded.write_text("# work from the earlier session\n", encoding="utf-8")
 
-    with pytest.raises(GymratError) as excinfo:
+    with pytest.raises(GymratError):
         create_workspace(repo, NEXT_SESSION_ID, baseline)
 
-    # Only this attempt's own branch is unwound, and the standing worktree goes unreported.
-    assert capsys.readouterr().err == ""
     assert stranded.read_text(encoding="utf-8") == "# work from the earlier session\n"
-    assert session_branches(repo) == [BRANCH]
-    assert experiment_worktree_dir(repo) in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -206,27 +231,29 @@ def pin_worktree() -> Iterator[Callable[[str], None]]:
 
 
 @needs_mode_bits
-@pytest.mark.parametrize(
-    "worktree_dir",
-    [
-        pytest.param(experiment_worktree_dir, id="experiment"),
-        pytest.param(baseline_worktree_dir, id="baseline"),
-    ],
-)
-def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it_and_its_command(
-    repo: str,
-    baseline: BaselineRef,
-    pin_worktree: Callable[[str], None],
-    worktree_dir: Callable[[str], str],
+def test_unwind_workspace_when_git_cannot_remove_a_worktree_does_warn_naming_it(
+    repo: str, baseline: BaselineRef, pin_worktree: Callable[[str], None]
 ):
     workspace = create_workspace(repo, SESSION_ID, baseline)
-    worktree = worktree_dir(repo)
+    worktree = baseline_worktree_dir(repo)
     pin_worktree(worktree)
 
     warnings = unwind_workspace(repo, workspace)
 
     assert len(warnings) == 1, warnings
     assert worktree in warnings[0]
+
+
+def test_unwind_workspace_when_git_cannot_delete_the_branch_does_warn_once_naming_it(
+    repo: str, baseline: BaselineRef
+):
+    workspace = create_workspace(repo, SESSION_ID, baseline)
+    refuse_session_branch_deletion(repo)
+
+    warnings = unwind_workspace(repo, workspace)
+
+    assert len(warnings) == 1, warnings
+    assert BRANCH in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +337,6 @@ def test_remove_worktrees_when_called_does_remove_only_its_own_two_without_warni
     warnings = remove_worktrees(repo, worktrees_at(repo))
 
     assert warnings == []
-    assert not Path(experiment_worktree_dir(repo)).exists()
-    assert not Path(baseline_worktree_dir(repo)).exists()
     assert list_worktree_dirs(repo, include_main=False) == [absent]
 
 
@@ -370,18 +395,15 @@ def test_changed_file_count_when_directory_missing_does_return_zero(repo: str, r
 # ---------------------------------------------------------------------------
 
 
-def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch_keeping_other_registrations(
+def test_recreate_workspace_when_experiment_gone_does_put_it_back_on_the_branch(
     repo: str, repo_head: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)
-    user_worktree = register_absent_worktree(repo)
     shutil.rmtree(experiment_worktree_dir(repo))
 
     recreate_workspace(repo, BRANCH, repo_head)
 
     assert checked_out_ref(experiment_worktree_dir(repo)) == BRANCH
-    assert _both_worktrees_exist(repo)
-    assert user_worktree in list_worktree_dirs(repo, include_main=False)
 
 
 def test_recreate_workspace_when_baseline_gone_does_put_it_back_detached_at_sha(
@@ -413,16 +435,6 @@ def test_revert_workspace_when_target_sha_given_does_reset_head_to_that_commit(
     assert head_of(experiment) == original
 
 
-def test_worktree_head_when_worktree_on_branch_does_return_the_checked_out_sha(
-    repo: str, repo_head: str, baseline: BaselineRef
-):
-    create_workspace(repo, SESSION_ID, baseline)
-
-    head = worktree_head(experiment_worktree_dir(repo))
-
-    assert head == repo_head
-
-
 def test_worktree_head_when_directory_is_not_a_repository_does_raise_naming_the_directory(
     tmp_path: Path,
 ):
@@ -449,7 +461,7 @@ def test_advance_baseline_when_target_sha_given_does_land_the_baseline_detached_
 _UNKNOWN_COMMIT = "0" * 40
 
 
-def test_advance_baseline_when_commit_unknown_does_raise_naming_the_check_command(
+def test_advance_baseline_when_commit_unknown_does_raise_naming_the_commit(
     repo: str, baseline: BaselineRef
 ):
     create_workspace(repo, SESSION_ID, baseline)

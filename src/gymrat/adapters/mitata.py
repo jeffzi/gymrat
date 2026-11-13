@@ -8,34 +8,66 @@ benchmarks carry ``$name`` placeholders in the alias that are substituted with
 """
 
 import json
+import math
 import re
 from typing import Annotated
 
 from pydantic import BaseModel, Field, Strict, ValidationError
 
 from gymrat.adapters.contract import MEMORY_SUFFIX, TIME_SUFFIX
-from gymrat.adapters.json_payload import JsonArrayAdapter, NameWording, accepts_metric_prefix
-from gymrat.utils import (
-    Number,
-    WarnSink,
-    describe_error,
+from gymrat.adapters.payload_entry import (
+    JsonArrayAdapter,
+    NameWording,
+    accepts_metric_prefix,
+    error_tail,
     first_problem,
     is_finite_or_warn,
     named_subject,
     record_metric,
     warn_skip,
 )
+from gymrat.utils import Number, WarnSink
 
 _COLLISION_ADVICE = "give the benchmark aliases distinct $placeholders to separate the runs"
+
+
+# ECMAScript Number::toString writes a number 0.<digits> * 10**point positionally
+# while point stays in this range, i.e. for decimal exponents in [-6, 21).
+_JS_MIN_POSITIONAL_POINT = -5
+_JS_MAX_POSITIONAL_POINT = 21
+
+
+def _js_number_string(value: float) -> str:
+    # repr() already yields the shortest round-trip digits JavaScript uses; only
+    # the layout differs.
+    if value == 0:
+        return "0"
+    mantissa, _, exponent = repr(abs(value)).partition("e")
+    whole, _, fraction = mantissa.partition(".")
+    all_digits = whole + fraction
+    significant = all_digits.lstrip("0")
+    leading_zeros = len(all_digits) - len(significant)
+    point = len(whole) - leading_zeros + int(exponent or "0")
+    digits = significant.rstrip("0")
+    sign = "-" if value < 0 else ""
+    if not _JS_MIN_POSITIONAL_POINT <= point <= _JS_MAX_POSITIONAL_POINT:
+        head = digits[0] if len(digits) == 1 else f"{digits[0]}.{digits[1:]}"
+        return f"{sign}{head}e{point - 1:+d}"
+    if point <= 0:
+        return f"{sign}0.{'0' * -point}{digits}"
+    if point < len(digits):
+        return f"{sign}{digits[:point]}.{digits[point:]}"
+    return sign + digits + "0" * (point - len(digits))
 
 
 def _serialize_arg_value(value: object) -> str:
     """Serialize a run-argument value for inclusion in a metric name.
 
     Primitives keep a JavaScript ``String()`` form so booleans read ``true``/
-    ``false`` and ``None`` reads ``null``; objects and arrays serialize via JSON
-    with recursively sorted keys so two structurally equal objects always produce
-    the same metric name.
+    ``false``, ``None`` reads ``null`` and a finite float reads as mitata's own
+    ``String(number)`` would; objects and arrays serialize via JSON with
+    recursively sorted keys so two structurally equal objects always produce the
+    same metric name.
 
     Args:
         value: The argument value as parsed from JSON.
@@ -49,9 +81,8 @@ def _serialize_arg_value(value: object) -> str:
         return "true" if value else "false"
     if value is None:
         return "null"
-    if isinstance(value, float) and value.is_integer():
-        # JS String(5.0) is "5", not "5.0"; an int falls through to str() below.
-        return str(int(value))
+    if isinstance(value, float) and math.isfinite(value):
+        return _js_number_string(value)
     return str(value)
 
 
@@ -149,8 +180,7 @@ def _extract_run_metrics(
     # An errored run carries no usable stats, so the error is the one problem
     # worth reporting — checked before the shape, which it would otherwise fail.
     if isinstance(run, dict) and run.get("error") is not None:
-        error = describe_error(run["error"])
-        warn_skip(warn, "run", f" with an error: {quoted_alias} ({error})")
+        warn_skip(warn, "run", f" with an error: {quoted_alias}{error_tail(run['error'])}")
         return
 
     subject = f"run of {quoted_alias}"

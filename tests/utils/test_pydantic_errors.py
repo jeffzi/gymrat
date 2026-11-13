@@ -1,7 +1,7 @@
-from typing import Annotated, Any
+from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, Field, Strict, TypeAdapter, ValidationError
+from pydantic import Field
 from pydantic_core import ErrorDetails
 
 from gymrat.config import MAX_SAFE_INTEGER
@@ -9,36 +9,37 @@ from gymrat.utils import (
     NON_BLANK_PATTERN,
     describe_key,
     drop_prefix_errors,
-    expected_got,
-    first_problem,
     phrase_for_error,
 )
+from tests._validation import validation_error
 
 
-def _validation_error(annotation: Any, value: object) -> ValidationError:
-    try:
-        TypeAdapter(annotation).validate_python(value)
-    except ValidationError as error:
-        return error
-    pytest.fail(f"{value!r} unexpectedly validated against {annotation!r}")
+@pytest.mark.parametrize(
+    ("annotation", "value", "bound"),
+    [
+        pytest.param(
+            Annotated[int, Field(le=MAX_SAFE_INTEGER)],
+            MAX_SAFE_INTEGER + 1,
+            "9007199254740991",
+            id="less-than-equal-large-bound",
+        ),
+        pytest.param(Annotated[float, Field(gt=0)], -1.0, "0", id="greater-than-whole"),
+        pytest.param(Annotated[float, Field(gt=0.5)], 0.5, "0.5", id="greater-than-fraction"),
+    ],
+)
+def test_phrase_for_error_when_constraint_fails_does_insert_the_bound(
+    annotation: object, value: object, bound: str
+):
+    error = validation_error(annotation, value).errors()[0]
+
+    phrase = phrase_for_error(error)
+
+    assert phrase.endswith(f" {bound}")
 
 
 @pytest.mark.parametrize(
     ("annotation", "value", "expected"),
     [
-        pytest.param(Annotated[int, Strict()], "banana", "an integer", id="int-type"),
-        pytest.param(
-            Annotated[int, Field(le=MAX_SAFE_INTEGER)],
-            MAX_SAFE_INTEGER + 1,
-            "a number at or below 9007199254740991",
-            id="less-than-equal-large-bound",
-        ),
-        pytest.param(
-            Annotated[float, Field(gt=0)], -1.0, "a number above 0", id="greater-than-whole"
-        ),
-        pytest.param(
-            Annotated[float, Field(gt=0.5)], 0.5, "a number above 0.5", id="greater-than-fraction"
-        ),
         pytest.param(
             Annotated[str, Field(min_length=1)], "", "a non-empty string", id="empty-string"
         ),
@@ -49,6 +50,18 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
             id="blank-string",
         ),
         pytest.param(
+            Annotated[str, Field(pattern=NON_BLANK_PATTERN)],
+            "\u00a0",
+            "a non-empty string",
+            id="no-break-space",
+        ),
+        pytest.param(
+            Annotated[str, Field(pattern=NON_BLANK_PATTERN)],
+            "\x1c\x1d\x1e\x1f",
+            "a non-empty string",
+            id="information-separators",
+        ),
+        pytest.param(
             Annotated[str, Field(min_length=2)], "a", "a valid value", id="longer-min-length"
         ),
     ],
@@ -56,7 +69,7 @@ def _validation_error(annotation: Any, value: object) -> ValidationError:
 def test_phrase_for_error_when_validation_fails_does_phrase_expected_shape(
     annotation: object, value: object, expected: str
 ):
-    error = _validation_error(annotation, value).errors()[0]
+    error = validation_error(annotation, value).errors()[0]
 
     phrase = phrase_for_error(error)
 
@@ -115,37 +128,6 @@ def test_drop_prefix_errors_when_locations_nest_does_keep_only_the_deepest(
 def test_describe_key_when_parts_vary_does_quote_only_parts_misread_bare(
     loc: tuple[str | int, ...], expected: str
 ):
-    assert describe_key(loc) == expected
+    described = describe_key(loc)
 
-
-# ---------------------------------------------------------------------------
-# first_problem
-# ---------------------------------------------------------------------------
-
-
-class _Task(BaseModel):
-    name: str
-
-
-@pytest.mark.parametrize(
-    ("value", "prefix", "expected"),
-    [
-        pytest.param({}, (), " with missing name", id="missing-key"),
-        pytest.param(
-            {"name": 1},
-            (),
-            f" with invalid name: {expected_got('a string', 1)}",
-            id="invalid-key",
-        ),
-        pytest.param(None, (), f": {expected_got('an object', None)}", id="invalid-root"),
-        pytest.param({}, ("result",), " with missing result.name", id="prefixed"),
-    ],
-)
-def test_first_problem_when_validation_fails_does_phrase_the_first_error_as_a_tail(
-    value: object, prefix: tuple[str, ...], expected: str
-):
-    error = _validation_error(_Task, value)
-
-    tail = first_problem(error, prefix)
-
-    assert tail == expected
+    assert described == expected

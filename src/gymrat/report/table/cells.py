@@ -24,7 +24,6 @@ from gymrat.report.style import (
     SCOPE_SEPARATOR,
     VARIANT_NAME_STYLE,
 )
-from gymrat.utils import pluralize
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -78,7 +77,8 @@ class GeomeanParts:
 
     Attributes:
         delta: The signed percentage the geomean moved.
-        provenance: How many stable metrics stand behind the figure.
+        provenance: How many metrics stand behind the figure, against the
+            scope's total, as :func:`geomean_count` phrases it.
         band: The propagated band's figure, without the ``±`` a column pins in
             front of it, and empty where the metrics left it nothing to state.
     """
@@ -92,28 +92,37 @@ def geomean_parts(geomean: GeomeanResult) -> GeomeanParts | None:
     """Take a geomean row's figure apart into the fields its cell pads and styles.
 
     A band of zero is what an aggregate over exact-only metrics propagates: there
-    is no noise to state, and ``±0.0%`` would read as a measurement, so the band
-    field is left empty.
+    is no noise to state, and ``±0.0%`` would read as a measurement.
 
     Args:
         geomean: The aggregate to take apart.
 
     Returns:
-        The geomean's delta, band, and provenance, or ``None`` when the geomean
-        covers no metrics.
+        The geomean's delta, band, and provenance, the band empty when it is
+        zero; or ``None`` when the geomean covers no metrics.
     """
     if geomean.n == 0:
         return None
     return GeomeanParts(
         delta=format_percent_delta(geomean.value),
-        provenance=stable_metric_count(geomean.n),
+        provenance=geomean_count(geomean),
         band=format_noise_band_value(geomean.band) if geomean.band > 0 else "",
     )
 
 
-def stable_metric_count(n: int) -> str:
-    """How many stable metrics stand behind a geomean figure, as the tables phrase it."""
-    return pluralize(n, "stable metric")
+def geomean_count(geomean: GeomeanResult) -> str:
+    """The metrics behind a geomean figure against its scope's total, as ``(n/total)``.
+
+    The total counts the excluded metrics too, and the form holds when nothing
+    was excluded, so every geomean row reads its count the same way.
+
+    Args:
+        geomean: The aggregate whose count to state.
+
+    Returns:
+        ``(n/total)``, ``n`` the metrics behind the figure.
+    """
+    return f"({geomean.n}/{geomean.n + len(geomean.excluded)})"
 
 
 def _is_quiet_row(outcomes: Sequence[DisplayClass | None]) -> bool:
@@ -137,9 +146,8 @@ def geomean_value_style(
     """How a geomean's figure is styled: bold always, colored once it clears the noise band.
 
     The figure is an average of ratios, so it moves whether or not anything did.
-    A value inside the band is emboldened and left uncolored. When every metric
-    behind the figure is quiet the color is vetoed, since coloring it would
-    announce a win the rows all decline to claim.
+    Coloring a figure every metric behind it is quiet about would announce a win
+    the rows all decline to claim.
 
     Args:
         geomean: The aggregate whose figure is being styled.
@@ -147,8 +155,9 @@ def geomean_value_style(
             leaves the band deciding alone.
 
     Returns:
-        A rich style string: ``"bold"``, or bold in the improved or regressed
-        verdict color.
+        A rich style string: bold in the improved or regressed verdict color
+        once the figure clears the band, ``"bold"`` alone when it sits inside
+        the band or every metric behind it is quiet.
     """
     if _is_quiet_row(outcomes):
         return "bold"
@@ -233,10 +242,9 @@ class VerdictWidths:
 def verdict_widths(cells: Sequence[VerdictParts]) -> VerdictWidths:
     """Measure a column of verdict cells so every cell pads to the same fields.
 
-    Only the deltas set the delta width; a word standing in for a delta is not
-    measured. A caller that wants the delta field to fit a word widens it
-    itself. Only the cells stating a detectable change set the pair-count
-    width, since only those cells pad their pair count.
+    A word standing in for a delta is not measured; a caller that wants the
+    delta field to fit a word widens it itself. Only a cell stating a detectable
+    change pads its pair count.
 
     Args:
         cells: The verdict cells to measure.

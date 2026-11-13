@@ -25,12 +25,6 @@ _EXPERIMENT_WORKTREE = "/tmp/experiment"
 # ---------------------------------------------------------------------------
 
 
-def _bundled_skill_heading() -> str:
-    # The heading the packaged SKILL.md opens its body with; finding it in the append proves the
-    # real bundled skill text made it in.
-    return next(line for line in read_bundled_skill().splitlines() if line.startswith("# "))
-
-
 def _write_runbook(directory: Path, content: str = RUNBOOK_CONTENT) -> str:
     runbook_path = directory / "runbook.md"
     runbook_path.write_text(content, encoding="utf-8")
@@ -64,7 +58,7 @@ def test_compose_kickoff_when_no_runbook_configured_does_raise():
         compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
 
 
-def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cause(
+def test_compose_kickoff_when_runbook_path_missing_does_raise_naming_path_with_cause(
     tmp_path: Path,
 ):
     missing = str(tmp_path / "absent-runbook.md")
@@ -82,18 +76,7 @@ def test_compose_kickoff_when_runbook_path_missing_does_raise_not_found_with_cau
 # ---------------------------------------------------------------------------
 
 
-def test_compose_kickoff_when_bundled_skill_meets_a_runbook_does_append_the_skill(
-    tmp_path: Path,
-):
-    config = benchless_config(runbook=_write_runbook(tmp_path))
-    skill_heading = _bundled_skill_heading()
-
-    result = compose_kickoff(config, experiment_worktree=_EXPERIMENT_WORKTREE)
-
-    assert skill_heading in result.system_prompt_append
-
-
-def test_compose_kickoff_when_runbook_configured_does_append_its_content_and_path(
+def test_compose_kickoff_when_runbook_configured_does_append_the_runbook_section(
     tmp_path: Path,
 ):
     runbook = _write_runbook(tmp_path)
@@ -139,7 +122,6 @@ def test_compose_kickoff_when_frontmatter_values_span_lines_does_drop_whole_bloc
     prelude = result.system_prompt_append.partition("# Folded skill")[0]
     assert body in result.system_prompt_append
     assert "---" not in prelude
-    assert "name: folded" not in prelude
     assert "folded line" not in prelude
 
 

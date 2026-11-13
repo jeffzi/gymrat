@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from gymrat.report.style import VERDICT_STYLES
+from gymrat.report.style import VERDICT_STYLES, markup
 from gymrat.report.tally import VerdictCounts, count_verdicts, verdict_summary_parts
 from tests.report._assertions import (
     render_colored,
@@ -22,10 +22,10 @@ from tests.report._assertions import (
     word_styles,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     every_class_metrics,
-    n_way_metric,
+    permutation_candidate,
     permutation_metric,
+    shared_baseline_metric,
 )
 from tests.report._verdicts import one_sided_metric
 
@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 
 
 _TWO_CANDIDATES: MetricComparisons = {
-    "decode/time": n_way_metric([
-        NWayCandidate(verdict="improved", delta=-10, median=90),
-        NWayCandidate(verdict="regressed", delta=8, median=108),
+    "decode/time": shared_baseline_metric([
+        permutation_candidate(verdict="improved", delta=-10, median=90),
+        permutation_candidate(verdict="regressed", delta=8, median=108),
     ]),
 }
 
@@ -115,16 +115,17 @@ def test_verdict_summary_parts_when_mixed_does_color_only_each_count_by_its_clas
     ] == [([], [])] * len(_GLYPHS)
 
 
-def test_verdict_summary_parts_when_zero_count_does_dim_the_part():
+def test_verdict_summary_parts_when_zero_count_does_style_the_whole_part():
     only_improved: MetricComparisons = {
         "faster/time": permutation_metric(verdict="improved", delta=-10)
     }
 
     parts = verdict_summary_parts(only_improved, 0)
 
-    assert [
-        styles_at(render_colored(part), glyph) for part, glyph in zip(parts, _GLYPHS, strict=True)
-    ] == [[], *[sgr_for("dim")] * 5]
+    assert [render_colored(part) for part in parts[1:]] == [
+        render_colored(markup(render_plain(part), "dim")) for part in parts[1:]
+    ]
+    assert render_colored(parts[0]) != render_colored(markup(render_plain(parts[0]), "dim"))
 
 
 def test_verdict_summary_parts_when_varying_counts_does_pad_to_widest_digit_width():

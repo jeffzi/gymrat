@@ -40,45 +40,37 @@ def test_console_module_when_imported_does_not_import_the_exit_module():
 
 
 @pytest.mark.parametrize(
-    ("color_flag", "tty", "env", "expected_no_color"),
+    ("color_flag", "env", "expected_no_color"),
     [
-        pytest.param(False, True, {}, True, id="no-color-flag-vetoes"),
-        pytest.param(True, True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
+        pytest.param(False, {}, True, id="no-color-flag-vetoes"),
+        pytest.param(True, {"NO_COLOR": "1"}, False, id="color-flag-overrides-no-color-env"),
     ],
 )
-def test_stderr_console_when_flag_env_and_tty_vary_does_resolve_color(
-    color_flag: bool | None,
-    tty: bool,
+def test_stderr_console_when_color_flag_given_does_override_the_environment(
+    color_flag: bool,
     env: dict[str, str],
     expected_no_color: bool,
     monkeypatch: pytest.MonkeyPatch,
 ):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr("sys.stderr", FakeStream(tty=tty))
+    monkeypatch.setattr("sys.stderr", FakeStream(tty=True))
 
     console = stderr_console(color_flag=color_flag)
 
     assert console.no_color is expected_no_color
 
 
-@pytest.mark.parametrize(
-    ("color", "env", "expected_no_color"),
-    [
-        pytest.param(True, "NO_COLOR", False, id="color-flag-outranks-no-color-env"),
-        pytest.param(False, "FORCE_COLOR", True, id="no-color-flag-outranks-force-color-env"),
-    ],
-)
-def test_stderr_console_when_command_color_flag_installed_does_follow_it(
-    color: bool, env: str, expected_no_color: bool, monkeypatch: pytest.MonkeyPatch
+def test_stderr_console_when_command_color_flag_installed_does_outrank_no_color_env(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(env, "1")
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setattr("sys.stderr", FakeStream(tty=False))
-    apply_command_flags(debug=False, color=color)
+    apply_command_flags(debug=False, color=True)
 
     console = stderr_console()
 
-    assert console.no_color is expected_no_color
+    assert console.no_color is False
 
 
 def test_apply_command_flags_when_command_gives_no_flags_does_keep_the_root_flags(

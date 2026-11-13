@@ -80,7 +80,6 @@ async def run_sequence(
     lock_wait_ms: int | None = 0,
     is_lock_held: Callable[[], bool] | None = None,
     log: SessionObserver | None = None,
-    progress: Callable[[ExitPhase], None] | None = None,
 ) -> ExitRun:
     """Run the exit sequence over ``context``, collecting its progress, events, and warnings.
 
@@ -92,7 +91,6 @@ async def run_sequence(
         lock_wait_ms: How long the lock wait is bound to, or None for the config bound.
         is_lock_held: Lock probe override, or None to use the real one.
         log: Observer override, or None to collect events into the returned run.
-        progress: Progress sink override, or None to collect phases into the returned run.
 
     Returns:
         The report paired with the phases, events, and warnings the run produced.
@@ -105,7 +103,7 @@ async def run_sequence(
         context,
         ended_by=ended_by,
         finalize=finalize,
-        progress=phases.append if progress is None else progress,
+        progress=phases.append,
         log=observer if log is None else log,
         warn=warnings.append,
         lock_poll_ms=lock_poll_ms,

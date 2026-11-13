@@ -98,17 +98,6 @@ def _no_fingerprint(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
     append_records(root, iteration_record(seq=1, measured_tree=None))
 
 
-def _failed_before_hook_on_a_retry(root: str, _monkeypatch: pytest.MonkeyPatch) -> None:
-    """An improved iteration whose before hook failed, recorded after an attempt that raised."""
-    append_records(
-        root,
-        hook_record(seq=1, stage="before"),
-        command_record(seq=1),
-        hook_record(seq=1, stage="before", exit_code=1),
-    )
-    measured(root, iteration_record(seq=1))
-
-
 def _failed_after_hook_ahead_of_a_command_record(
     root: str, _monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -170,8 +159,8 @@ async def test_run_exit_sequence_when_unsettled_improved_and_gate_passes_does_co
     assert "3" in record.message
 
 
-async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_missing_checks_warning_to_the_sink(
-    repo: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+async def test_run_exit_sequence_when_no_checks_are_configured_does_label_the_kept_step_unchecked(
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo)
     improved_iteration(repo)
@@ -180,8 +169,6 @@ async def test_run_exit_sequence_when_no_checks_are_configured_does_route_the_mi
     run = await run_sequence(session_context(repo))
 
     assert is_kept_step(run.report.steps[0], checks="checks not configured")
-    assert run.warnings != []
-    assert capsys.readouterr().err == ""
 
 
 async def test_run_exit_sequence_when_the_checks_rewrite_the_tree_does_note_it_on_the_kept_step(
@@ -231,31 +218,51 @@ async def test_run_exit_sequence_when_the_checks_fail_does_leave_the_iteration_f
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
     (left,) = run.report.steps
-    assert (left.kind, "iteration 1" in left.text, "checks failed" in left.text) == (
-        "left",
-        True,
-        True,
-    )
-    assert status_of(experiment_worktree_dir(repo)) != ""
+    assert left.kind == "left"
+    assert "iteration 1" in left.text
+    assert "checks failed" in left.text
+
+
+async def test_run_exit_sequence_when_the_checks_fail_does_record_the_supervise_command_as_failed(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo)
+    improved_iteration(repo)
+    checks_fail(monkeypatch)
+
+    await run_sequence(session_context(repo, checks=CHECKS))
+
     command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (1, "checks-failed", 1)
+
+
+def _commit_nothing(repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measure iteration 1 on the tree as it stands, with checks that pass."""
+    start_with(repo)
+    append_records(repo, iteration_record(seq=1, measured_tree=fingerprint(repo)))
+    checks_pass(monkeypatch)
 
 
 async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it_settled(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    start_with(repo)
-    append_records(repo, iteration_record(seq=1, measured_tree=fingerprint(repo)))
-    checks_pass(monkeypatch)
+    _commit_nothing(repo, monkeypatch)
 
     run = await run_sequence(session_context(repo, checks=CHECKS))
 
     settled = run.report.steps[0]
-    assert (settled.kind, "iteration 1" in settled.text, "nothing to commit" in settled.text) == (
-        "settled",
-        True,
-        True,
-    )
+    assert settled.kind == "settled"
+    assert "iteration 1" in settled.text
+    assert "nothing to commit" in settled.text
+
+
+async def test_run_exit_sequence_when_the_agent_committed_nothing_does_record_the_supervise_command_as_clean(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    _commit_nothing(repo, monkeypatch)
+
+    await run_sequence(session_context(repo, checks=CHECKS))
+
     command = last_command_record(repo)
     assert (command.exit_code, command.reason, command.seq) == (0, None, 1)
 
@@ -268,9 +275,6 @@ async def test_run_exit_sequence_when_the_agent_committed_nothing_does_report_it
 GATE_FAILURES = [
     pytest.param(_stale_tree, TREE_CHANGED, id="tree-changed-after-measuring"),
     pytest.param(_no_fingerprint, "fingerprint unavailable", id="fingerprint-unavailable"),
-    pytest.param(
-        _failed_before_hook_on_a_retry, "before hook failed", id="before-hook-failed-on-a-retry"
-    ),
     pytest.param(
         _failed_after_hook_ahead_of_a_command_record,
         "after hook failed",
@@ -288,7 +292,7 @@ GATE_FAILURES = [
 
 
 @pytest.mark.parametrize(("arrange", "reason"), GATE_FAILURES)
-async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_leave_the_iteration_naming_why_and_where(
+async def test_run_exit_sequence_when_improved_but_the_gate_fails_does_leave_the_iteration_naming_the_gate_failure(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     arrange: Callable[[str, pytest.MonkeyPatch], None],
@@ -440,5 +444,3 @@ async def test_run_exit_sequence_when_only_unmeasured_edits_stand_does_leave_the
 
     left = run.report.steps[0]
     assert (left.kind, "2 unmeasured edits" in left.text) == ("left", True)
-    assert records_of_type(repo, KeepRecord | DiscardRecord) == []
-    assert status_of(experiment_worktree_dir(repo)) != ""

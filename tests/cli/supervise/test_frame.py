@@ -18,22 +18,19 @@ from rich.style import Style
 from gymrat.cli.style import STYLE_DONE, STYLE_META, STYLE_REGRESSED
 from gymrat.cli.supervise.frame import format_eta
 from gymrat.session.store import BestIteration
+from tests._rich import sealed_console
 from tests.cli.supervise._fixtures import (
-    color_console,
+    FRAME_WIDTH,
     fire_launch_and_edit_cycle,
     make_reporter,
     reporter_showing_session,
 )
-from tests.session.records._fixtures import (
-    make_iteration,
-    session_state,
-)
+from tests.session.records._fixtures import session_state
 
 if TYPE_CHECKING:
     from rich.segment import Segment
 
     from gymrat.cli.supervise.progress import SuperviseReporter
-    from gymrat.session.schema import Outcome
 
 pytestmark = pytest.mark.usefixtures("mock_live_cls")
 
@@ -70,7 +67,7 @@ def _styles_of(lines: list[list[Segment]], token: str) -> list[str]:
 
 def _frame_lines(reporter: SuperviseReporter) -> list[list[Segment]]:
     """The reporter's current frame as rendered lines, through a color-enabled console."""
-    console = color_console()
+    console = sealed_console(width=FRAME_WIDTH, no_color=False, color_system="standard")
     return console.render_lines(reporter.frame(), console.options)
 
 
@@ -103,49 +100,23 @@ def _segment_style(reporter: SuperviseReporter, token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# loop row styling
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("outcome", "delta_pct", "expected_style"),
-    [
-        pytest.param("regressed", 3.2, _META_REGRESSED, id="regressed-red"),
-        pytest.param("improved", -3.2, _META_DONE, id="improved-green"),
-    ],
-)
-def test_loop_outcome_when_rendered_with_color_does_style_regressed_red_and_improved_green(
-    outcome: Outcome, delta_pct: float, expected_style: str
-) -> None:
-    state = session_state(
-        iteration_count=1,
-        last_iteration=make_iteration(delta_pct, outcome),
-    )
-    kit = reporter_showing_session(state)
-
-    style = _segment_style(kit.reporter, outcome)
-
-    assert style == expected_style
-
-
-# ---------------------------------------------------------------------------
 # best row styling
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("delta_pct", "direction", "expected_style"),
+    ("delta_pct", "expected_style"),
     [
-        pytest.param(-6.8, "lower", _META_DONE, id="lower-better-negative-delta-green"),
-        pytest.param(3.5, "lower", _META_REGRESSED, id="lower-better-positive-delta-red"),
+        pytest.param(-6.8, _META_DONE, id="lower-better-negative-delta-green"),
+        pytest.param(3.5, _META_REGRESSED, id="lower-better-positive-delta-red"),
     ],
 )
-def test_best_delta_when_rendered_with_color_does_style_an_improvement_green_and_a_regression_red(
-    delta_pct: float, direction: Literal["lower", "higher"], expected_style: str
+def test_best_delta_when_rendered_with_color_does_style_it_by_whether_it_improved(
+    delta_pct: float, expected_style: str
 ) -> None:
     kit = reporter_showing_session(
         session_state(iteration_count=1, keep_count=1),
-        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction=direction),
+        best=BestIteration(delta_pct=delta_pct, seq=1, label="primary", direction="lower"),
     )
 
     style = _segment_style(kit.reporter, "%")
@@ -184,15 +155,15 @@ def test_finished_tool_line_when_rendered_with_color_does_style_it_by_result(
 @pytest.mark.parametrize(
     ("ms", "expected"),
     [
-        (0, "~1s left"),
-        (48200, "~48s left"),
-        (59999, "~1m left"),
-        (130000, "~2m 10s left"),
-        (3599999, "~1h left"),
-        (3900000, "~1h 05m left"),
+        pytest.param(0, "~1s left", id="zero-clamps-to-one-second"),
+        pytest.param(48200, "~48s left", id="seconds"),
+        pytest.param(59999, "~1m left", id="rounds-up-into-minutes"),
+        pytest.param(130000, "~2m 10s left", id="minutes-and-seconds"),
+        pytest.param(3599999, "~1h left", id="rounds-up-into-hours"),
+        pytest.param(3900000, "~1h 05m left", id="hours-and-minutes"),
     ],
 )
-def test_format_eta_when_given_milliseconds_does_round_to_the_two_largest_tiers_clamped_to_one_second(
+def test_format_eta_when_given_milliseconds_does_round_to_the_two_largest_tiers(
     ms: float, expected: str
 ) -> None:
     assert format_eta(ms) == expected

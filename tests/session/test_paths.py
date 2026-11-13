@@ -83,6 +83,19 @@ def test_repo_root_when_directory_not_in_repo_does_raise_not_a_git_repository(tm
     assert str(tmp_path) in str(excinfo.value)
 
 
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_repo_root_when_git_cannot_be_started_does_raise_a_lookup_error_naming_the_directory(
+    tmp_path: Path,
+):
+    with pytest.raises(GymratError) as excinfo:
+        repo_root(str(tmp_path))
+
+    assert type(excinfo.value) is GymratError
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+    assert str(tmp_path) in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # git_common_dir
 # ---------------------------------------------------------------------------
@@ -96,20 +109,12 @@ def _linked_worktree(repo: str) -> str:
     return add_worktree(repo, "linked")
 
 
-@pytest.mark.parametrize(
-    "checkout",
-    [
-        pytest.param(_main_checkout, id="main-checkout"),
-        pytest.param(_linked_worktree, id="linked-worktree"),
-    ],
-)
 def test_git_common_dir_when_called_does_return_the_git_directory_of_the_owning_repository(
-    create_scratch_repo: Callable[[], str], checkout: Callable[[str], str]
+    create_scratch_repo: Callable[[], str],
 ):
     repo = create_scratch_repo()
-    directory = checkout(repo)
 
-    common = git_common_dir(directory)
+    common = git_common_dir(repo)
 
     assert Path(common).resolve() == Path(repo, ".git").resolve()
 

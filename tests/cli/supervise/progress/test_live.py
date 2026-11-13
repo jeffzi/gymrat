@@ -1,15 +1,11 @@
-"""Live-wiring, render-refresh, and render-failure tests.
+"""Live-wiring, repaint, session-refresh and render-failure tests.
 
-Tests for the ``Live`` construction contract (the refresh rate derived from the
-refresh interval, rendering through ``get_renderable``), the color flag handed
-to the console factory, the single ``refresh()`` an event that changes state
-triggers, the skipped repaint for events that leave state unchanged, and the
-session refresh that re-reads the session, keeping the last good read when one
-fails and repainting only when the re-read succeeds.
+Tests for the single repaint an event or exit phase that changes state
+triggers, the session refresh that re-reads the session and repaints only when
+the re-read succeeds, and a frame that fails to render: the last good frame
+holds with one warning, a fresh frame returns once the failures stop, and a
+setup frame that fails warns through the dashboard.
 
-The ``terminal`` fixture makes a sealed console writing to a buffer the
-dashboard's console. A
-warning printed while the frame is up is pinned here, on a real live display.
 The zero-width fallback, what a termination signal does to a display, and the
 ``stop()`` guards every renderer shares are tested in
 ``tests/cli/test_live_display.py`` and ``tests/cli/test_live_display_mixin.py``.
@@ -18,12 +14,11 @@ The zero-width fallback, what a termination signal does to a display, and the
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, override
 from unittest.mock import DEFAULT, MagicMock, Mock, patch
 
 import pytest
 
-from gymrat.cli.live_display import ErasableLive
 from gymrat.supervisor.events import TextDeltaEvent
 from gymrat.supervisor.exit_sequence import ExitPhase
 from tests._rich import (
@@ -35,11 +30,8 @@ from tests.cli.supervise._fixtures import (
     EMPTY_READ,
     FRAME_WIDTH,
     KEPT_READ,
-    LIVE_CLASS_PATH,
     ReporterKit,
-    dashboard_console_patch,
     fire_launch_and_iterate_start,
-    launch_event,
     launched,
     make_reporter,
     render_frame,
@@ -64,19 +56,6 @@ def _repaints_from_now(live_cls: MagicMock) -> Callable[[], int]:
     live = live_cls.return_value
     painted = live.refresh.call_count
     return lambda: live.refresh.call_count - painted
-
-
-# ---------------------------------------------------------------------------
-# Live construction — refresh rate and renderable
-# ---------------------------------------------------------------------------
-
-
-def test_create_reporter_when_live_mode_does_derive_the_refresh_rate_from_refresh_ms(
-    mock_live_cls: MagicMock,
-):
-    make_reporter(mode="live", refresh_ms=500)
-
-    assert mock_live_cls.call_args.kwargs.get("refresh_per_second") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +131,7 @@ def terminal() -> Iterator[StringIO]:
     term = StringIO()
     console = sealed_console(width=_SCREEN_WIDTH, color_system=None)
     console.file = term
-    with dashboard_console_patch(console):
+    with patch("gymrat.cli.supervise.progress.stderr_console", autospec=True, return_value=console):
         yield term
 
 
@@ -259,38 +238,3 @@ def test_create_reporter_when_setup_frame_fails_to_render_does_warn_through_the_
 
     assert plain_lines == []
     _assert_one_warning_naming_the_render_error(terminal)
-
-
-# ---------------------------------------------------------------------------
-# Warnings — printed through the dashboard's console while the frame is up
-# ---------------------------------------------------------------------------
-
-
-def test_warn_when_live_mode_does_print_through_the_console_while_the_frame_is_up(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    console = sealed_console()
-    lives: list[ErasableLive] = []
-
-    def build_live(**kwargs: Any) -> ErasableLive:
-        lives.append(ErasableLive(**kwargs))
-        return lives[-1]
-
-    with (
-        dashboard_console_patch(console),
-        patch(LIVE_CLASS_PATH, autospec=True, side_effect=build_live),
-    ):
-        kit = make_reporter(mode="live", plain_write=lambda _line: None)
-    kit.reporter.observer(launch_event(1000))
-    printed: list[tuple[str, bool]] = []
-    real_print = console.print
-
-    def recording_print(*objects: object, **kwargs: Any) -> None:
-        printed.extend((text, lives[0].is_started) for text in objects if isinstance(text, str))
-        real_print(*objects, **kwargs)
-
-    monkeypatch.setattr(console, "print", recording_print)
-
-    kit.reporter.warn("warning: lat:100:p99 disk full")
-
-    assert printed == [("warning: lat:100:p99 disk full", True)]

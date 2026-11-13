@@ -18,11 +18,10 @@ SDK's own dataclasses.
 import asyncio
 import contextlib
 import json
-import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from math import ceil, isfinite
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from gymrat import utils
 from gymrat.agent_env import TRACEPARENT_ENV
@@ -106,25 +105,6 @@ def _stringify_result(content: object) -> str:
         return json.dumps(content)
     except (TypeError, ValueError):
         return str(content)
-
-
-def detect_origin(message: "ResultMessage") -> Literal["agent", "injected"]:
-    """Classify a result message's origin for the turn-end event.
-
-    A human-initiated turn is still the agent's response.
-
-    Args:
-        message: The result message to classify.
-
-    Returns:
-        ``"agent"`` when the origin is absent, lacks a ``kind``, or has
-        ``kind == "human"``; ``"injected"`` for any other ``kind`` (e.g.
-        ``"task-notification"``).
-    """
-    origin = message.origin
-    if origin is None or origin.get("kind", "human") == "human":
-        return "agent"
-    return "injected"
 
 
 class MessageMapper:
@@ -403,7 +383,7 @@ def _build_options(prompt: SessionPrompt) -> dict[str, object]:
     return options
 
 
-async def _disconnect_quietly(client: ClaudeClient) -> None:
+async def _disconnect_quietly(client: ClaudeClient, warn: utils.WarnSink) -> None:
     """Disconnect ``client``, warning instead of raising.
 
     The caller's outcome is already settled by the time this runs; a
@@ -411,19 +391,12 @@ async def _disconnect_quietly(client: ClaudeClient) -> None:
 
     Args:
         client: The client to disconnect.
+        warn: Receives the failure when the disconnect raises.
     """
     try:
         await client.disconnect()
     except Exception as err:  # noqa: BLE001 - must not replace the already-settled outcome
-        warnings.warn(f"claude client disconnect failed: {err!s}", RuntimeWarning, stacklevel=2)
-
-
-@dataclass(frozen=True, slots=True)
-class _OptionFactories:
-    """Per-session builders whose results are merged into the SDK options."""
-
-    tools: ToolsFactory | None
-    hooks: HooksFactory | None
+        warn(f"warning: claude client disconnect failed: {err!s}")
 
 
 # ---------------------------------------------------------------------------
@@ -443,17 +416,18 @@ class _ClaudeSession:
 
     def __init__(
         self,
-        client_factory: ClientFactory | None,
+        driver: "_ClaudeDriver",
         prompt: SessionPrompt,
         observer: SessionObserver,
         abort: asyncio.Event,
-        factories: _OptionFactories,
     ) -> None:
-        self._client_factory = client_factory
+        self._client_factory = driver.client_factory
         self._prompt = prompt
         self._observer = observer
         self._abort = abort
-        self._factories = factories
+        self._tools = driver.tools
+        self._hooks = driver.hooks
+        self._warn = driver.warn
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
         self._disconnecting: asyncio.Task[None] | None = None
@@ -515,7 +489,7 @@ class _ClaudeSession:
         if self._client is None:
             return
         if self._disconnecting is None:
-            self._disconnecting = asyncio.create_task(_disconnect_quietly(self._client))
+            self._disconnecting = asyncio.create_task(_disconnect_quietly(self._client, self._warn))
         await asyncio.shield(self._disconnecting)
 
     def _settled_or(self, default: SessionOutcome) -> SessionOutcome:
@@ -552,11 +526,11 @@ class _ClaudeSession:
 
     async def _stream(self, factory: ClientFactory) -> SessionOutcome:
         options = _build_options(self._prompt)
-        tools = self._factories.tools
+        tools = self._tools
         if tools is not None:
             env = _traceparent_env(self._prompt.traceparent)
             options["mcp_servers"] = {MCP_SERVER: tools(self._abort, env)}
-        hooks = self._factories.hooks
+        hooks = self._hooks
         if hooks is not None:
             options["hooks"] = hooks()
         client = factory(options)
@@ -655,7 +629,12 @@ class _ClaudeSession:
                 at=utils.now_ns(),
                 text=self._mapper.last_top_level_text,
                 cost_usd=self._cost_usd,
-                origin=detect_origin(message),
+                # A human-initiated turn is still the agent's response.
+                origin=(
+                    "agent"
+                    if message.origin is None or message.origin.get("kind", "human") == "human"
+                    else "injected"
+                ),
                 budget_exhausted=budget_exhausted,
             )
         )
@@ -683,7 +662,9 @@ class _ClaudeSession:
 @dataclass(frozen=True, slots=True)
 class _ClaudeDriver:
     client_factory: ClientFactory | None
-    factories: _OptionFactories
+    tools: ToolsFactory | None
+    hooks: HooksFactory | None
+    warn: utils.WarnSink
 
     def start(
         self,
@@ -691,13 +672,15 @@ class _ClaudeDriver:
         observer: SessionObserver,
         abort: asyncio.Event,
     ) -> DriverSession:
-        return _ClaudeSession(self.client_factory, prompt, observer, abort, self.factories)
+        return _ClaudeSession(self, prompt, observer, abort)
 
 
 def create_claude_driver(
     client_factory: ClientFactory | None = None,
     tools: ToolsFactory | None = None,
     hooks: HooksFactory | None = None,
+    *,
+    warn: utils.WarnSink = utils.warn_to_stderr,
 ) -> Driver:
     """Build a :class:`Driver` backed by the Claude Agent SDK.
 
@@ -712,8 +695,10 @@ def create_claude_driver(
         hooks: Builds the SDK hooks mapping. Called once per session start;
             its result goes under ``hooks`` in the options. When ``None``, no
             ``hooks`` key is added to the options.
+        warn: Receives a warning when a session's client fails to disconnect;
+            the session's settled outcome stands regardless.
 
     Returns:
         A driver whose ``start`` launches one SDK session per call.
     """
-    return _ClaudeDriver(client_factory, _OptionFactories(tools=tools, hooks=hooks))
+    return _ClaudeDriver(client_factory, tools, hooks, warn)

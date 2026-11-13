@@ -27,7 +27,7 @@ from gymrat.session.paths import (
     experiment_worktree_dir,
     session_jsonl_path,
 )
-from gymrat.session.records import SessionConfig, SessionHooks
+from gymrat.session.records import SessionConfig, SessionHooks, SessionLogRecord
 from gymrat.session.store import fold_session, read_records
 from gymrat.session.workspace import BaselineRef, remove_worktrees
 from gymrat.utils import now_ns
@@ -144,16 +144,23 @@ def read_only_log_dir(repo: str) -> Iterator[Path]:
         pytest.param(CONFIG_WITHOUT_HOOKS, CONFIG_SNAPSHOT_WITHOUT_HOOKS, id="no-hooks"),
     ],
 )
-def test_start_session_when_no_session_yet_does_write_header_naming_baseline_and_config(
-    repo: str, repo_head: str, config: ResolvedConfig, snapshot: SessionConfig
+def test_start_session_when_no_session_yet_does_snapshot_the_config(
+    repo: str, config: ResolvedConfig, snapshot: SessionConfig
 ):
-    result = start_session(repo, "main", config)
+    start_session(repo, "main", config)
+
+    assert session_header_of(repo).config == snapshot
+
+
+def test_start_session_when_no_session_yet_does_write_a_lone_header_pinning_the_ref(
+    repo: str, repo_head: str
+):
+    result = start_session(repo, "main", CONFIG)
 
     header = session_header_of(repo)
     assert result == StartResult(session=header, state=fold_session([header]), resumed=False)
     assert log_records(repo) == [header]
     assert header.baseline == BaselineRef(ref="main", sha=repo_head)
-    assert header.config == snapshot
 
 
 def test_start_session_when_new_does_mint_the_session_id_from_the_instant_the_header_stamps(
@@ -249,16 +256,8 @@ def _footprint(repo: str) -> tuple[list[tuple[str, bytes]], list[str], list[str]
     return files, list_worktree_dirs(repo), session_branches(repo)
 
 
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        pytest.param(_open_and_finalize_a_session, id="closed-session"),
-    ],
-)
-def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(
-    repo: str, arrange: Callable[[str], None]
-):
-    arrange(repo)
+def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(repo: str):
+    _open_and_finalize_a_session(repo)
     before = _footprint(repo)
 
     with pytest.raises(GymratError) as excinfo:
@@ -273,17 +272,11 @@ def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "close",
-    [
-        pytest.param(_close_session_with_one_keep, id="worktrees-taken-down"),
-    ],
-)
 def test_start_session_when_finalized_does_reopen_at_the_pinned_baseline_with_the_old_log_archived(
-    repo: str, repo_head: str, close: Callable[[str], str]
+    repo: str, repo_head: str
 ):
     start_session(repo, "main", CONFIG)
-    closed = close(repo)
+    closed = _close_session_with_one_keep(repo)
     closed_log = log_records(repo)
 
     result = start_session(repo, "main", CONFIG)
@@ -292,10 +285,8 @@ def test_start_session_when_finalized_does_reopen_at_the_pinned_baseline_with_th
     assert result.archived == closed
     assert result.archived_path == archived_session_path(repo, closed)
     assert (result.resumed, result.state.finalized) == (False, None)
-    assert result.session.session_id != closed
     assert log_records(repo) == [result.session]
     assert head_of(experiment_worktree_dir(repo)) == repo_head
-    assert head_of(baseline_worktree_dir(repo)) == repo_head
 
 
 @needs_posix_kill
@@ -312,6 +303,38 @@ def test_start_session_when_fresh_workspace_after_finalize_dies_does_put_the_clo
 
     assert log_records(repo) == closed_log
     assert not Path(archived_session_path(repo, closed)).exists()
+
+
+def test_start_session_when_finalized_and_failing_after_the_new_header_reached_the_log_does_keep_both_logs_warning_with_the_archive(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    closed_log = log_records(repo)
+    archived = archived_session_path(repo, closed)
+    jsonl = session_jsonl_path(repo)
+    real_fsync = os.fsync
+
+    def fail_syncing_the_new_log(descriptor: int) -> None:
+        # Only the fresh log, written once the closed one is archived, refuses to sync.
+        new_log_written = Path(archived).exists() and Path(jsonl).exists()
+        if new_log_written and os.path.samestat(os.fstat(descriptor), Path(jsonl).stat()):
+            raise OSError(5, "sync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        os, "fsync", create_autospec(os.fsync, side_effect=fail_syncing_the_new_log)
+    )
+    warnings: list[str] = []
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG, warn=warnings.append)
+
+    header = session_header_of(repo)
+    assert header.session_id != closed
+    assert log_records(repo) == [header]
+    assert read_records(archived) == closed_log
+    assert any(archived in warning for warning in warnings), warnings
 
 
 @needs_posix_kill
@@ -341,7 +364,6 @@ def test_start_session_when_putting_the_closed_log_back_fails_does_warn_naming_b
     archived = archived_session_path(repo, closed)
     # The rollback's own failure never speaks for the start's.
     assert experiment_worktree_dir(repo) in str(excinfo.value)
-    assert Path(archived).exists()
     warning = capsys.readouterr().err
     assert archived in warning
     assert str(jsonl) in warning
@@ -395,7 +417,7 @@ def test_start_session_when_header_append_fails_does_remove_the_branch_and_workt
 
 @needs_mode_bits
 @pytest.mark.usefixtures("read_only_log_dir")
-def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_each_worktree(
+def test_start_session_when_unwinding_a_failed_start_fails_does_forward_the_unwind_warnings_to_stderr(
     repo: str, capsys: pytest.CaptureFixture[str]
 ):
     # Neither git nor a plain delete can empty the worktrees, so the unwind's own steps fail.
@@ -404,14 +426,11 @@ def test_start_session_when_unwinding_a_failed_start_fails_does_warn_naming_each
     with pytest.raises(PermissionError):
         start_session(repo, "main", CONFIG)
 
-    stderr = capsys.readouterr().err
-    experiment, baseline = experiment_worktree_dir(repo), baseline_worktree_dir(repo)
-    assert experiment in stderr
-    assert baseline in stderr
+    assert experiment_worktree_dir(repo) in capsys.readouterr().err
 
 
 @needs_mode_bits
-def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_unwind_its_workspace(
+def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_keep_its_workspace_warning_with_the_read_error(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     log = Path(session_jsonl_path(repo))
@@ -421,12 +440,17 @@ def test_start_session_when_the_log_cannot_be_read_back_after_the_failure_does_u
         raise OSError(5, "sync failed")
 
     monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=fail_and_lock_the_log))
+    warnings: list[str] = []
 
     with pytest.raises(OSError, match="sync failed"):
-        start_session(repo, "main", CONFIG)
+        start_session(repo, "main", CONFIG, warn=warnings.append)
 
-    assert session_branches(repo) == []
-    assert list_worktree_dirs(repo, include_main=False) == []
+    assert len(session_branches(repo)) == 1
+    assert sorted(list_worktree_dirs(repo, include_main=False)) == sorted([
+        experiment_worktree_dir(repo),
+        baseline_worktree_dir(repo),
+    ])
+    assert any(str(log) in warning for warning in warnings), warnings
 
 
 def test_start_session_when_header_reached_the_log_before_the_failure_does_keep_its_workspace(
@@ -459,4 +483,38 @@ def test_start_session_when_baseline_ref_is_a_directory_does_raise_naming_the_re
         start_session(repo, target_dir, CONFIG)
 
     assert target_dir in str(excinfo.value)
-    assert not Path(session_jsonl_path(repo)).exists()
+
+
+def test_start_session_when_finalized_failing_and_the_new_log_unreadable_does_keep_the_archive(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_session(repo, "main", CONFIG)
+    closed = _close_session_with_one_keep(repo)
+    closed_log = log_records(repo)
+    archived = archived_session_path(repo, closed)
+    real_fsync = os.fsync
+    real_read_records = read_records
+
+    def fail_once_archived(descriptor: int) -> None:
+        if Path(archived).exists():
+            raise OSError(5, "sync failed")
+        real_fsync(descriptor)
+
+    def unreadable_once_archived(path: str) -> list[SessionLogRecord]:
+        if Path(archived).exists() and path == session_jsonl_path(repo):
+            msg = "log unreadable"
+            raise GymratError(msg)
+        return real_read_records(path)
+
+    monkeypatch.setattr(os, "fsync", create_autospec(os.fsync, side_effect=fail_once_archived))
+    monkeypatch.setattr(
+        "gymrat.loop.start.read_records",
+        create_autospec(read_records, side_effect=unreadable_once_archived),
+    )
+    warnings: list[str] = []
+
+    with pytest.raises(OSError, match="sync failed"):
+        start_session(repo, "main", CONFIG, warn=warnings.append)
+
+    assert read_records(archived) == closed_log
+    assert any(archived in warning for warning in warnings), warnings

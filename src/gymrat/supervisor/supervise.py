@@ -200,7 +200,8 @@ class EndConditionScan:
         state = fold_session(records)
         self._size = size
         self._cursor = len(records)
-        self._arm_stop_check(state)
+        # A stop condition the log already satisfies is not a new end.
+        self._check_stop = stop_reason(self._config, state) is None
         return records
 
     def scan_if_grown(self) -> None:
@@ -241,25 +242,21 @@ class EndConditionScan:
         # Every record has now been scanned for hook failures, whatever was found.
         self._cursor = len(records)
 
-    def _arm_stop_check(self, state: SessionState) -> None:
-        """Arm stop-condition detection unless ``state`` already satisfies one."""
-        self._check_stop = stop_reason(self._config, state) is None
+
+def _warn_failure(warn: WarnSink, context: str, error: BaseException) -> None:
+    warn(f"warning: {context} failed: {error!s}")
 
 
-def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str) -> None:
-    """Warn to stderr with ``context`` when ``finished`` raised; ignore cancellation."""
+def _warn_on_task_failure(finished: asyncio.Task[None], *, context: str, warn: WarnSink) -> None:
+    """Warn ``warn`` with ``context`` when ``finished`` raised; ignore cancellation."""
     if finished.cancelled():
         return
     error = finished.exception()
     if error is not None:
-        warn_to_stderr(f"{context} failed: {error!s}")
+        _warn_failure(warn, context, error)
 
 
-_warn_unhandled = partial(_warn_on_task_failure, context="background task")
-"""Done-callback that surfaces exceptions from fire-and-forget tasks."""
-
-
-def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | None:
+def _fire_and_report_interrupt(session: DriverSession, warn: WarnSink) -> asyncio.Task[None] | None:
     """Interrupt the session, isolating any failure so grace setup continues.
 
     ``interrupt`` may throw synchronously or its coroutine may reject; either way
@@ -267,19 +264,21 @@ def _fire_and_report_interrupt(session: DriverSession) -> asyncio.Task[None] | N
 
     Args:
         session: The driver session to interrupt.
+        warn: Receives the failure when the interrupt raises or its task fails.
 
     Returns:
         The interrupt task, so the caller can cancel it on teardown, or ``None``
         when the interrupt could not be started.
     """
+    context = "session interrupt"
     try:
         pending = session.interrupt()
     except Exception as error:  # noqa: BLE001 - interrupt failure must not abort grace setup
-        warn_to_stderr(f"session interrupt failed: {error!s}")
+        _warn_failure(warn, context, error)
         return None
 
     task = asyncio.create_task(pending)
-    task.add_done_callback(partial(_warn_on_task_failure, context="session interrupt"))
+    task.add_done_callback(partial(_warn_on_task_failure, context=context, warn=warn))
     return task
 
 
@@ -306,6 +305,10 @@ class SupervisedSession:
     budget: Budget
     max_usd: float | None
 
+    def is_lock_held(self) -> bool:
+        """Whether the repository lock at ``lock_path`` is held on disk."""
+        return is_held(self.lock_path)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SupervisionResult:
@@ -317,7 +320,9 @@ class SupervisionResult:
             or was ended by a condition read off the session log.
         end_reason: For ``guard``, the guard reason; for a cap, the cap name;
             for ``stop-condition`` and ``hook-failure``, the condition's
-            summary; for ``session``, ``None`` unless a log-read error set it.
+            summary; for ``session``, ``None`` unless an error ended the run (a
+            failed log read, lock probe, or settle or lock-poll task), in which
+            case it holds the error message.
         duration_ms: Elapsed milliseconds from start to settlement, measured
             on the monotonic clock.
     """
@@ -380,7 +385,9 @@ class _Supervision:
         task = asyncio.create_task(target)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        task.add_done_callback(_warn_unhandled)
+        task.add_done_callback(
+            partial(_warn_on_task_failure, context="background task", warn=self._config.warn)
+        )
 
     def _event_router(self, event: SessionEvent) -> None:
         """Route events for in-flight detection, cost tracking, and end-condition scans."""
@@ -619,7 +626,7 @@ class _Supervision:
         if was_idle:
             self._spawn(self._session.end())
         else:
-            self._interrupt_task = _fire_and_report_interrupt(self._session)
+            self._interrupt_task = _fire_and_report_interrupt(self._session, self._config.warn)
         self._arm_grace()
 
     async def _run_wall_clock(self) -> None:
@@ -726,7 +733,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         observer: Optional callback receiving every session event.
         grace_ms: Milliseconds to wait after requesting a stop before forcing
             cancellation.
-        wall_clock_poll_ms: How often (ms) to check wall-clock and spend caps.
+        wall_clock_poll_ms: How often (ms) to check the wall-clock deadline.
         settle_window_ms: Idle time (ms) after a turn ends before reading the
             session log and deciding the next action.
         lock_poll_ms: How often (ms) to probe the repository lock while the
@@ -734,7 +741,8 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         is_lock_held: Callable returning whether the repository lock is held.
             Defaults to probing ``context.lock_path`` on disk.
         warn: Receives one message naming each observer failure, such as a
-            failed event-log write.
+            failed event-log write, and each failed background task or session
+            interrupt.
 
     Returns:
         The supervision result containing the session outcome and metadata.
@@ -753,7 +761,7 @@ async def supervise(  # noqa: PLR0913 - one parameter per supervision knob
         wall_clock_poll_ms=wall_clock_poll_ms,
         settle_window_ms=settle_window_ms,
         lock_poll_ms=lock_poll_ms,
-        is_lock_held=is_lock_held or partial(is_held, context.lock_path),
+        is_lock_held=is_lock_held or context.is_lock_held,
         warn=warn,
     )
     return await _Supervision(config).run()

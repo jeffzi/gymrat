@@ -26,7 +26,7 @@ from gymrat.cli.options import (  # noqa: TC001 -- typer resolves these annotati
     DebugOption,
 )
 from gymrat.cli.supervised import is_supervised_run_live
-from gymrat.config import CONFIG_FILENAME, find_implicit_base
+from gymrat.config import find_implicit_base
 from gymrat.errors import GymratError
 from gymrat.report.style import format_hint, render_lines
 from gymrat.scaffold import (
@@ -77,10 +77,6 @@ def init_command(
         # init has no tool form, so a live run refuses it whatever the origin.
         if is_supervised_run_live(base_dir):
             message = "a supervised run is live; init is not part of the loop"
-            raise GymratError(message)
-        # An existing config is kept as-is, so its bench command stands in for the flag.
-        if bench is None and not (Path(base_dir) / CONFIG_FILENAME).exists():
-            message = "Missing --bench flag."
             raise GymratError(message)
         request = ScaffoldRequest(
             bench=bench,

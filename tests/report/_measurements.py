@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from gymrat.model import MetricUnit
-    from gymrat.sampling import CleanupResult
 
 
 def measured_metric(
@@ -52,35 +51,31 @@ def measured_metric(
 def create_measurement_result(
     *,
     label: str = "main",
-    samples: int = 10,
     adapter: str = "mitata",
     metrics: dict[str, MetricMeasurement] | None = None,
     rounds: Sequence[dict[str, float]] = (),
     config_kinds: dict[str, KindEntry] | None = None,
-    cleanup: CleanupResult = CLEAN_RESULT,
 ) -> MeasurementResult:
     """A measurement of a single-target run, clean and without metrics unless overridden.
 
     Args:
         label: The target's display label.
-        samples: How many samples the run collected.
         adapter: The adapter that parsed the bench output.
         metrics: The measured metrics keyed by name; ``None`` means none.
         rounds: What each round reported, as metric name to value, in run order.
         config_kinds: The config's ``kinds`` section, when it has one.
-        cleanup: What the worktree cleanup removed and left behind.
 
     Returns:
         The measurement result.
     """
     return MeasurementResult(
         label=label,
-        samples=samples,
+        samples=10,
         adapter=adapter,
         metrics=dict(metrics) if metrics is not None else {},
         rounds=tuple(rounds),
         config_kinds=config_kinds,
-        cleanup=cleanup,
+        cleanup=CLEAN_RESULT,
     )
 
 

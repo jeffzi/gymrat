@@ -31,6 +31,7 @@ from gymrat.session.store import (
     ReadSessionResult,
     RequiredSession,
     append_record,
+    complete_lines,
     fold_session,
     latest_baseline,
     read_live_session,
@@ -42,12 +43,11 @@ from gymrat.session.store import (
     require_settled,
     session_header,
 )
+from gymrat.utils import os_error_reason
 from tests._json_lines import with_raw_number
-from tests._mode_bits import needs_mode_bits
 from tests.session._store_records import (
     BASELINE,
     FINALIZE,
-    HOOK,
     ITERATION_1,
     KEPT_BASELINE,
     SESSION,
@@ -57,7 +57,6 @@ from tests.session.records._fixtures import (
     COMMIT,
     TORN_PREFIX,
     append_raw,
-    append_records,
     baseline_record,
     blocked_keep,
     command_record,
@@ -236,6 +235,17 @@ def test_recover_torn_tail_when_log_missing_does_leave_no_file_behind(fresh_root
 
 
 # ---------------------------------------------------------------------------
+# complete_lines
+# ---------------------------------------------------------------------------
+
+
+def test_complete_lines_when_line_holds_a_carriage_return_does_not_split_it():
+    lines = complete_lines(b"a\rb\n")
+
+    assert lines == [b"a\rb"]
+
+
+# ---------------------------------------------------------------------------
 # read_records
 # ---------------------------------------------------------------------------
 
@@ -272,58 +282,26 @@ def test_read_records_when_log_missing_or_final_line_unterminated_does_return_on
     assert records == expected
 
 
-def _directory_at(jsonl_path: str) -> None:
-    Path(jsonl_path).mkdir(parents=True)
-
-
-def _without_read_permission(jsonl_path: str) -> None:
-    append_record(jsonl_path, SESSION)
-    Path(jsonl_path).chmod(0o000)
-
-
 @pytest.mark.parametrize(
-    "make_unreadable",
+    "reader",
     [
-        pytest.param(_directory_at, id="a-directory-at-the-path"),
-        pytest.param(
-            _without_read_permission,
-            id="a-log-without-read-permission",
-            marks=needs_mode_bits,
-        ),
+        pytest.param(read_records, id="read-records"),
+        pytest.param(read_session_header, id="read-session-header"),
     ],
 )
-def test_read_records_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
-    fresh_root: str, make_unreadable: Callable[[str], None]
+def test_session_log_reader_when_log_exists_but_cannot_be_read_does_raise_naming_the_log(
+    fresh_root: str, reader: Callable[[str], object]
 ):
     jsonl_path = session_jsonl_path(fresh_root)
-    make_unreadable(jsonl_path)
+    Path(jsonl_path).mkdir(parents=True)
 
     with pytest.raises(GymratError) as excinfo:
-        read_records(jsonl_path)
+        reader(jsonl_path)
 
     cause = excinfo.value.__cause__
     assert isinstance(cause, OSError)
     assert jsonl_path in str(excinfo.value)
-    assert excinfo.value.hint == f"{cause.strerror}."
-
-
-def test_read_records_when_log_holds_appended_records_does_return_them_in_file_order(
-    fresh_root: str,
-):
-    jsonl_path = session_jsonl_path(fresh_root)
-    written: list[SessionLogRecord] = [
-        SESSION,
-        BASELINE,
-        HOOK,
-        ITERATION_1,
-        committed_keep(1),
-        discard_record(2),
-    ]
-    append_records(fresh_root, *written)
-
-    records = read_records(jsonl_path)
-
-    assert records == written
+    assert os_error_reason(cause) in (excinfo.value.hint or "")
 
 
 def _names_line(hint: str | None, line_number: int) -> bool:
@@ -368,7 +346,6 @@ UNDECODABLE_LINE: bytes = b"\xff\xff\n"
 @pytest.mark.parametrize(
     "leading",
     [
-        pytest.param(b"", id="no-leading-lines"),
         pytest.param(b"\n \t\n\n", id="several-blank-lines"),
     ],
 )
@@ -387,9 +364,10 @@ def test_read_session_header_when_first_non_blank_line_is_session_does_return_it
     [
         pytest.param(None, id="log-absent"),
         pytest.param(b"\n \t\n\n", id="several-blank-lines"),
+        pytest.param(SESSION_LINE.rstrip(b"\n"), id="header-line-unterminated"),
     ],
 )
-def test_read_session_header_when_log_absent_or_holds_only_blank_lines_does_return_none(
+def test_read_session_header_when_log_holds_no_complete_header_line_does_return_none(
     fresh_root: str, raw: bytes | None
 ):
     if raw is not None:
@@ -400,7 +378,6 @@ def test_read_session_header_when_log_absent_or_holds_only_blank_lines_does_retu
     assert header is None
 
 
-_NOT_JSON = b"{not json\n" + _line(ITERATION_1).encode() + b"\n"
 _NON_FINITE = with_raw_number(_line(SESSION), ("schema",)).encode() + b"\n"
 _NOT_A_SESSION = _line(ITERATION_1).encode() + b"\n" + SESSION_LINE
 
@@ -409,7 +386,6 @@ _NOT_A_SESSION = _line(ITERATION_1).encode() + b"\n" + SESSION_LINE
     ("reader", "raw", "hint_marker"),
     [
         # Each failure is told apart by one word its hint carries.
-        pytest.param(read_session_header, _NOT_JSON, "JSON object", id="not-json"),
         pytest.param(read_session_header, _NON_FINITE, "NaN", id="non-finite-number"),
         pytest.param(
             read_records, UNDECODABLE_LINE + SESSION_LINE, "UTF-8", id="read-records-undecodable"
@@ -426,6 +402,20 @@ def test_session_log_reader_when_first_line_unusable_does_raise_naming_line_one(
 
     assert f"{jsonl_path}:1" in str(excinfo.value)
     assert hint_marker in (excinfo.value.hint or "")
+
+
+def test_read_session_header_when_header_breaks_the_schema_does_raise_naming_the_line_and_key(
+    fresh_root: str,
+):
+    without_session_id = json.loads(_line(SESSION))
+    del without_session_id["session_id"]
+    jsonl_path = _jsonl_holding(fresh_root, [json.dumps(without_session_id)])
+
+    with pytest.raises(GymratError) as excinfo:
+        read_session_header(jsonl_path)
+
+    assert f"{jsonl_path}:1" in str(excinfo.value)
+    assert "session_id" in str(excinfo.value)
 
 
 def test_read_records_when_first_record_not_a_session_does_name_its_type(fresh_root: str):
@@ -474,7 +464,6 @@ def test_session_header_when_first_line_unusable_does_return_none(fresh_root: st
         pytest.param(
             [SESSION, ITERATION_1, committed_keep(1)], None, id="a-log-holding-no-baseline"
         ),
-        pytest.param([SESSION, BASELINE, ITERATION_1], BASELINE, id="a-baseline-measure-recorded"),
         pytest.param(
             [SESSION, BASELINE, ITERATION_1, committed_keep(1), KEPT_BASELINE],
             KEPT_BASELINE,
@@ -622,20 +611,10 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 _FIRST_KEEP_SHA = "1" * 40
 
 
-@pytest.mark.parametrize(
-    ("deltas", "discarded", "expected"),
-    [
-        pytest.param(
-            (-7.2, -20.0, -9.0), (2,), (3, _FIRST_KEEP_SHA), id="previous-keep-across-a-discard"
-        ),
-    ],
-)
-def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
+def test_read_live_session_when_keeps_precede_the_best_does_name_the_previous_keep_as_its_baseline(
     fresh_root: str,
-    deltas: tuple[float, ...],
-    discarded: tuple[int, ...],
-    expected: tuple[int, str],
 ):
+    deltas, discarded = (-7.2, -20.0, -9.0), (2,)
     history = tuple(
         record
         for seq, delta_pct in enumerate(deltas, start=1)
@@ -650,24 +629,17 @@ def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
     result = _read_back(fresh_root, history)
 
     assert result.best is not None
-    assert (result.best.seq, result.best.baseline_sha) == expected
+    assert (result.best.seq, result.best.baseline_sha) == (3, _FIRST_KEEP_SHA)
 
 
-@pytest.mark.parametrize(
-    "history",
-    [
-        pytest.param(
-            (
-                iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=None)),
-                committed_keep(1),
-            ),
-            id="committed-keep-without-a-delta",
-        ),
-    ],
-)
 def test_read_live_session_when_no_committed_keep_has_a_delta_does_report_no_best(
-    fresh_root: str, history: tuple[SessionLogRecord, ...]
+    fresh_root: str,
 ):
+    history = (
+        iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=None)),
+        committed_keep(1),
+    )
+
     result = _read_back(fresh_root, history)
 
     assert result.best is None

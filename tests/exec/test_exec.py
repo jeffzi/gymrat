@@ -14,10 +14,12 @@ The win32 ``taskkill`` fallback is tested in ``tests/test_process_group.py``.
 
 import asyncio
 import contextlib
-import json
+import errno
 import os
+import re
 import signal
 import sys
+import warnings
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -25,19 +27,24 @@ from typing import Any
 import pytest
 
 from gymrat import exec as exec_mod
-from gymrat.exec import ExecOptions, ExecResult, ExecTimeoutError, exec_argv
+from gymrat.exec import ExecOptions, ExecResult, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
+    OVERRUN_KEPT_BYTES,
+    SMALL_CAP,
     ExecRun,
     ExecTask,
     expected_result,
-    run_argv,
-    run_shell,
+    open_gate_after_reading,
     shell_leaving_a_descendant,
+    stderr_overruns,
+    stdout_overruns,
+    wait_for_gate,
     wait_for_spawned,
 )
 from tests._process_helpers import (
     REAL_KILLPG,
+    killpg_warnings,
     wait_for_pid_file,
     wait_until_dead,
 )
@@ -48,12 +55,15 @@ from tests._process_helpers import (
 
 
 async def test_exec_when_multi_byte_char_split_across_reads_does_decode_single_char(
-    make_opts: Callable[..., ExecOptions],
+    make_opts: Callable[..., ExecOptions], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # The two bytes of U+00B5 are flushed by separate printf processes, so they
-    # land in separate pipe reads; one incremental decoder joins them.
+    # The second byte of U+00B5 is written only once the first has been read,
+    # so they land in separate reads; one incremental decoder joins them.
+    gate = tmp_path / "first-byte-read"
+    open_gate_after_reading(monkeypatch, gate, b"\xc2")
+
     result = await run_exec(
-        "printf '\\302'; sleep 0.2; printf '\\265'",
+        f"printf '\\302'; {wait_for_gate(gate)}; printf '\\265'",
         make_opts(),
     )
 
@@ -84,13 +94,13 @@ _MIB = 1024 * 1024
     ("run", "args", "expected"),
     [
         pytest.param(
-            run_shell,
+            run_exec,
             "echo out; echo err >&2; exit 3",
             expected_result("out\n", "err\n", 3),
             id="exec",
         ),
         pytest.param(
-            run_argv,
+            exec_argv,
             [
                 sys.executable,
                 "-c",
@@ -116,8 +126,8 @@ async def test_exec_when_run_to_completion_does_capture_the_full_result(
 @pytest.mark.parametrize(
     ("run", "args", "stdin", "expected_stdout"),
     [
-        pytest.param(run_shell, "cat", "piped input\n", "piped input\n", id="exec-stdin-delivered"),
-        pytest.param(run_argv, _ECHO_STDIN_ARGV, None, "", id="exec_argv-stdin-omitted-is-closed"),
+        pytest.param(run_exec, "cat", "piped input\n", "piped input\n", id="exec-stdin-delivered"),
+        pytest.param(exec_argv, _ECHO_STDIN_ARGV, None, "", id="exec_argv-stdin-omitted-is-closed"),
     ],
 )
 async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
@@ -131,6 +141,48 @@ async def test_exec_when_stdin_given_or_omitted_does_feed_it_or_close_it(
     result = await run(args, make_opts(stdin=stdin))
 
     assert result == expected_result(expected_stdout, "", 0)
+
+
+def _fail_stdin_writes(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> None:
+    # A run's stdin is the only stream writer it holds, so every write to it fails.
+    def refuse(_writer: asyncio.StreamWriter, _data: object) -> None:
+        raise error
+
+    monkeypatch.setattr(asyncio.StreamWriter, "write", refuse)
+
+
+async def test_exec_when_stdin_write_fails_does_settle_failed_with_the_error_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    error = OSError(errno.EIO, "Input/output error")
+    _fail_stdin_writes(monkeypatch, error)
+
+    result = await asyncio.wait_for(run_exec("true", make_opts(stdin="payload\n")), 5)
+
+    assert isinstance(result, ExecResult)
+    assert result.exit_code == 1
+    assert result.stderr.removesuffix("\n") == str(error)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(BrokenPipeError(errno.EPIPE, "Broken pipe"), id="broken-pipe"),
+        pytest.param(ConnectionResetError("Connection reset"), id="reset"),
+    ],
+)
+async def test_exec_when_stdin_closed_by_the_child_does_settle_normally(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    *,
+    error: OSError,
+) -> None:
+    _fail_stdin_writes(monkeypatch, error)
+
+    result = await asyncio.wait_for(run_exec("true", make_opts(stdin="payload\n")), 5)
+
+    assert result == expected_result("", "", 0)
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +204,9 @@ def _missing_dir(tmp_path: Path) -> str:
 @pytest.mark.parametrize(
     ("run", "args", "cwd"),
     [
-        pytest.param(run_shell, "echo hello", _missing_dir, id="exec-cwd-missing"),
-        pytest.param(run_shell, "echo a\x00b", _in_tmp, id="exec-nul-in-command"),
-        pytest.param(run_argv, [], _in_tmp, id="argv-empty"),
+        pytest.param(run_exec, "echo hello", _missing_dir, id="exec-cwd-missing"),
+        pytest.param(run_exec, "echo a\x00b", _in_tmp, id="exec-nul-in-command"),
+        pytest.param(exec_argv, [], _in_tmp, id="argv-empty"),
     ],
 )
 async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
@@ -166,27 +218,10 @@ async def test_exec_when_spawn_fails_does_resolve_with_the_failure_on_stderr(
 ) -> None:
     result = await run(args, ExecOptions(cwd=cwd(tmp_path)))
 
-    assert result == expected_result("", result.stderr, exit_code=1)
-    assert result.stderr.strip() != ""
-
-
-# ---------------------------------------------------------------------------
-# exec_argv: no shell interpretation — metacharacters pass through verbatim
-# ---------------------------------------------------------------------------
-
-
-async def test_exec_argv_when_arg_contains_metacharacter_does_pass_verbatim(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    arg = "$HOME"
-
-    result = await exec_argv(
-        [sys.executable, "-c", "import sys, json; print(json.dumps(sys.argv[1:]))", arg],
-        make_opts(),
+    assert result == ExecResult(
+        stdout="", stderr=result.stderr, exit_code=1, stdout_bytes=0, stderr_bytes=0
     )
-
-    received = json.loads(result.stdout.strip())
-    assert received == [arg]
+    assert result.stderr.strip() != ""
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +247,7 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 ) -> None:
     # A cap shorter than the diagnostic, so its length alone cannot pass for truncation.
     monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 4)
-    task = asyncio.create_task(run_exec("sleep 0.5", make_opts()))
+    task = asyncio.create_task(run_exec("sleep 30", make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     assert proc.stdout is not None
 
@@ -233,71 +268,51 @@ async def test_exec_when_stream_read_fails_does_settle_as_failure(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("cap", "command", "stdout", "stdout_bytes", "stdout_truncated"),
-    [
-        # A cap of zero drops every chunk: the prior total of 0 already reaches it.
-        pytest.param(
-            0, "echo hello", "", len(b"hello\n"), True, id="cap-reached-drops-every-chunk"
-        ),
-        # The prior total (5) is still under the cap, so the chunk that crosses
-        # it is kept whole rather than cut at the cap.
-        pytest.param(
-            10,
-            "printf plums; sleep 0.2; printf cherries",
-            "plums" + "cherries",
-            len(b"plums" + b"cherries"),
-            False,
-            id="crossing-chunk-kept-whole",
-        ),
-    ],
-)
-async def test_exec_when_output_reaches_cap_does_keep_chunks_started_under_it_and_count_every_byte(
+async def test_exec_when_output_past_cap_is_dropped_does_still_count_its_bytes(
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    *,
-    cap: int,
-    command: str,
-    stdout: str,
-    stdout_bytes: int,
-    stdout_truncated: bool,
 ) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", cap)
+    # A cap of zero drops every chunk: the prior total of 0 already reaches it.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 0)
 
-    result = await run_exec(command, make_opts())
+    result = await run_exec("echo hello", make_opts())
 
     assert result == ExecResult(
-        stdout=stdout,
+        stdout="",
         stderr="",
         exit_code=0,
-        stdout_bytes=stdout_bytes,
+        stdout_bytes=len(b"hello\n"),
         stderr_bytes=0,
-        stdout_truncated=stdout_truncated,
+        stdout_truncated=True,
     )
 
 
-_SMALL_CAP = 2
+async def test_exec_when_chunk_crosses_cap_does_keep_it_whole(
+    monkeypatch: pytest.MonkeyPatch,
+    make_opts: Callable[..., ExecOptions],
+    tmp_path: Path,
+) -> None:
+    # The prior total (5) is still under the cap, so the chunk that crosses it
+    # is kept whole rather than cut at the cap.
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", 10)
+    gate = tmp_path / "plums-read"
+    open_gate_after_reading(monkeypatch, gate, b"plums")
 
-# Three invalid bytes, read before the cap is reached and so kept whole, decode
-# to three U+FFFD that re-encode to nine bytes; the later "ab" is dropped. The
-# kept text re-encodes longer than the five bytes written, yet the stream overran.
-_OVERRUN_WITH_INVALID_KEPT = "printf '\\377\\377\\377'; sleep 0.2; printf ab"
+    result = await run_exec(f"printf plums; {wait_for_gate(gate)}; printf cherries", make_opts())
 
-# One invalid byte, short of the cap, decodes to a U+FFFD that re-encodes to
-# three bytes: longer than the one byte written, yet nothing was dropped.
-_SHORT_WITH_INVALID = "printf '\\377'"
+    assert result == expected_result("plums" + "cherries")
 
 
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
         pytest.param(
-            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}",
+            stdout_overruns,
             (True, False),
             id="stdout-overran",
         ),
         pytest.param(
-            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2",
+            stderr_overruns,
             (False, True),
             id="stderr-overran",
         ),
@@ -307,12 +322,15 @@ async def test_exec_when_run_finishes_does_flag_each_stream_that_overran_the_cap
     monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
     *,
-    command: str,
+    tmp_path: Path,
+    command: Callable[[Path], str],
     expected: tuple[bool, bool],
 ) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
+    gate = tmp_path / "kept-bytes-read"
+    open_gate_after_reading(monkeypatch, gate, OVERRUN_KEPT_BYTES)
 
-    result = await run_exec(command, make_opts())
+    result = await run_exec(command(gate), make_opts())
 
     assert (result.stdout_truncated, result.stderr_truncated) == expected
 
@@ -329,36 +347,6 @@ async def test_exec_when_stream_ends_at_cap_mid_character_does_keep_tail_untrunc
     result = await run_exec("printf 'ab\\342'", make_opts())
 
     assert (result.stdout, result.stdout_truncated) == ("ab�", False)
-
-
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        pytest.param(
-            f"{_SHORT_WITH_INVALID} >&2; {_OVERRUN_WITH_INVALID_KEPT}; sleep 30",
-            (True, False),
-            id="stdout-overran",
-        ),
-        pytest.param(
-            f"{_SHORT_WITH_INVALID}; {{ {_OVERRUN_WITH_INVALID_KEPT}; }} >&2; sleep 30",
-            (False, True),
-            id="stderr-overran",
-        ),
-    ],
-)
-async def test_exec_when_run_times_out_does_flag_each_stream_that_overran_the_cap(
-    monkeypatch: pytest.MonkeyPatch,
-    make_opts: Callable[..., ExecOptions],
-    *,
-    command: str,
-    expected: tuple[bool, bool],
-) -> None:
-    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", _SMALL_CAP)
-
-    result = await run_exec(command, make_opts(timeout_ms=1000))
-
-    assert isinstance(result, ExecTimeoutError)
-    assert (result.stdout_truncated, result.stderr_truncated) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -388,55 +376,17 @@ async def background_runs(
     await asyncio.wait_for(asyncio.gather(*runs), _RUN_SETTLE_TIMEOUT_S)
 
 
-@pytest.mark.parametrize(
-    ("run", "args", "timeout_ms"),
-    [
-        pytest.param(run_shell, "echo hello", None, id="exec-completes"),
-        # Every teardown (timeout, abort, stream error, cancel) settles through the
-        # same release, so the timeout stands in for all of them.
-        pytest.param(run_shell, "sleep 30", 200, id="exec-torn-down"),
-    ],
-)
 @pytest.mark.usefixtures("spawned_processes")
 async def test_kill_live_process_groups_when_run_has_settled_does_not_target_its_group(
     make_opts: Callable[..., ExecOptions],
     record_killpg: Callable[[], list[int]],
-    *,
-    run: ExecRun,
-    args: Any,
-    timeout_ms: int | None,
 ) -> None:
-    await run(args, make_opts(timeout_ms=timeout_ms))
+    await run_exec("echo hello", make_opts())
     attempted = record_killpg()
 
     exec_mod.kill_live_process_groups()
 
     assert attempted == []
-
-
-async def test_kill_live_process_groups_when_killpg_raises_does_signal_every_group_without_propagating(
-    spawned_processes: list[asyncio.subprocess.Process],
-    make_opts: Callable[..., ExecOptions],
-    monkeypatch: pytest.MonkeyPatch,
-    background_runs: list[ExecTask],
-) -> None:
-    # No grace, so the sweep reaches its kills without waiting on groups that
-    # every signal fails to reach.
-    background_runs.extend(asyncio.create_task(run_exec("sleep 30", make_opts())) for _ in range(2))
-    await wait_for_spawned(spawned_processes, count=2)
-    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", 0)
-    killed: list[int] = []
-
-    def raise_after_recording(group_pid: int, signal_number: int) -> None:
-        if signal_number == signal.SIGKILL:
-            killed.append(group_pid)
-        raise RuntimeError(group_pid)
-
-    monkeypatch.setattr(os, "killpg", raise_after_recording)
-
-    exec_mod.kill_live_process_groups()
-
-    assert sorted(killed) == sorted(proc.pid for proc in spawned_processes)
 
 
 async def test_kill_live_process_groups_when_group_leader_exited_does_still_signal_its_group(
@@ -467,3 +417,131 @@ async def test_kill_live_process_groups_when_group_leader_exited_does_still_sign
     exec_mod.kill_live_process_groups()
 
     assert set(attempted) == {leader.pid}
+
+
+# ---------------------------------------------------------------------------
+# a sweep step that raises
+# ---------------------------------------------------------------------------
+
+# A group that ignores the stop request, so only the kill step ends it.
+_TERM_IGNORING_COMMAND = "trap '' TERM; sleep 30"
+
+# Long enough that a sweep holding a wait step runs it, short enough to sit out.
+_SWEEP_GRACE_S = 0.2
+
+_STEP_ERROR = "sweep step exploded"
+
+
+async def _start_term_ignoring_runs(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    background_runs: list[ExecTask],
+) -> None:
+    background_runs.extend(
+        asyncio.create_task(run_exec(_TERM_IGNORING_COMMAND, make_opts())) for _ in range(2)
+    )
+    await wait_for_spawned(spawned_processes, count=2)
+
+
+# The real ``os.kill``, captured before any test swaps it.
+_REAL_KILL = os.kill
+
+
+def _fail_sweep_step(monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    # Fail the OS call each sweep step makes: the group signal for terminate
+    # (SIGTERM) and kill (SIGKILL), the first liveness probe (signal 0) for wait.
+    # Every other call reaches the real OS, so the groups still end.
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _SWEEP_GRACE_S)
+    if step == "wait":
+        probes_failed: list[int] = []
+
+        def kill_failing_first_probe(pid: int, signal_number: int) -> None:
+            if signal_number == 0 and not probes_failed:
+                probes_failed.append(pid)
+                raise RuntimeError(_STEP_ERROR)
+            _REAL_KILL(pid, signal_number)
+
+        monkeypatch.setattr(os, "kill", kill_failing_first_probe)
+        return
+    failing_signal = signal.SIGTERM if step == "terminate" else signal.SIGKILL
+
+    def killpg_failing_step(group_pid: int, signal_number: int) -> None:
+        if signal_number == failing_signal:
+            raise RuntimeError(_STEP_ERROR)
+        REAL_KILLPG(group_pid, signal_number)
+
+    monkeypatch.setattr(os, "killpg", killpg_failing_step)
+
+
+@pytest.mark.parametrize("step", ["terminate", "kill"])
+async def test_kill_live_process_groups_when_a_group_step_raises_does_warn_once_per_group_naming_step_and_error(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    background_runs: list[ExecTask],
+    *,
+    step: str,
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, step)
+
+    exec_mod.kill_live_process_groups()
+    # The runs settle after the test, and a settling run kills its group: the
+    # refusal is for the sweep alone.
+    monkeypatch.undo()
+
+    for proc in spawned_processes:
+        [message] = killpg_warnings(recwarn, proc.pid)
+        assert re.search(rf"\b{step}\b", message)
+        assert _STEP_ERROR in message
+
+
+async def test_kill_live_process_groups_when_the_wait_step_raises_does_warn_once_naming_step_and_error(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+    background_runs: list[ExecTask],
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, "wait")
+
+    exec_mod.kill_live_process_groups()
+
+    messages = [str(w.message) for w in recwarn if issubclass(w.category, RuntimeWarning)]
+    [message] = [m for m in messages if _STEP_ERROR in m]
+    assert re.search(r"\bwait\b", message)
+
+
+@pytest.mark.parametrize("step", ["terminate", "wait"])
+@pytest.mark.usefixtures("recwarn")
+async def test_kill_live_process_groups_when_an_earlier_step_raises_does_still_kill_every_group(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    background_runs: list[ExecTask],
+    *,
+    step: str,
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, step)
+
+    exec_mod.kill_live_process_groups()
+
+    for proc in spawned_processes:
+        await wait_until_dead(proc.pid, timeout_s=3.0)
+
+
+async def test_kill_live_process_groups_when_warnings_are_errors_and_a_step_raises_does_not_raise(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    background_runs: list[ExecTask],
+) -> None:
+    await _start_term_ignoring_runs(spawned_processes, make_opts, background_runs)
+    _fail_sweep_step(monkeypatch, "terminate")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        exec_mod.kill_live_process_groups()

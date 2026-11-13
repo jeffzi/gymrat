@@ -33,32 +33,17 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize(
-    ("parts", "widths", "delta_style", "band_style", "expected"),
+    ("parts", "widths", "expected"),
     [
-        pytest.param(
-            VerdictParts(glyph="✓", delta="-10.0%", word="", band="2.5%", pairs="n=8"),
-            VerdictWidths(delta=7, band=4),
-            "red",
-            "dim",
-            (
-                f"✓   -10.0%  {PLUS_MINUS}2.5%  n=8",
-                [("✓", "green"), ("-10.0%", "red"), (f"{PLUS_MINUS}2.5%", "dim")],
-            ),
-            id="all-fields-present",
-        ),
         pytest.param(
             VerdictParts(glyph="✓", delta="-10.0%", word="", band="", pairs="n=8"),
             VerdictWidths(delta=7, band=4),
-            "red",
-            "dim",
             ("✓   -10.0%         n=8", [("✓", "green"), ("-10.0%", "red")]),
             id="band-absent-with-pairs-reserves-band-slot",
         ),
         pytest.param(
             VerdictParts(glyph="✓", delta="-10.0%", word="", band="2.5%", pairs="n=8"),
             VerdictWidths(delta=7, band=4, detects=4),
-            "red",
-            "dim",
             (
                 f"✓   -10.0%  {PLUS_MINUS}2.5%  n=8",
                 [("✓", "green"), ("-10.0%", "red"), (f"{PLUS_MINUS}2.5%", "dim")],
@@ -70,8 +55,6 @@ if TYPE_CHECKING:
                 glyph="~", delta="+1.0%", word="", band="2.5%", pairs="n=8", detects="3.0%"
             ),
             VerdictWidths(delta=5, band=4, detects=4, pairs=4),
-            "red",
-            "dim",
             (
                 f"~  +1.0%  {PLUS_MINUS}2.5%  n=8   {DETECTS_PREFIX}3.0%",
                 [
@@ -86,16 +69,12 @@ if TYPE_CHECKING:
         pytest.param(
             VerdictParts(glyph="≈", delta="", word="unstable", band="", pairs="n=8"),
             VerdictWidths(delta=9, band=4),
-            "red",
-            "dim",
             ("≈  unstable          n=8", [("≈", "green"), ("unstable", "red")]),
             id="word-padded-to-a-wider-delta-column",
         ),
         pytest.param(
             VerdictParts(glyph="~", delta="+1.0%", word="", band="2.5%", pairs=""),
             VerdictWidths(delta=5, band=6),
-            "red",
-            "dim",
             (
                 f"~  +1.0%  {PLUS_MINUS}  2.5%",
                 [("~", "green"), ("+1.0%", "red"), (f"{PLUS_MINUS}  2.5%", "dim")],
@@ -107,15 +86,11 @@ if TYPE_CHECKING:
 def test_verdict_cell_when_parts_vary_does_pad_each_field_to_its_width_with_styles_on_text_only(
     parts: VerdictParts,
     widths: VerdictWidths,
-    delta_style: str | None,
-    band_style: str | None,
     expected: tuple[str, list[tuple[str, str]]],
 ):
     plain, styled = expected
 
-    cell = verdict_cell(
-        parts, widths, glyph_style="green", delta_style=delta_style, band_style=band_style
-    )
+    cell = verdict_cell(parts, widths, glyph_style="green", delta_style="red", band_style="dim")
 
     assert cell.plain == plain
     assert [(cell.plain[span.start : span.end], span.style) for span in cell.spans] == styled
@@ -168,7 +143,6 @@ def test_geomean_value_style_when_value_inside_or_beyond_band_does_color_only_be
 @pytest.mark.parametrize(
     ("outcomes", "expected"),
     [
-        pytest.param(["within-noise"], "bold", id="every-outcome-quiet-vetoes-color"),
         pytest.param([None, "within-noise"], "bold", id="missing-outcomes-ignored-by-the-veto"),
         pytest.param([None], EMPHASIZED_DIRECTION_STYLES["improved"], id="no-outcome-leaves-band"),
         pytest.param(

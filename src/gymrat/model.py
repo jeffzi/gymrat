@@ -160,7 +160,7 @@ class PermutationVerdict:
             when the figure has no finite percentage.
     """
 
-    method: Literal["permutation"]
+    method: schema.PermutationMethod
     verdict: ApproximateVerdict
     p: float
     noise_pct: float
@@ -191,7 +191,7 @@ class BandVerdict:
             baseline median, or a band with no finite percentage.
     """
 
-    method: Literal["band"]
+    method: schema.BandMethod
     verdict: ApproximateVerdict
     usable_n: int
     noise_pct: float
@@ -213,7 +213,7 @@ class ExactVerdict:
         n: Number of samples.
     """
 
-    method: Literal["exact"]
+    method: schema.ExactMethod
     verdict: Verdict
     delta: float
     n: int

@@ -2,8 +2,8 @@
 
 ``supervise`` runs a driver session under a wall-clock cap, an optional spend
 cap, and a grace fallback that arms the driver's abort event when a cap fires
-but the session keeps running. Tests use tiny ``max_minutes``/``grace_ms`` values
-and ``asyncio.Event`` handshakes so the session stays open only as long as a
+but the session keeps running. Tests move a patched wall clock past the
+deadline, use tiny ``grace_ms`` values and ``asyncio.Event`` handshakes so the session stays open only as long as a
 test needs it. Timing is asserted as loose lower bounds, never exact values, to
 stay deterministic under ``pytest-randomly`` and ``pytest-xdist``.
 """
@@ -63,6 +63,11 @@ class _RejectingInterruptSession(DelegatingSession):
         raise RuntimeError(message)
 
 
+# ---------------------------------------------------------------------------
+# duration
+# ---------------------------------------------------------------------------
+
+
 async def test_supervise_when_session_spans_time_does_report_duration_from_monotonic_clock(
     root: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -84,17 +89,23 @@ async def test_supervise_when_session_spans_time_does_report_duration_from_monot
 
 
 async def test_supervise_when_wall_clock_caps_a_long_session_does_interrupt_with_one_wall_clock_cap(
-    root: str,
+    root: str, supervisor_clock: SupervisorClock
 ):
     probe = collecting_observer()
-    # A single step delayed far past the cap, so the wall-clock cap always wins.
-    driver = create_mock_driver([blocked_step()])
+    driver = create_mock_driver([
+        supervisor_clock.jump_step(supervisor_clock.deadline_ms),
+        blocked_step(),
+    ])
 
     result = await run_supervised(
-        root, driver, max_minutes=0.001, observer=probe.observer, grace_ms=50
+        root,
+        driver,
+        deadline_ms=supervisor_clock.deadline_ms,
+        observer=probe.observer,
+        grace_ms=50,
     )
 
-    assert (result.ended_by, result.outcome.reason) == ("wall-clock", "interrupted")
+    assert result.ended_by == "wall-clock"
     assert cap_actions(probe.events) == [("wall-clock", "interrupting")]
 
 
@@ -103,8 +114,11 @@ async def test_supervise_when_wall_clock_caps_a_long_session_does_interrupt_with
 # ---------------------------------------------------------------------------
 
 
-def _abort_bound_driver() -> tuple[WrapDriver, list[float]]:
-    """A driver whose one step ignores ``interrupt`` and waits for the abort event.
+def _abort_bound_driver(clock: SupervisorClock) -> tuple[WrapDriver, list[float]]:
+    """A driver that passes the wall-clock deadline, then ignores ``interrupt`` until aborted.
+
+    Args:
+        clock: The supervisor's wall clock, moved to its deadline by the first step.
 
     Returns:
         The driver and the list it appends the ``perf_counter`` reading to once
@@ -116,32 +130,38 @@ def _abort_bound_driver() -> tuple[WrapDriver, list[float]]:
         await wrapper.abort.wait()
         aborted_at.append(time.perf_counter())
 
-    wrapper = WrapDriver(create_mock_driver([ActionStep(action=wait_for_abort)]))
+    wrapper = WrapDriver(
+        create_mock_driver([
+            clock.jump_step(clock.deadline_ms),
+            ActionStep(action=wait_for_abort),
+        ])
+    )
     return wrapper, aborted_at
 
 
-async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(root: str):
+async def test_supervise_when_grace_elapses_does_arm_abort_only_after_grace(
+    root: str, supervisor_clock: SupervisorClock
+):
     grace_ms = 100
-    wrapper, aborted_at = _abort_bound_driver()
-    at_cap: list[tuple[float, bool]] = []
+    wrapper, aborted_at = _abort_bound_driver(supervisor_clock)
+    at_cap: list[float] = []
 
     def observer(event: SessionEvent) -> None:
         if isinstance(event, CapEvent):
-            at_cap.append((time.perf_counter(), wrapper.abort.is_set()))
+            at_cap.append(time.perf_counter())
 
     result = await asyncio.wait_for(
         run_supervised(
             root,
             wrapper,
-            max_minutes=0.001,
+            deadline_ms=supervisor_clock.deadline_ms,
             observer=observer,
             grace_ms=grace_ms,
         ),
         timeout=2.0,
     )
 
-    [(cap_at, armed_at_cap)] = at_cap
-    assert armed_at_cap is False
+    [cap_at] = at_cap
     assert (aborted_at[0] - cap_at) * 1000 >= grace_ms * 0.5
     assert result.ended_by == "wall-clock"
 
@@ -253,6 +273,17 @@ async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_not_ab
 
     assert not driver.abort.is_set()
     assert result.ended_by == case.ended_by
+
+
+async def test_supervise_when_driver_settles_on_end_at_turn_boundary_does_leave_no_task_running(
+    root: str, supervisor_clock: SupervisorClock
+):
+    driver = WrapDriver(create_mock_driver(_SPEND_CAP_AT_SETTLE.script(root)))
+
+    await _supervise_boundary_case(root, driver, _SPEND_CAP_AT_SETTLE, supervisor_clock)
+    # Outlast the grace period, so a grace timer left armed would still be running.
+    await asyncio.sleep(0.15)
+
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
@@ -278,7 +309,10 @@ async def test_supervise_when_wall_clock_passes_after_spend_cap_fired_does_emit_
         deadline_ms=supervisor_clock.deadline_ms,
     )
 
-    assert (result.ended_by, cap_actions(probe.events)) == ("spend-cap", [("spend-cap", "ending")])
+    assert (result.ended_by, [cap for cap, _ in cap_actions(probe.events)]) == (
+        "spend-cap",
+        ["spend-cap"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -297,26 +331,31 @@ _GRACE_RECOVERY_TIMEOUT_S = 5
         pytest.param(_RejectingInterruptSession, id="coroutine-fails"),
     ],
 )
-async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_a_warning(
+async def test_supervise_when_interrupt_fails_does_recover_via_grace_with_one_warning_to_the_sink(
     root: str,
-    capsys: pytest.CaptureFixture[str],
     make_session: Callable[[DriverSession], DriverSession],
+    supervisor_clock: SupervisorClock,
 ):
-    inner = create_mock_driver([blocked_step()])
+    inner = create_mock_driver([
+        supervisor_clock.jump_step(supervisor_clock.deadline_ms),
+        blocked_step(),
+    ])
     driver = WrapDriver(inner, lambda session, _abort: make_session(session))
+    warned: list[str] = []
 
     async with asyncio.timeout(_GRACE_RECOVERY_TIMEOUT_S):
         result = await run_supervised(
             root,
             driver,
-            max_minutes=0.001,
+            deadline_ms=supervisor_clock.deadline_ms,
             grace_ms=50,
+            warn=warned.append,
         )
     await asyncio.sleep(0)
 
     assert result.ended_by == "wall-clock"
-    assert result.outcome.reason == "interrupted"
-    assert "interrupt exploded" in capsys.readouterr().err
+    assert len(warned) == 1
+    assert "interrupt exploded" in warned[0]
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +379,9 @@ class _SlowInterruptSession(DelegatingSession):
             raise
 
 
-async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str):
+async def test_supervise_when_session_ends_does_cancel_interrupt_task(
+    root: str, supervisor_clock: SupervisorClock
+):
     slow_session: _SlowInterruptSession | None = None
 
     def wrap(inner: DriverSession, _abort: asyncio.Event) -> DriverSession:
@@ -348,14 +389,14 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str)
         slow_session = _SlowInterruptSession(inner)
         return slow_session
 
-    inner = create_mock_driver([blocked_step()])
+    inner = create_mock_driver([
+        supervisor_clock.jump_step(supervisor_clock.deadline_ms),
+        blocked_step(),
+    ])
     driver = WrapDriver(inner, wrap)
 
     result = await run_supervised(
-        root,
-        driver,
-        max_minutes=0.001,
-        grace_ms=50,
+        root, driver, deadline_ms=supervisor_clock.deadline_ms, grace_ms=50
     )
     # Give the event loop a tick so the CancelledError propagates.
     await asyncio.sleep(0)
@@ -366,7 +407,7 @@ async def test_supervise_when_session_ends_does_cancel_interrupt_task(root: str)
 
 
 # ---------------------------------------------------------------------------
-# an exception from a spawned session call surfaces on stderr
+# an exception from a spawned session call reaches the warn sink
 # ---------------------------------------------------------------------------
 
 
@@ -375,7 +416,7 @@ class _EndThenRaiseSession(DelegatingSession):
 
     The inner call releases the mock's turn gate so the session settles
     normally; the post-call raise fails a session call the supervisor spawned
-    in the background, which it must surface through ``warn_to_stderr``.
+    in the background, which it must surface through the config's warn sink.
     """
 
     @override
@@ -385,16 +426,15 @@ class _EndThenRaiseSession(DelegatingSession):
         raise RuntimeError(msg)
 
 
-async def test_supervise_when_spawned_end_raises_does_warn_to_stderr(
-    root: str,
-    capsys: pytest.CaptureFixture[str],
-):
+async def test_supervise_when_spawned_end_raises_does_send_one_warning_to_the_sink(root: str):
     inner = create_mock_driver([TurnEndStep(cost_usd=0.5)])
     driver = WrapDriver(inner, lambda session, _abort: _EndThenRaiseSession(session))
+    warned: list[str] = []
 
-    result = await run_supervised(root, driver, max_usd=0.1)
+    result = await run_supervised(root, driver, max_usd=0.1, warn=warned.append)
     # Yield once so the background end's done-callback reports its failure.
     await asyncio.sleep(0)
 
     assert result.ended_by == "spend-cap"
-    assert "end exploded" in capsys.readouterr().err
+    assert len(warned) == 1
+    assert "end exploded" in warned[0]

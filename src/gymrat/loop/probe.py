@@ -105,13 +105,6 @@ class ProbeResult:
     names: tuple[str, ...]
 
 
-def _delta_pct(median: float, reference: float | None) -> float | None:
-    """The signed percentage change from ``reference`` to ``median``, when there is one."""
-    if reference is None:
-        return None
-    return finite_or_none(percent_delta(reference, median))
-
-
 def _probe_bench(config: ResolvedConfig, names: tuple[str, ...]) -> str:
     """The bench command a probe of ``names`` runs.
 
@@ -191,7 +184,11 @@ async def probe_session(
                 median=metric.median,
                 spread=metric.spread,
                 reference_median=reference,
-                delta_pct=_delta_pct(metric.median, reference),
+                delta_pct=(
+                    None
+                    if reference is None
+                    else finite_or_none(percent_delta(reference, metric.median))
+                ),
                 meta=metric.meta,
             )
         )

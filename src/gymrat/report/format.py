@@ -15,7 +15,6 @@ from gymrat.utils import fraction_of_median
 
 if TYPE_CHECKING:
     from gymrat.model import MetricUnit, MetricVerdict
-    from gymrat.report.types import CandidateMetric, MetricComparison
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +50,35 @@ _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYT
 
 _RELATIVE_SPREAD_CAP_PCT = 100
 
+_INTEGER_FLOOR = 100
+
 
 def _non_finite_token(value: float) -> str:
     """The token the text report prints for a non-finite reading (JSON writes ``null``)."""
     if math.isnan(value):
         return "NaN"
     return "Infinity" if value > 0 else "-Infinity"
+
+
+def _three_figures_below_floor(value: float) -> str | None:
+    """Render ``value`` in three significant figures while they stay below 100.
+
+    The cut-over is decided on the figure *as rounded*, since three significant
+    figures of a magnitude past 999 print in exponent form (``"1.23e+03"``) and
+    ``99.96`` rounds onto ``100``.
+
+    Args:
+        value: The finite value to render.
+
+    Returns:
+        The figure with trailing zeros dropped (``"12.3"``, ``"0.0042"``), in
+        exponent form below ``1e-4`` (``"4.2e-05"``) and ``"0"`` for either
+        zero; or ``None`` when it rounds to 100 or more.
+    """
+    figure = format(value, ".3g")
+    if abs(float(figure)) >= _INTEGER_FLOOR:
+        return None
+    return "0" if value == 0 else figure
 
 
 def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
@@ -74,7 +96,7 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
         tiers: The scale tiers, smallest first.
 
     Returns:
-        The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
+        The scaled, suffixed figure such as ``"1.7µs"`` or ``"512.0KB"``.
     """
     magnitude = abs(value)
     for tier in tiers:
@@ -87,19 +109,33 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
 def format_value(value: float, unit: MetricUnit | None = None) -> str:
     """Scale a measurement into its unit's tier, or round it when the metric has no unit.
 
+    A unitless value, or a time under 100 ns, keeps three significant figures so
+    that a sub-1 median does not collapse to ``0`` and a few-nanosecond time
+    keeps its fraction. Whether a value is under 100 is decided on the figure
+    *as rounded*, so ``99.96`` joins the integer tier as ``100``.
+
     Args:
         value: The measurement to format.
         unit: The metric's unit, or ``None`` for a unitless figure.
 
     Returns:
-        The scaled, suffixed figure (``"1.7µs"``), the rounded integer for a
-        unitless value, or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"`` for a
-        non-finite reading.
+        The scaled, suffixed figure (``"1.7µs"``, ``"512.0KB"``); a time under
+        100 ns as three significant figures with trailing zeros dropped
+        (``"1.4ns"``, ``"2ns"``), in exponent form below ``1e-4`` ns
+        (``"4.2e-05ns"``) and ``"0ns"`` for either zero; for a unitless
+        value, the rounded integer at 100 or more (``"1200"``), otherwise three
+        significant figures with trailing zeros dropped (``"12.3"``,
+        ``"0.0042"``), in exponent form below ``1e-4`` (``"4.2e-05"``) and
+        ``"0"`` for either zero; or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"``
+        for a non-finite reading.
     """
     if not math.isfinite(value):
         return _non_finite_token(value)
+    figure = _three_figures_below_floor(value)
     if unit is None:
-        return str(round(value))
+        return str(round(value)) if figure is None else figure
+    if unit == "ns" and figure is not None:
+        return f"{figure}ns"
     return _scale_tier(value, _TIER_MAP[unit])
 
 
@@ -157,9 +193,7 @@ class MetricCellParts:
 
 
 def format_metric_cell_parts(
-    median: float | None = None,
-    spread: float | None = None,
-    unit: MetricUnit | None = None,
+    median: float | None, spread: float | None, unit: MetricUnit | None
 ) -> MetricCellParts:
     """A value cell's fields: the scaled measurement and the spread stated behind it.
 
@@ -186,23 +220,6 @@ def format_metric_cell_parts(
     return MetricCellParts(magnitude=magnitude, spread=f"{spread:.0f}%")
 
 
-def baseline_cell_parts(metric: MetricComparison) -> MetricCellParts:
-    """A metric's baseline figure, taken apart the way :func:`format_metric_cell_parts` does."""
-    return format_metric_cell_parts(
-        metric.baseline_median, metric.baseline_spread, metric.meta.unit
-    )
-
-
-def candidate_cell_parts(
-    side: CandidateMetric | None,
-    unit: MetricUnit | None = None,
-) -> MetricCellParts:
-    """One candidate's side of a metric, taken apart into padded fields."""
-    if side is None:
-        return format_metric_cell_parts(None, None, unit)
-    return format_metric_cell_parts(side.median, side.spread, unit)
-
-
 def format_verdict_delta(verdict: MetricVerdict) -> str:
     """The delta cell: the word ``unstable`` for a verdict too noisy to trust, else the delta."""
     if verdict.verdict == "unstable":
@@ -216,7 +233,7 @@ def format_verdict_delta(verdict: MetricVerdict) -> str:
 
 
 def format_noise_band_value(noise_pct: float) -> str:
-    """A noise band's figure, without the sign it is stated behind."""
+    """A noise band's or detectable change's figure, without the prefix it is stated behind."""
     return f"{noise_pct:.1f}%"
 
 
@@ -252,33 +269,6 @@ def is_noise_percentage_undefined(
     )
 
 
-def is_noise_absolute(
-    noise_pct: float,
-    noise_abs: float,
-    baseline_median: float,
-    candidate_median: float | None = None,
-) -> bool:
-    """Whether a noise figure reads in the metric's own units rather than as a percentage.
-
-    Past :data:`_RELATIVE_SPREAD_CAP_PCT` a percentage stops being readable, and
-    when either median leaves the noise without a finite percentage (see
-    :func:`is_noise_percentage_undefined`) it is only the noise floor, standing
-    in for a scatter no percentage can express.
-
-    Args:
-        noise_pct: The noise as a percentage of the median.
-        noise_abs: The noise in the metric's own units.
-        baseline_median: The baseline median the noise is stated against.
-        candidate_median: The candidate median, or ``None`` when unknown.
-
-    Returns:
-        ``True`` when the noise belongs in absolute units.
-    """
-    return noise_pct > _RELATIVE_SPREAD_CAP_PCT or is_noise_percentage_undefined(
-        noise_abs, baseline_median, candidate_median
-    )
-
-
 def format_evidence(
     verdict: MetricVerdict,
     unit: MetricUnit | None = None,
@@ -311,8 +301,9 @@ def format_evidence(
         return "(exact)"
     if verdict.verdict != "unstable":
         return ""
-    if baseline_median is None or not is_noise_absolute(
-        verdict.noise_pct, verdict.noise_abs, baseline_median, candidate_median
+    if baseline_median is None or (
+        verdict.noise_pct <= _RELATIVE_SPREAD_CAP_PCT
+        and not is_noise_percentage_undefined(verdict.noise_abs, baseline_median, candidate_median)
     ):
         return f"noise {PLUS_MINUS}{format_noise_band_value(verdict.noise_pct)}"
     noise = f"{PLUS_MINUS}{format_value(verdict.noise_abs, unit)} noise"

@@ -17,10 +17,13 @@ Real-subprocess tests are POSIX-only: process groups, session leaders, and
 import asyncio
 import contextlib
 import dataclasses
+import gc
 import os
 import shlex
 import sys
 import threading
+import time
+import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import ClassVar
@@ -28,31 +31,34 @@ from typing import ClassVar
 import pytest
 
 from gymrat import exec as exec_mod
+from gymrat import process_group
 from gymrat.exec import ExecOptions, ExecTimeoutError, exec_argv
 from gymrat.exec import exec as run_exec
 from tests._exec_fixtures import (
-    ARGV_RUNNER,
-    SHELL_RUNNER,
-    Runner,
+    OVERRUN_KEPT_BYTES,
+    SMALL_CAP,
     Teardown,
     cancel_and_settle,
     cancel_task,
     expected_result,
-    leave_to_timeout,
-    run_shell,
+    open_gate_after_reading,
     set_abort,
     settle,
     shell_leaving_a_descendant,
+    stderr_overruns,
+    stdout_overruns,
     wait_for_spawned,
 )
 from tests._process_helpers import (
     is_zombie,
+    killpg_warnings,
     poll_until,
     wait_for_file,
     wait_for_pid_file,
     wait_until_dead,
     wait_until_dead_blocking,
 )
+from tests._task_leaks import install_task_leak_recorder, task_leak_messages
 
 # How long asyncio's child reaper is held back once it starts waiting on a
 # shell. It outlasts exec's teardown of an exited shell, so the shell is still
@@ -120,6 +126,13 @@ class HeldReaper:
     Each hold is recorded under the pid it holds back for as long as it runs, on
     either path; :meth:`is_holding` reads that record. Holds of different
     processes overlap, so each is tracked on its own.
+
+    Attributes:
+        release: Set to end every hold at once.
+        hold_s: The longest any one hold lasts when ``release`` is never set.
+        via_pidfd: Whether ``pidfd_open`` hands out a held pidfd; when false it
+            refuses the call, so the watcher reaps on a waitpid thread whose
+            ``waitpid``/``waitid`` is held instead.
     """
 
     release: threading.Event
@@ -315,61 +328,50 @@ def script_exiting_on_second_request(pid_file: Path, asked_file: Path) -> str:
 # through one of them.
 
 
-async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
-    make_opts: Callable[..., ExecOptions],
-) -> None:
-    result = await run_shell("echo 'line 1'; sleep 10", make_opts(timeout_ms=1500))
-
-    assert result == ExecTimeoutError(
-        stdout="line 1\n",
-        stderr="",
-        timeout_ms=1500,
-        stdout_bytes=len(b"line 1\n"),
-        stderr_bytes=0,
-    )
-
-
-#: A timeout long enough that the grandchild is up before it lands, short enough to stay quick.
-_GRANDCHILD_TIMEOUT_MS = 3000
-
-
-# Every entry point and every teardown reach the same group kill, so each
-# value appears once rather than in every pairing.
-
-
 @pytest.mark.parametrize(
-    ("runner", "teardown"),
+    ("command", "expected"),
     [
         pytest.param(
-            SHELL_RUNNER,
-            Teardown(_GRANDCHILD_TIMEOUT_MS, leave_to_timeout),
-            id="exec-timeout",
+            stdout_overruns,
+            ExecTimeoutError(
+                stdout="\N{REPLACEMENT CHARACTER}" * 3,
+                stderr="\N{REPLACEMENT CHARACTER}",
+                timeout_ms=1000,
+                stdout_bytes=5,
+                stderr_bytes=1,
+                stdout_truncated=True,
+            ),
+            id="stdout-overran",
         ),
-        pytest.param(ARGV_RUNNER, Teardown(None, cancel_task), id="exec_argv-cancelled"),
+        pytest.param(
+            stderr_overruns,
+            ExecTimeoutError(
+                stdout="\N{REPLACEMENT CHARACTER}",
+                stderr="\N{REPLACEMENT CHARACTER}" * 3,
+                timeout_ms=1000,
+                stdout_bytes=1,
+                stderr_bytes=5,
+                stderr_truncated=True,
+            ),
+            id="stderr-overran",
+        ),
     ],
 )
-async def test_exec_when_torn_down_does_kill_the_whole_group(
-    tmp_path: Path,
-    spawned_processes: list[asyncio.subprocess.Process],
+async def test_exec_when_timeout_exceeded_does_return_timeout_error_with_the_partial_output(
+    monkeypatch: pytest.MonkeyPatch,
     make_opts: Callable[..., ExecOptions],
-    runner: Runner,
-    teardown: Teardown,
+    tmp_path: Path,
+    *,
+    command: Callable[[Path], str],
+    expected: ExecTimeoutError,
 ) -> None:
-    abort = asyncio.Event()
-    task = asyncio.create_task(
-        runner.run(
-            runner.grandchild(tmp_path / "grandchild.pid"),
-            make_opts(timeout_ms=teardown.timeout_ms, abort=abort),
-        )
-    )
-    proc = await wait_for_spawned(spawned_processes)
-    grandchild = await wait_for_pid_file(tmp_path / "grandchild.pid")
+    monkeypatch.setattr(exec_mod, "OUTPUT_CAP", SMALL_CAP)
+    gate = tmp_path / "kept-bytes-read"
+    open_gate_after_reading(monkeypatch, gate, OVERRUN_KEPT_BYTES)
 
-    teardown.trigger(task, proc, abort)
+    result = await run_exec(f"{command(gate)}; sleep 30", make_opts(timeout_ms=1000))
 
-    await settle(task)
-
-    await wait_until_dead(grandchild, timeout_s=3.0)
+    assert result == expected
 
 
 async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
@@ -383,6 +385,32 @@ async def test_exec_when_abort_preset_does_settle_failed_without_spawning(
 
     assert spawned_processes == []
     assert result == expected_result("", "", 1)
+
+
+async def test_exec_when_aborted_mid_read_does_not_leak_task_diagnostics(
+    tmp_path: Path,
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+) -> None:
+    records = install_task_leak_recorder()
+    abort = asyncio.Event()
+    task = asyncio.create_task(
+        run_exec("echo ready > ready.flag; sleep 30", make_opts(abort=abort))
+    )
+    await wait_for_file(tmp_path / "ready.flag")
+
+    abort.set()
+    await asyncio.wait_for(task, 10)
+    await asyncio.wait_for(asyncio.gather(*(proc.wait() for proc in spawned_processes)), 10)
+    # A forgotten task sits in a reference cycle with the future it waits on, so
+    # only a collection finalizes it. The same collection finalizes the reaped
+    # child's transport, whose ResourceWarning is not what this test is about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
+
+    assert task_leak_messages(records) == []
+    assert spawned_processes  # the abort ran through a real spawned child
 
 
 async def test_exec_when_torn_down_with_a_descendant_holding_the_pipes_does_close_them(
@@ -492,7 +520,7 @@ async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendan
     # The descendant holds stderr open, so the run is still reading when the
     # shell exits and asyncio's own child watcher collects its exit status.
     pid_file = tmp_path / "descendant.pid"
-    task = asyncio.create_task(run_shell(shell_leaving_a_descendant(pid_file), make_opts()))
+    task = asyncio.create_task(run_exec(shell_leaving_a_descendant(pid_file), make_opts()))
     proc = await wait_for_spawned(spawned_processes)
     descendant = await wait_for_pid_file(pid_file)
     stray_process_ids.append(descendant)
@@ -508,21 +536,54 @@ async def test_exec_when_cancelled_after_shell_is_reaped_does_kill_the_descendan
     wait_until_dead_blocking(descendant, timeout_s=3.0)
 
 
-async def test_exec_when_completed_with_a_detached_descendant_does_not_signal_its_group(
+# Far below the patched graces, so a settle that waited one out fails the bound.
+# The wall clock is read as well as the loop's timeout: a wait that blocks the
+# loop finishes before ``wait_for`` can fire.
+_SETTLE_BOUND_S = 5.0
+
+
+async def test_exec_when_completed_with_a_detached_descendant_does_kill_it_without_a_grace(
     tmp_path: Path,
     stray_process_ids: list[int],
     make_opts: Callable[..., ExecOptions],
-    record_killpg: Callable[[], list[int]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The descendant holds none of the run's pipes, so the run completes on its
     # own once the shell exits, with the descendant still in the shell's group.
+    # It ignores the stop request, so a run that asked first and waited out the
+    # grace would not settle within the bound.
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+    monkeypatch.setattr(process_group, "TERMINATE_GRACE_S", _LONG_GRACE_S)
     pid_file = tmp_path / "descendant.pid"
-    signalled = record_killpg()
+    command = f"trap '' TERM; {shell_leaving_a_descendant(pid_file, detached=True)}"
 
-    await run_shell(shell_leaving_a_descendant(pid_file, detached=True), make_opts())
-    stray_process_ids.append(await wait_for_pid_file(pid_file))
+    started = time.monotonic()
+    await asyncio.wait_for(run_exec(command, make_opts()), _SETTLE_BOUND_S)
+    elapsed = time.monotonic() - started
 
-    assert signalled == []
+    descendant = await wait_for_pid_file(pid_file)
+    stray_process_ids.append(descendant)
+    wait_until_dead_blocking(descendant, timeout_s=3.0)
+    assert elapsed < _SETTLE_BOUND_S
+
+
+async def test_exec_when_completed_with_an_empty_group_does_settle_without_warning(
+    spawned_processes: list[asyncio.subprocess.Process],
+    make_opts: Callable[..., ExecOptions],
+    monkeypatch: pytest.MonkeyPatch,
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    monkeypatch.setattr(exec_mod, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+    monkeypatch.setattr(process_group, "TERMINATE_GRACE_S", _LONG_GRACE_S)
+
+    started = time.monotonic()
+    result = await asyncio.wait_for(run_exec("exit 0", make_opts()), _SETTLE_BOUND_S)
+    elapsed = time.monotonic() - started
+
+    [proc] = spawned_processes
+    assert result == expected_result()
+    assert killpg_warnings(recwarn, proc.pid) == []
+    assert elapsed < _SETTLE_BOUND_S
 
 
 # ---------------------------------------------------------------------------

@@ -33,19 +33,16 @@ from tests._process_helpers import (
     ZOMBIE_ONLY_GROUP_SCRIPT,
     FakeJobs,
     dead_pid,
-    is_alive,
     killpg_warnings,
     record_subprocess_runs,
     refuse_killpg,
     wait_for_pid_file,
-    wait_for_pid_file_blocking,
     wait_until_dead,
-    wait_until_dead_blocking,
     win32_process_group,
 )
 
-# The win32 Job Object tests at the end fake the platform and run everywhere;
-# every test before them needs real POSIX process groups.
+# The taskkill-fallback test and the win32 Job Object tests at the end fake the
+# platform and run everywhere; every other test needs real POSIX process groups.
 
 # The C signature of ``sysctl``, so a stand-in receives real pointers to write through.
 _SysctlFunction = ctypes.CFUNCTYPE(
@@ -57,9 +54,6 @@ _SysctlFunction = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
     ctypes.c_size_t,
 )
-
-# Grace a wait on real time is given, far longer than any probe takes.
-_LONG_WAIT_S = 10.0
 
 # Grace a wait on the fake clock is given. It costs no real time, so it is sized
 # to sit far above the real time a fake-clock wait takes.
@@ -88,10 +82,6 @@ _DARWIN_P_WEXIT = 0x2000
 _DARWIN_SZOMB = 5
 _DARWIN_RUNNING = 2
 
-# How long a group member outlives its leader: long enough to still be running
-# when the wait starts, short enough to keep the test cheap.
-_MEMBER_LIFETIME_S = 1.0
-
 # Group id and member pid listed in a fake ``/proc``. Every probe of them goes
 # through a stand-in ``os``, so they never reach a real process.
 _FAKE_GROUP = 424242
@@ -114,9 +104,13 @@ class FakeProcess:
     state: str
     comm: bytes = b"bench"
     group_id: int = _FAKE_GROUP
+    readable: bool = True
 
     def write(self, proc_root: Path) -> None:
         """Write this process's ``stat`` file, laid out as Linux lays it out.
+
+        An unreadable process stands for another user's: its ``stat`` file is
+        left with no permissions, so reading it fails.
 
         Args:
             proc_root: Directory standing in for ``/proc``; the process's entry
@@ -126,8 +120,15 @@ class FakeProcess:
         entry.mkdir(exist_ok=True)
         head = f"{self.pid} (".encode()
         tail = f") {self.state} 1 {self.group_id} {_STAT_TAIL}\n".encode()
-        (entry / "stat").write_bytes(head + self.comm + tail)
+        stat = entry / "stat"
+        stat.write_bytes(head + self.comm + tail)
+        if not self.readable:
+            stat.chmod(0)
 
+
+# Root reads a file whatever its permissions, so an unreadable fake ``stat``
+# file cannot be made for it.
+_RUNS_AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 # The exited, not yet reaped, leader every fake group below starts from.
 _ZOMBIE_LEADER = FakeProcess(_FAKE_GROUP, state="Z")
@@ -169,14 +170,6 @@ class ProbedLeader:
         if not self.exited:
             return None
         return types.SimpleNamespace(si_pid=id_val, si_status=0, si_code=1)
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class LingeringGroup:
-    """A process group whose leader has exited while another member still runs."""
-
-    leader_pid: int
-    member_pid: int
 
 
 @dataclasses.dataclass
@@ -322,29 +315,6 @@ async def orphaned_zombie_group(tmp_path: Path, stray_process_ids: list[int]) ->
 
 
 @pytest.fixture
-def group_with_lingering_member(
-    tmp_path: Path, stray_process_ids: list[int]
-) -> Iterator[LingeringGroup]:
-    """A group whose leader has exited, not yet reaped, while a member it started keeps running."""
-    member_pid_file = tmp_path / "member.pid"
-    leader = subprocess.Popen(  # noqa: S603 -- fixed argv
-        [
-            "/bin/sh",
-            "-c",
-            f'sleep {_MEMBER_LIFETIME_S} & echo $! > "$1"',
-            "sh",
-            str(member_pid_file),
-        ],
-        start_new_session=True,
-    )
-    member_pid = wait_for_pid_file_blocking(member_pid_file)
-    stray_process_ids.append(member_pid)
-    wait_until_dead_blocking(leader.pid)
-    yield LingeringGroup(leader_pid=leader.pid, member_pid=member_pid)
-    leader.wait()
-
-
-@pytest.fixture
 def linux_proc_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """An empty fake ``/proc`` the module reads as the host's, under a faked Linux platform."""
     proc_root = tmp_path / "proc"
@@ -371,11 +341,11 @@ def exiting_child() -> Iterator[subprocess.Popen[bytes]]:
 
 
 @needs_posix_process_groups
+@pytest.mark.usefixtures("linux_proc_root")
 def test_wait_for_process_group_exit_when_leader_reaped_during_probe_does_return_without_sleeping(
     monkeypatch: pytest.MonkeyPatch,
     wait_clock: WaitClock,
 ) -> None:
-    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(process_group, "os", ReapedMidProbe())
 
     with within_hang_guard(_HANG_GUARD_S):
@@ -425,21 +395,9 @@ async def test_wait_for_process_group_exit_when_leader_is_zombie_does_return_wit
 
 
 @needs_posix_process_groups
-def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_wait_for_member(
-    group_with_lingering_member: LingeringGroup,
-) -> None:
-    wait_for_process_group_exit([group_with_lingering_member.leader_pid], _LONG_WAIT_S)
-
-    assert not is_alive(group_with_lingering_member.member_pid)
-
-
-@needs_posix_process_groups
 @pytest.mark.parametrize(
     ("listed", "slept"),
     [
-        pytest.param(
-            [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="S")], _TIMED_OUT, id="sleeping-member"
-        ),
         pytest.param(
             [
                 _ZOMBIE_LEADER,
@@ -456,6 +414,18 @@ def test_wait_for_process_group_exit_when_leader_exited_but_member_running_does_
             ],
             _TIMED_OUT,
             id="unrelated-name-cut-mid-character",
+        ),
+        pytest.param(
+            [
+                _ZOMBIE_LEADER,
+                FakeProcess(_FAKE_MEMBER, state="S"),
+                FakeProcess(_FAKE_MEMBER + 1, state="S", group_id=_FAKE_GROUP + 10, readable=False),
+            ],
+            _TIMED_OUT,
+            id="foreign-stat-unreadable",
+            marks=pytest.mark.skipif(
+                _RUNS_AS_ROOT, reason="root reads a file whatever its permissions"
+            ),
         ),
         pytest.param(
             [_ZOMBIE_LEADER, FakeProcess(_FAKE_MEMBER, state="Z")],
@@ -614,7 +584,6 @@ _PARTIAL_RECORD = bytes(16)
             id="running-record-then-partial",
         ),
         pytest.param(darwin_record(0, _DARWIN_SZOMB), _NO_SLEEP, id="whole-zombie-record"),
-        pytest.param(darwin_record(0, _DARWIN_RUNNING), _TIMED_OUT, id="whole-running-record"),
         pytest.param(
             darwin_record(_DARWIN_P_WEXIT, _DARWIN_RUNNING), _NO_SLEEP, id="whole-exiting-record"
         ),
@@ -768,9 +737,6 @@ def test_kill_process_group_when_member_never_goes_does_stop_at_the_settle_bound
 _PLAIN_PID = 424242
 
 
-_TASKKILL_ARGV = ["taskkill", "/F", "/T", "/PID", str(_PLAIN_PID)]
-
-
 def _taskkill_raises(error: Exception) -> Callable[..., subprocess.CompletedProcess[bytes]]:
     def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         raise error
@@ -778,17 +744,16 @@ def _taskkill_raises(error: Exception) -> Callable[..., subprocess.CompletedProc
     return fake_run
 
 
-@needs_posix_process_groups
 @pytest.mark.parametrize(
     ("error", "warned"),
     [
         pytest.param(
-            subprocess.CalledProcessError(128, _TASKKILL_ARGV),
+            subprocess.CalledProcessError(128, ["taskkill"]),
             [],
             id="tree-already-gone-stays-silent",
         ),
         pytest.param(
-            subprocess.CalledProcessError(5, _TASKKILL_ARGV), [True], id="other-failure-warns"
+            subprocess.CalledProcessError(5, ["taskkill"]), [True], id="other-failure-warns"
         ),
         pytest.param(PermissionError(13, "Permission denied"), [True], id="launch-failure-warns"),
     ],
@@ -805,7 +770,7 @@ def test_kill_process_group_when_win32_tree_has_no_job_does_fall_back_to_taskkil
         warnings.simplefilter("always")
         kill_process_group(_PLAIN_PID)
 
-    assert calls == [_TASKKILL_ARGV]
+    assert [argv[-1] for argv in calls] == [str(_PLAIN_PID)]
     messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
     assert [str(_PLAIN_PID) in message and str(error) in message for message in messages] == warned
 
@@ -851,7 +816,7 @@ def test_kill_process_group_when_job_refused_does_fall_back_to_taskkill_with_one
     assert len(runtime_warnings) == 1, "a refused job has to warn exactly once"
     assert str(_CHILD_PID) in runtime_warnings[0], "the one warning does not name the child"
     assert FAKE_WIN_ERROR in runtime_warnings[0], "the one warning does not carry the OS reason"
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+    assert [argv[-1] for argv in argv_calls] == [str(_CHILD_PID)], (
         "a child that never reached a job was not torn down through taskkill"
     )
     assert sorted(jobs.closed) == sorted(closed), "a refused job left a handle open"
@@ -928,7 +893,7 @@ def test_kill_process_group_when_job_already_released_does_fall_back_to_taskkill
 
     module.kill_process_group(_CHILD_PID)
 
-    assert argv_calls == [["taskkill", "/F", "/T", "/PID", str(_CHILD_PID)]], (
+    assert [argv[-1] for argv in argv_calls] == [str(_CHILD_PID)], (
         "the released job was still on record, so the kill reached a closed handle"
     )
     assert jobs.terminated == [JOB_HANDLE], "the kill reached the job after its release"

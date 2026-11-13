@@ -174,8 +174,9 @@ def classify(  # noqa: PLR0913, PLR0911 -- one parameter per classification inpu
 ) -> Decision:
     """Evaluate the turn and return the decision.
 
-    Mutates *guards* on every non-``WaitForLock`` outcome: updates the
-    record-count baseline, the no-progress counter, and the reply counter.
+    Mutates *guards* only once the finished, spend-cap and lock checks pass:
+    updates the record-count baseline, the no-progress counter, and the reply
+    counter.
 
     Args:
         state: The current session state.

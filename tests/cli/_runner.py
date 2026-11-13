@@ -4,8 +4,6 @@ This is test-support code, not a test module: it carries no test functions.
 """
 
 import contextlib
-import errno
-import os
 import sys
 from collections.abc import Generator
 from typing import Any, override
@@ -15,24 +13,6 @@ from typer.testing import CliRunner
 from tests._streams import RaisingStream
 
 runner = CliRunner()
-
-
-def closed_stdout_error() -> OSError:
-    """Build the error a POSIX stdout write raises once its reader has gone.
-
-    Returns:
-        A fresh ``BrokenPipeError`` carrying ``EPIPE``.
-    """
-    return BrokenPipeError(errno.EPIPE, "Broken pipe")
-
-
-def disk_full_error() -> OSError:
-    """Build the error a stdout write raises when the disk is full.
-
-    Returns:
-        A fresh ``OSError`` carrying ``ENOSPC`` and its system message.
-    """
-    return OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
 
 
 class FailingStdoutRunner(CliRunner):

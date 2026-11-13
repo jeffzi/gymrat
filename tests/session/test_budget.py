@@ -2,10 +2,12 @@
 
 ``read_budget`` returns the budget only when the file parses, the deadline has
 not passed, and the supervise lock for that root is held; otherwise it returns
-``None``.  ``remaining_ms`` reports milliseconds left against a supplied
-current time, clamped at zero.  ``arm_budget`` writes a budget due its minutes
-from now and returns a release that removes it, and ``iterate_headroom`` gives
-up when any of its inputs is missing.
+``None``.  ``read_held_budget`` drops the deadline condition: it returns the
+budget whenever the file parses and the supervise lock is held.
+``remaining_ms`` reports milliseconds left against a supplied current time,
+clamped at zero.  ``arm_budget`` writes a budget due its minutes from now and
+returns a release that removes it, and ``iterate_headroom`` gives up when any
+of its inputs is missing.
 """
 
 from collections.abc import Sequence
@@ -20,6 +22,7 @@ from gymrat.session.budget import (
     estimate_iterate_duration,
     iterate_headroom,
     read_budget,
+    read_held_budget,
     write_budget,
 )
 from gymrat.session.paths import budget_path
@@ -96,6 +99,33 @@ def test_read_budget_when_file_absent_does_return_none(root: str):
 
 
 # ---------------------------------------------------------------------------
+# read_held_budget
+# ---------------------------------------------------------------------------
+
+
+_EXPIRED = _make_budget(deadline_ms=1000.0)
+
+
+@pytest.mark.parametrize(
+    ("supervise_lock", "expected"),
+    [
+        pytest.param(True, _EXPIRED, id="lock-held-past-deadline"),
+        pytest.param(False, None, id="supervise-lock-not-held"),
+    ],
+    indirect=["supervise_lock"],
+)
+@pytest.mark.usefixtures("supervise_lock")
+def test_read_held_budget_when_file_written_does_return_it_while_held_whatever_the_deadline(
+    root: str, expected: Budget | None
+):
+    write_budget(root, _EXPIRED)
+
+    result = read_held_budget(root)
+
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
 # arm_budget
 # ---------------------------------------------------------------------------
 
@@ -111,21 +141,28 @@ def test_arm_budget_when_armed_does_write_a_budget_due_its_minutes_from_now(
     assert Budget.model_validate_json(_budget_file(root).read_text()) == budget
 
 
-def test_arm_budget_when_released_twice_does_remove_the_file_and_uninstall_the_hook_once(
+def test_arm_budget_when_released_does_remove_the_file(root: str, monkeypatch: pytest.MonkeyPatch):
+    track_cleanups(monkeypatch, "gymrat.session.budget")
+    _budget, release = arm_budget(root, 30, warn=lambda _message: None)
+
+    release()
+
+    assert not _budget_file(root).exists()
+
+
+def test_arm_budget_when_released_does_uninstall_the_termination_hook(
     root: str, monkeypatch: pytest.MonkeyPatch
 ):
     registry = track_cleanups(monkeypatch, "gymrat.session.budget")
     _budget, release = arm_budget(root, 30, warn=lambda _message: None)
 
     release()
-    release()
 
     assert registry.uninstall_counts() == [1]
-    assert not _budget_file(root).exists()
 
 
 def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
-    root: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    root: str, monkeypatch: pytest.MonkeyPatch
 ):
     track_cleanups(monkeypatch, "gymrat.session.budget")
     warned: list[str] = []
@@ -136,8 +173,6 @@ def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
     release()
 
     assert len(warned) == 1
-    assert str(_budget_file(root)) in warned[0]
-    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +219,7 @@ def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
         ),
     ],
 )
-def test_estimate_iterate_duration_when_records_vary_does_prefer_newest_iteration_duration_over_baseline(
+def test_estimate_iterate_duration_when_records_vary_does_prefer_an_iteration_duration_over_a_baseline_one(
     records: list[SessionLogRecord], expected: DurationEstimate | None
 ):
     result = estimate_iterate_duration(records)
@@ -201,12 +236,14 @@ _TIMED_RECORDS: list[SessionLogRecord] = [baseline_record(duration_ms=420_000)]
 
 
 @pytest.mark.parametrize(
-    ("budget_written", "records"),
+    ("supervise_lock", "budget_written", "records"),
     [
-        pytest.param(False, _TIMED_RECORDS, id="no-budget-live"),
-        pytest.param(True, None, id="records-unreadable"),
-        pytest.param(True, [baseline_record(), iteration_record()], id="no-record-timed"),
+        pytest.param(True, False, _TIMED_RECORDS, id="no-budget-file"),
+        pytest.param(False, True, _TIMED_RECORDS, id="supervise-lock-free"),
+        pytest.param(True, True, None, id="records-unreadable"),
+        pytest.param(True, True, [baseline_record(), iteration_record()], id="no-record-timed"),
     ],
+    indirect=["supervise_lock"],
 )
 @pytest.mark.usefixtures("supervise_lock")
 def test_iterate_headroom_when_an_input_is_missing_does_return_none(

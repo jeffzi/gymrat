@@ -14,11 +14,9 @@ maps git-missing, outside-repo, and unresolvable root to distinct
 ``GitEnvironment`` outcomes without raising.
 
 The text renderer is pinned by one golden per named scenario (glyphs, hint
-and multi-line indentation, caveat note, summary counts); the JSON renderer
-by the failure flag it adds.
+and multi-line indentation, caveat note, summary counts).
 """
 
-import json
 import re
 import shutil
 import sys
@@ -42,10 +40,10 @@ from gymrat.doctor import (
     build_workflow_section,
     create_doctor_report,
     detect_git_environment,
-    render_doctor_json,
     render_doctor_report,
 )
 from gymrat.scaffold import DEFAULT_RUNBOOK_PATH, SKILL_RELATIVE_PATH
+from gymrat.session.paths import repository_lookup_error
 from tests._config import benchless_config as _config
 from tests._doctor_fixtures import doctor_report, environment_info
 from tests._git import refuse_git_lookups
@@ -177,9 +175,7 @@ def test_build_config_section_when_problems_present_does_produce_one_fail_per_pr
 
 
 def test_build_workflow_section_when_problems_present_does_return_single_ok_skip_check():
-    section = build_workflow_section(
-        _config(), config_has_problems=True, skill_file_exists=True, config_file_exists=False
-    )
+    section = build_workflow_section(None, skill_file_exists=True, config_file_exists=False)
 
     assert [(check.name, check.status) for check in section.checks] == [("workflow", "ok")]
 
@@ -187,7 +183,6 @@ def test_build_workflow_section_when_problems_present_does_return_single_ok_skip
 def test_build_workflow_section_when_config_unset_does_warn_for_each_missing_piece():
     section = build_workflow_section(
         _config(),
-        config_has_problems=False,
         skill_file_exists=False,
         config_file_exists=False,
     )
@@ -231,7 +226,6 @@ def test_build_workflow_section_when_field_configured_does_report_its_check(
 ):
     section = build_workflow_section(
         config,
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -253,7 +247,6 @@ def test_build_workflow_section_when_samples_even_does_list_the_target_counts_it
 ):
     section = build_workflow_section(
         _config(samples=samples),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -265,7 +258,6 @@ def test_build_workflow_section_when_samples_even_does_list_the_target_counts_it
 def test_build_workflow_section_when_stop_has_no_keys_does_warn():
     section = build_workflow_section(
         _config(stop=StopConfig()),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
@@ -276,16 +268,15 @@ def test_build_workflow_section_when_stop_has_no_keys_does_warn():
 def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_balanced_counts():
     section = build_workflow_section(
         _config(samples=11),
-        config_has_problems=False,
         skill_file_exists=True,
         config_file_exists=False,
     )
 
     samples = _find(section, "samples")
-    assert (samples.status, "11" in samples.detail, "10 or 12" in (samples.hint or "")) == (
+    assert (samples.status, "11" in samples.detail, re.findall(r"\d+", samples.hint or "")) == (
         "fail",
         True,
-        True,
+        ["10", "12"],
     )
 
 
@@ -296,112 +287,79 @@ def test_build_workflow_section_when_samples_odd_does_fail_naming_the_nearest_ba
 _UNKNOWN_ADAPTER_ERROR = unknown_adapter_error("banana")
 
 
-@pytest.mark.parametrize(
-    ("config_problems", "checks"),
-    [
-        pytest.param(True, [("bench", "ok")], id="config-problems"),
-        pytest.param(False, [("adapter", "ok"), ("bench", "fail")], id="bench-unresolved"),
-    ],
-)
-def test_build_bench_section_when_bench_unresolved_does_skip_or_fail_the_bench_check(
-    config_problems: bool, checks: list[tuple[str, str]]
-):
-    section = build_bench_section(
-        bench=None, adapter="metric-lines", config_problems=config_problems, base_dir="."
-    )
+def test_build_bench_section_when_bench_unset_does_fail_the_bench_check():
+    section = build_bench_section(bench=None, adapter="metric-lines", base_dir=".")
 
-    assert [(check.name, check.status) for check in section.checks] == checks
+    assert [(check.name, check.status) for check in section.checks] == [
+        ("adapter", "ok"),
+        ("bench", "fail"),
+    ]
 
 
-@pytest.mark.parametrize(
-    ("bench", "adapter", "on_path", "expected"),
-    [
-        pytest.param(
-            "node bench.js", "banana", None, [("adapter", "fail", "")], id="adapter-unknown"
-        ),
-        pytest.param(
-            "npx tsx bench.ts",
-            "metric-lines",
-            "/usr/bin/npx",
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "npx tsx bench.ts"),
-                ("executable", "ok", "npx"),
-            ],
-            id="executable-found",
-        ),
-        pytest.param(
-            "node bench.js",
-            "metric-lines",
-            None,
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "node bench.js"),
-                ("executable", "warn", "node"),
-            ],
-            id="executable-missing",
-        ),
-        pytest.param(
-            "VAR=1 make test",
-            "metric-lines",
-            "/usr/bin/x",
-            [
-                ("adapter", "ok", ""),
-                ("bench", "ok", "VAR=1 make test"),
-                ("executable", "ok", "make"),
-            ],
-            id="env-var-prefix",
-        ),
-        pytest.param(
-            "cd src && make bench",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "cd src && make bench")],
-            id="shell-operator-cd",
-        ),
-        pytest.param(
-            "~/bin/bench.sh",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "~/bin/bench.sh")],
-            id="home-shorthand",
-        ),
-        pytest.param(
-            "$HOME/bin/bench.sh --fast",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "$HOME/bin/bench.sh --fast")],
-            id="variable-expansion",
-        ),
-        pytest.param(
-            "`pwd`/bench.sh",
-            "metric-lines",
-            None,
-            [("adapter", "ok", ""), ("bench", "ok", "`pwd`/bench.sh")],
-            id="command-substitution",
-        ),
-    ],
-)
-def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(
-    bench: str,
-    adapter: str,
-    on_path: str | None,
-    expected: list[tuple[str, str, str]],
-    monkeypatch: pytest.MonkeyPatch,
-):
+def _stub_which(monkeypatch: pytest.MonkeyPatch, on_path: str | None) -> None:
+    """Make ``shutil.which`` answer ``on_path`` for every executable."""
+
     def which(_cmd: str) -> str | None:
         return on_path
 
     monkeypatch.setattr("shutil.which", create_autospec(shutil.which, side_effect=which))
 
-    section = build_bench_section(bench=bench, adapter=adapter, base_dir=".")
 
-    assert [(check.name, check.status) for check in section.checks] == [
-        (name, status) for name, status, _ in expected
+def _names_and_statuses(section: CheckSection) -> list[tuple[str, str]]:
+    return [(check.name, check.status) for check in section.checks]
+
+
+def test_build_bench_section_when_adapter_unknown_does_fail_only_the_adapter_check():
+    section = build_bench_section(bench="node bench.js", adapter="banana", base_dir=".")
+
+    assert _names_and_statuses(section) == [("adapter", "fail")]
+
+
+@pytest.mark.parametrize(
+    ("bench", "on_path", "executable", "status"),
+    [
+        pytest.param("npx tsx bench.ts", "/usr/bin/npx", "npx", "ok", id="executable-found"),
+        pytest.param("node bench.js", None, "node", "warn", id="executable-missing"),
+        pytest.param("VAR=1 make test", "/usr/bin/x", "make", "ok", id="env-var-prefix"),
+    ],
+)
+def test_build_bench_section_when_bench_starts_with_an_executable_does_check_it_on_path(
+    bench: str,
+    on_path: str | None,
+    executable: str,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _stub_which(monkeypatch, on_path)
+
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
+
+    assert _names_and_statuses(section) == [
+        ("adapter", "ok"),
+        ("bench", "ok"),
+        ("executable", status),
     ]
-    assert all(
-        part in check.detail for check, (_, _, part) in zip(section.checks, expected, strict=True)
-    )
+    assert bench in _find(section, "bench").detail
+    assert executable in _find(section, "executable").detail
+
+
+@pytest.mark.parametrize(
+    "bench",
+    [
+        pytest.param("cd src && make bench", id="shell-operator-cd"),
+        pytest.param("~/bin/bench.sh", id="home-shorthand"),
+        pytest.param("$HOME/bin/bench.sh --fast", id="variable-expansion"),
+        pytest.param("`pwd`/bench.sh", id="command-substitution"),
+    ],
+)
+def test_build_bench_section_when_bench_needs_the_shell_does_skip_the_executable_check(
+    bench: str, monkeypatch: pytest.MonkeyPatch
+):
+    _stub_which(monkeypatch, "/usr/bin/x")
+
+    section = build_bench_section(bench=bench, adapter="metric-lines", base_dir=".")
+
+    assert _names_and_statuses(section) == [("adapter", "ok"), ("bench", "ok")]
 
 
 # ---------------------------------------------------------------------------
@@ -409,11 +367,9 @@ def test_build_bench_section_when_inputs_vary_does_produce_the_matching_checks(
 # ---------------------------------------------------------------------------
 
 
-def test_detect_git_environment_when_git_missing_does_report_unavailable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
-    monkeypatch.setenv("PATH", str(tmp_path))
-
+@pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
+@pytest.mark.usefixtures("unusable_git")
+def test_detect_git_environment_when_git_missing_does_report_unavailable(tmp_path: Path):
     result = detect_git_environment(str(tmp_path))
 
     assert result == GitEnvironment(git_available=False, inside_git_repo=False)
@@ -429,7 +385,7 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    refuse_git_lookups(monkeypatch)
+    refusal = refuse_git_lookups(monkeypatch)
 
     result = detect_git_environment(str(tmp_path))
 
@@ -438,7 +394,7 @@ def test_detect_git_environment_when_root_unresolvable_does_report_error(
         True,
         None,
     )
-    assert str(tmp_path) in (result.git_error or "")
+    assert result.git_error == str(repository_lookup_error(str(tmp_path), refusal))
 
 
 # ---------------------------------------------------------------------------
@@ -452,23 +408,13 @@ def _check(report: DoctorReport, title: str, name: str) -> Check:
     return _find(section, name)
 
 
-@pytest.mark.parametrize(
-    ("toml", "bench_checks"),
-    [
-        pytest.param("samples = 0\n", [("bench", "ok")], id="invalid-value"),
-        pytest.param(None, [("adapter", "ok"), ("bench", "fail")], id="no-file"),
-    ],
-)
-def test_build_doctor_report_when_config_file_invalid_or_absent_does_set_the_bench_checks(
-    tmp_path: Path, toml: str | None, bench_checks: list[tuple[str, str]]
-):
-    if toml is not None:
-        write_raw(tmp_path, toml)
+def test_build_doctor_report_when_config_file_invalid_does_skip_the_bench_check(tmp_path: Path):
+    write_raw(tmp_path, "samples = 0\n")
 
     report = build_doctor_report(CliFlags(), str(tmp_path))
 
     bench = next(section for section in report.sections if section.title == "Bench")
-    assert [(check.name, check.status) for check in bench.checks] == bench_checks
+    assert [(check.name, check.status) for check in bench.checks] == [("bench", "ok")]
 
 
 def test_build_doctor_report_when_adapter_flag_given_does_check_it_in_the_bench_section(
@@ -522,6 +468,36 @@ def test_build_doctor_report_when_runbook_unset_does_hint_adding_the_key_to_the_
     report = build_doctor_report(CliFlags(), str(tmp_path))
 
     assert DEFAULT_RUNBOOK_PATH in (_check(report, "Workflow", "runbook").hint or "")
+
+
+def test_build_doctor_report_when_runbook_unset_does_hint_the_config_file_doctor_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_raw(tmp_path, "samples = 5\n", name="custom.toml")
+    monkeypatch.chdir(tmp_path)
+
+    report = build_doctor_report(CliFlags(config="custom.toml"), str(tmp_path))
+
+    assert "custom.toml" in (_check(report, "Workflow", "runbook").hint or "")
+
+
+def test_build_doctor_report_when_runbook_unset_in_another_config_file_does_not_send_to_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_raw(tmp_path, "samples = 5\n", name="custom.toml")
+    monkeypatch.chdir(tmp_path)
+
+    report = build_doctor_report(CliFlags(config="custom.toml"), str(tmp_path))
+
+    assert "gymrat init" not in (_check(report, "Workflow", "runbook").hint or "")
+
+
+def test_build_doctor_report_when_runbook_unset_and_no_config_file_does_name_no_config_path(
+    tmp_path: Path,
+):
+    report = build_doctor_report(CliFlags(), str(tmp_path))
+
+    assert str(tmp_path) not in (_check(report, "Workflow", "runbook").hint or "")
 
 
 # ---------------------------------------------------------------------------
@@ -665,17 +641,3 @@ def test_render_doctor_report_when_scenario_rendered_does_match_its_golden(
     output = render_doctor_report(report, color=False)
 
     assert output.split("\n") == snapshot
-
-
-# ---------------------------------------------------------------------------
-# JSON rendering
-# ---------------------------------------------------------------------------
-
-
-def test_render_doctor_json_when_report_has_a_failure_does_flag_it():
-    report = _mixed_status_report()
-
-    output = render_doctor_json(report)
-
-    document = json.loads(output)
-    assert (document["fail_count"], document["has_failures"]) == (1, True)

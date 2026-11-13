@@ -10,7 +10,6 @@
           "type": "integer"
         },
         "duration_ms": {
-          "default": null,
           "description": "Wall-clock milliseconds the baseline measurement took.",
           "title": "Duration Ms",
           "type": "number"
@@ -109,7 +108,7 @@
         },
         "name": {
           "description": "CLI command name.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Name",
           "type": "string"
         },
@@ -124,7 +123,6 @@
           "type": "string"
         },
         "reason": {
-          "default": null,
           "description": "Why the command exited non-zero, when it did.",
           "enum": [
             "stop-condition",
@@ -157,13 +155,11 @@
           "type": "string"
         },
         "seq": {
-          "default": null,
           "description": "Iteration sequence number, present on per-iteration records.",
           "title": "Seq",
           "type": "integer"
         },
         "traceparent": {
-          "default": null,
           "description": "W3C Trace Context traceparent header for distributed tracing.",
           "title": "Traceparent",
           "type": "string"
@@ -191,7 +187,6 @@
       "description": "A confirmation rerun: which metrics it re-measured, and the samples it took.\n\n``absent`` names metrics the rerun was asked about but skipped; it is\n``None`` when the rerun skipped none.",
       "properties": {
         "absent": {
-          "default": null,
           "description": "Metric names the rerun was asked about but skipped.",
           "items": {
             "type": "string"
@@ -338,7 +333,6 @@
           "type": "string"
         },
         "stderr_bytes": {
-          "default": null,
           "description": "Bytes the hook command wrote to stderr.",
           "minimum": 0,
           "title": "Stderr Bytes",
@@ -400,7 +394,6 @@
           "title": "Delta Pct"
         },
         "detectable_pct": {
-          "default": null,
           "description": "The smallest change, as a percentage of the baseline median, the run could have detected for this metric, never below its measurement step. Absent for exact verdicts and when no finite figure applies.",
           "title": "Detectable Pct",
           "type": "number"
@@ -421,19 +414,16 @@
           "type": "string"
         },
         "noise_pct": {
-          "default": null,
           "description": "Estimated noise as a percentage of the baseline median.",
           "title": "Noise Pct",
           "type": "number"
         },
         "p": {
-          "default": null,
           "description": "P-value from the statistical test.",
           "title": "P",
           "type": "number"
         },
         "reason": {
-          "default": null,
           "description": "Why the verdict is no-signal although the medians differ: non-finite-delta (the delta has no finite percentage), resolution (it does not clear the measurement-step floor), noise (the noise band, the pair count, or the p-value rejects it), direction-mismatch (the paired differences move the other way from the medians), or unconfirmed (a confirmation rerun disowned the regression).",
           "enum": [
             "non-finite-delta",
@@ -496,7 +486,6 @@
           "type": "string"
         },
         "name": {
-          "default": null,
           "description": "Metric name when kind is 'metric'.",
           "title": "Name",
           "type": "string"
@@ -520,17 +509,14 @@
         },
         "confirm": {
           "$ref": "#/$defs/Confirm",
-          "default": null,
           "description": "Confirmation rerun results, if one was triggered."
         },
         "duration_ms": {
-          "default": null,
           "description": "Wall-clock milliseconds the iteration measurement took.",
           "title": "Duration Ms",
           "type": "number"
         },
         "measured_tree": {
-          "default": null,
           "description": "Git tree hash of the experiment worktree at measurement time.",
           "title": "Measured Tree",
           "type": "string"
@@ -602,20 +588,17 @@
           "type": "boolean"
         },
         "passed": {
-          "default": null,
           "description": "Whether all configured checks passed.",
           "title": "Passed",
           "type": "boolean"
         },
         "stderr_bytes": {
-          "default": null,
           "description": "Bytes the check command wrote to stderr.",
           "minimum": 0,
           "title": "Stderr Bytes",
           "type": "integer"
         },
         "stdout_bytes": {
-          "default": null,
           "description": "Bytes the check command wrote to stdout.",
           "minimum": 0,
           "title": "Stdout Bytes",
@@ -642,19 +625,16 @@
           "description": "Outcome of the configured checks."
         },
         "commit": {
-          "default": null,
           "description": "Git commit SHA when status is committed.",
           "title": "Commit",
           "type": "string"
         },
         "message": {
-          "default": null,
           "description": "Commit message when status is committed.",
           "title": "Message",
           "type": "string"
         },
         "reason": {
-          "default": null,
           "description": "Why the keep was blocked, when status is blocked.",
           "enum": [
             "checks-failed",
@@ -761,19 +741,16 @@
           "type": "string"
         },
         "filter": {
-          "default": null,
           "description": "Filter expression for selecting benchmarks.",
           "title": "Filter",
           "type": "string"
         },
         "hooks": {
           "$ref": "#/$defs/SessionHooks",
-          "default": null,
           "description": "Hook commands to run around iterations.",
           "title": "Hooks"
         },
         "prepare": {
-          "default": null,
           "description": "Preparation command to run before benchmarking.",
           "title": "Prepare",
           "type": "string"
@@ -811,16 +788,14 @@
       "description": "The hook commands a session was started with; an absent stage ran nothing.",
       "properties": {
         "after": {
-          "default": null,
           "description": "Command to run after each iteration.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "After",
           "type": "string"
         },
         "before": {
-          "default": null,
           "description": "Command to run before each iteration.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Before",
           "type": "string"
         }
@@ -896,7 +871,7 @@
         },
         "message": {
           "description": "Reason the stop was requested.",
-          "minLength": 1,
+          "pattern": "[^\\s\\x1c-\\x1f]",
           "title": "Message",
           "type": "string"
         },

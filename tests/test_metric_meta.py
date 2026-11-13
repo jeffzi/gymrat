@@ -297,42 +297,31 @@ def test_resolve_metric_meta_from_samples_when_metric_exempt_from_the_check_does
 
 
 @pytest.mark.parametrize(
-    ("sample_sets", "config_metrics"),
+    "sample_sets",
     [
-        pytest.param(_readings([333.0, 375.0], [333.0, 375.0]), None, id="no-target-repeats"),
-        pytest.param(
-            _readings([1000.0, 1000.0], [1000.0, 1005.0]), None, id="gap-at-half-a-percent"
-        ),
+        pytest.param(_readings([333.0, 375.0], [333.0, 375.0]), id="no-target-repeats"),
+        pytest.param(_readings([1000.0, 1000.0], [1000.0, 1005.0]), id="gap-at-half-a-percent"),
         pytest.param(
             _readings([-1000.0, -1000.0], [-1000.0, -1005.0]),
-            None,
             id="gap-at-half-a-percent-of-a-negative-median",
         ),
         pytest.param(
-            _readings([1000.0, 1000.0, 1007.0], [1013.0, 1020.0]),
-            None,
-            id="fine-lattice-at-four-distinct-readings",
-        ),
-        pytest.param(
             _readings([1000.0, 1007.0, 1013.0], [1020.0, 1020.0, 1027.0]),
-            None,
             id="fine-lattice-with-one-repeated-pair",
         ),
         pytest.param(
             _readings([990.0, 1000.0, 1000.0], [995.0, 1005.0, 1010.0]),
-            None,
             id="lattice-at-half-a-percent-with-five-distinct-readings",
         ),
     ],
 )
 def test_resolve_metric_meta_from_samples_when_readings_not_quantized_does_not_warn(
     sample_sets: list[list[dict[str, float]]],
-    config_metrics: dict[str, MetricEntry] | None,
 ):
     warnings: list[str] = []
 
     resolve_metric_meta_from_samples(
-        sample_sets, config_metrics, metric_lines_adapter, None, warn=warnings.append
+        sample_sets, None, metric_lines_adapter, None, warn=warnings.append
     )
 
     assert warnings == []

@@ -12,11 +12,10 @@ import. :func:`build_tinybench_stdout` does the same for the
 entry to prove the adapter keeps parsing past it. :func:`task` and
 :data:`VALID_TASK` are their tinybench counterparts.
 
-:func:`unknown_adapter_error` and :func:`malformed_line_warning` ask the
-adapters themselves for the error ``get_adapter`` raises on an unknown name and
-the warning the metric-lines adapter gives for a line it cannot read. A test
-that only checks such an error or warning reaches its caller compares against
-them, so the wording stays pinned in the adapter tests alone.
+:func:`unknown_adapter_error` asks the registry itself for the error
+``get_adapter`` raises on an unknown name. A test that only checks such an
+error reaches its caller compares against it, so the wording stays pinned in
+the adapter tests alone.
 
 This is test-support code shared across test modules, not a test module. It
 carries no test functions of its own.
@@ -25,7 +24,6 @@ carries no test functions of its own.
 import json
 from typing import Any
 
-from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.adapters.registry import get_adapter
 from gymrat.errors import GymratError
 
@@ -48,21 +46,6 @@ def unknown_adapter_error(name: str) -> GymratError:
         return error
     msg = f"{name!r} is a registered adapter"
     raise AssertionError(msg)
-
-
-def malformed_line_warning(line: str) -> str:
-    """Return the warning the metric-lines adapter gives for a line it cannot parse.
-
-    Args:
-        line: The offending stdout line.
-
-    Returns:
-        The single warning the adapter gives for ``line``.
-    """
-    warnings: list[str] = []
-    metric_lines_adapter.parse(f"{line}\nMETRIC valid=1", warnings.append)
-    (warning,) = warnings
-    return warning
 
 
 def build_stdout(benchmarks: list[Any]) -> str:

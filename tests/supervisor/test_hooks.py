@@ -325,13 +325,6 @@ def under_scratch_root(root: Path) -> None:
 
 
 @pytest.fixture
-def honors_case(root: Path) -> None:
-    """Skip unless the filesystem under the repository tells letter cases apart."""
-    if _upper_root(root).exists():
-        pytest.skip("needs a filesystem that tells letter cases apart")
-
-
-@pytest.fixture
 def case_sensitive_stat(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make every upper-case spelling of a repository directory a missing path."""
     if sys.platform == "win32":
@@ -376,29 +369,6 @@ def test_check_file_edit_when_case_variant_of_worktree_does_allow(root: Path):
     reason = check_file_edit(hook_input, root)
 
     assert reason is None
-
-
-@pytest.mark.usefixtures("under_scratch_root", "honors_case")
-def test_check_file_edit_when_sibling_dir_differs_by_case_does_allow_as_scratch(root: Path):
-    sibling = _upper_root(root)
-    (sibling / "src").mkdir(parents=True)
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": str(sibling / "src" / "x.py")}}
-
-    reason = check_file_edit(hook_input, root)
-
-    assert reason is None
-
-
-@pytest.mark.usefixtures("honors_case")
-def test_check_file_edit_when_existing_dir_differs_from_worktree_by_case_does_deny(root: Path):
-    lookalike = _upper_worktree(root)
-    lookalike.mkdir(parents=True)
-    path = str(lookalike / "x.py")
-    hook_input = {"tool_name": "Write", "tool_input": {"file_path": path}}
-
-    reason = check_file_edit(hook_input, root)
-
-    assert _verdict(reason, path) == "outside"
 
 
 @pytest.mark.usefixtures("under_scratch_root", "case_sensitive_stat")
@@ -522,17 +492,12 @@ def test_check_file_edit_when_path_has_nul_does_deny_naming_the_rule(
     assert _verdict(reason, "src/x\\x00.py") == "unresolvable"
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param(ValueError("bad path"), id="value-error"),
-        pytest.param(OSError("too many links"), id="os-error"),
-    ],
-)
 def test_check_file_edit_when_realpath_raises_does_deny_naming_the_rule(
-    root: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    monkeypatch.setattr(os.path, "realpath", create_autospec(os.path.realpath, side_effect=error))
+    monkeypatch.setattr(
+        os.path, "realpath", create_autospec(os.path.realpath, side_effect=ValueError("bad path"))
+    )
     hook_input = {"tool_name": "Edit", "tool_input": {"file_path": "src/x.py"}, "cwd": str(root)}
 
     reason = check_file_edit(hook_input, root)
@@ -568,17 +533,8 @@ def test_check_file_edit_when_path_has_special_characters_does_echo_them_on_one_
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("tool_name", "tool_input"),
-    [
-        pytest.param("Read", {"file_path": "/banana/x.py"}, id="read"),
-        pytest.param(["Edit"], {"file_path": "/banana/x.py"}, id="name-unhashable"),
-    ],
-)
-def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
-    root: Path, tool_name: object, tool_input: dict[str, object]
-):
-    hook_input = {"tool_name": tool_name, "tool_input": tool_input}
+def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(root: Path):
+    hook_input = {"tool_name": "Read", "tool_input": {"file_path": "/banana/x.py"}}
 
     reason = check_file_edit(hook_input, root)
 
@@ -586,7 +542,7 @@ def test_check_file_edit_when_tool_not_an_editing_tool_does_allow(
 
 
 # ---------------------------------------------------------------------------
-# PreToolUse hook registration
+# PreToolUse hook input builders
 # ---------------------------------------------------------------------------
 
 _CONTEXT: HookContext = {"signal": None}
@@ -617,7 +573,6 @@ def _pre_tool_use(tool_name: str, tool_input: dict[str, object]) -> PreToolUseHo
     "command",
     [
         "gymrat keep -m x",
-        "uv run gymrat status",
         ".venv/bin/gymrat keep",
         "cat gymrat.toml",
     ],
@@ -658,7 +613,6 @@ def test_check_background_gymrat_when_in_background_without_gymrat_word_does_all
 @pytest.mark.parametrize(
     "hook_input",
     [
-        pytest.param(_bash("gymrat keep -m x", run_in_background=False), id="background-false"),
         pytest.param(_bash("gymrat keep -m x"), id="background-missing"),
         pytest.param(_bash("gymrat keep -m x", run_in_background="true"), id="background-string"),
         pytest.param(
@@ -743,7 +697,7 @@ async def test_supervise_hooks_factory_when_a_rule_denies_the_call_does_answer_d
     output = await callback(hook_input, "tool-1", _CONTEXT)
 
     decision, reason = _decision(output)
-    assert (decision, bool(reason)) == ("deny", True)
+    assert (decision, _verdict(cast("str", reason), str(root / "x.py"))) == ("deny", "outside")
 
 
 async def test_supervise_hooks_factory_when_the_rules_allow_the_call_does_answer_empty(

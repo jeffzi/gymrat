@@ -61,7 +61,7 @@ from gymrat.progress_events import (
 from gymrat.utils import (
     MS_PER_SECOND,
     SamplingEta,
-    format_clock,
+    floored_clock_tiers,
     format_duration,
 )
 
@@ -221,23 +221,45 @@ def plain_line(before: ProgressState, after: ProgressState, event: ProgressEvent
 # ---------------------------------------------------------------------------
 
 
-def clock_text(elapsed_ms: float, remaining_ms: float) -> Text:
+def format_clock(ms: float) -> str:
+    """Format a duration as a media-player clock, flooring to whole seconds.
+
+    Minutes always take two digits (``"00:09"``, ``"07:45"``); the hour tier
+    appears only when there are whole hours (``"1:07:45"``).
+
+    Args:
+        ms: The duration in milliseconds.
+
+    Returns:
+        The clock string, e.g. ``"07:45"`` or ``"1:07:45"``.
+    """
+    hours, minutes, seconds = floored_clock_tiers(ms)
+
+    if hours == 0:
+        return f"{minutes:02d}:{seconds:02d}"
+    return f"{hours}:{minutes:02d}:{seconds:02d}"
+
+
+def clock_text(elapsed_ms: float, remaining_ms: float | None) -> Text:
     """The media-player clock: elapsed time over the projected total.
 
     Args:
         elapsed_ms: Time the run has taken so far.
-        remaining_ms: The estimate of the time left.
+        remaining_ms: The estimate of the time left, or ``None`` before any
+            estimate exists.
 
     Returns:
-        The running clock, then a dimmed ``/total`` projected from the estimate.
+        The running clock, then a dimmed ``/total`` projected from the
+        estimate, or ``/--:--`` without one.
     """
+    total = "--:--" if remaining_ms is None else format_clock(elapsed_ms + remaining_ms)
     text = Text()
     text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-    text.append(f"/{format_clock(elapsed_ms + remaining_ms)}", style=STYLE_META)
+    text.append(f"/{total}", style=STYLE_META)
     return text
 
 
-class _ClockColumn(ProgressColumn):
+class ClockColumn(ProgressColumn):
     """Media-player clock: elapsed over the projected total run time.
 
     The total is the row's elapsed time plus the remaining estimate last handed
@@ -254,13 +276,7 @@ class _ClockColumn(ProgressColumn):
 
     @override
     def render(self, task: Task) -> Text:
-        elapsed_ms = (task.elapsed or 0.0) * MS_PER_SECOND
-        if self._remaining_ms is not None:
-            return clock_text(elapsed_ms, self._remaining_ms)
-        text = Text()
-        text.append(format_clock(elapsed_ms), style=STYLE_TIMER_RUNNING)
-        text.append("/--:--", style=STYLE_META)
-        return text
+        return clock_text((task.elapsed or 0.0) * MS_PER_SECOND, self._remaining_ms)
 
 
 class _TargetColumn(ProgressColumn):
@@ -325,7 +341,7 @@ def _clocked_progress(
     console: Console,
     clock: Callable[[], float] | None,
     *columns: ProgressColumn,
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build a ``Progress`` from ``columns`` plus a trailing clock column.
 
     Args:
@@ -335,9 +351,9 @@ def _clocked_progress(
         *columns: The columns to show before the clock column.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
-    clock_col = _ClockColumn()
+    clock_col = ClockColumn()
     progress = Progress(
         *columns,
         clock_col,
@@ -350,7 +366,7 @@ def _clocked_progress(
 
 def compact_progress(
     console: Console, *, clock: Callable[[], float] | None = None
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build a single-row compact progress bar for narrow terminals.
 
     Callers can update the remaining estimate as passes complete via the
@@ -362,7 +378,7 @@ def compact_progress(
             ``time.monotonic``.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
     return _clocked_progress(
         console,
@@ -377,7 +393,7 @@ def compact_progress(
 
 def passes_progress(
     console: Console, *, clock: Callable[[], float] | None = None
-) -> tuple[Progress, _ClockColumn]:
+) -> tuple[Progress, ClockColumn]:
     """Build the sampling bar row shared by the measure/compare and iterate views.
 
     Callers can update the remaining estimate as passes complete via the
@@ -389,7 +405,7 @@ def passes_progress(
             ``time.monotonic``.
 
     Returns:
-        The ``Progress`` and its ``_ClockColumn``.
+        The ``Progress`` and its ``ClockColumn``.
     """
     return _clocked_progress(
         console,
@@ -415,7 +431,8 @@ class RunShape:
         sample_count: The number of samples per target, or ``None`` when the
             total is discovered at runtime from ``PassStarted.total_rounds``.
         command: A label printed in the header row of the live display.
-        target_labels: Labels for each target, shown when ``target_count > 1``.
+        target_labels: Labels for each target, listed after ``command`` in the
+            live header; unused when ``command`` is ``None``.
     """
 
     target_count: int
@@ -427,9 +444,7 @@ class RunShape:
 class ProgressReporter(LiveDisplayMixin):
     """Single-use progress reporter for measure/compare commands.
 
-    Call ``stop`` exactly once after the run ends. The reporter renders to the
-    given ``console`` using either a rich ``Live`` block (live mode) or plain
-    timestamped lines (plain mode).
+    Call ``stop`` exactly once after the run ends.
 
     Args:
         mode: ``"live"`` for a rich live display or ``"plain"`` for timestamped
@@ -455,7 +470,7 @@ class ProgressReporter(LiveDisplayMixin):
             target_count=shape.target_count, sample_count=shape.sample_count
         )
 
-        self._clock_column: _ClockColumn | None = None
+        self._clock_column: ClockColumn | None = None
         self._prepare_progress: Progress | None = None
         self._pass_progress: Progress | None = None
         self._prepare_task_id: TaskID | None = None

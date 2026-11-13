@@ -13,7 +13,7 @@ import re
 import signal
 import sys
 from io import StringIO
-from typing import IO, TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import pyte
 import pyte.modes
@@ -25,9 +25,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     import pytest
-
-#: The escape a live display writes as it starts, hiding the cursor until it stops.
-HIDE_CURSOR = "\x1b[?25l"
 
 #: The signal the signal-erase tests deliver; any termination signal takes the same path.
 TERMINATION_SIGNAL = signal.SIGTERM
@@ -132,14 +129,7 @@ def sealed_console(
     )
 
 
-def kept_line_terminal(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    stream: IO[str] | None = None,
-    width: int = 80,
-    height: int = 24,
-    color_system: Literal["auto", "standard", "truecolor"] | None = "auto",
-) -> Console:
+def kept_line_terminal(monkeypatch: pytest.MonkeyPatch) -> Console:
     """Build a sealed console with :data:`KEPT_LINE` printed, and make its file ``sys.stderr``.
 
     The kept line stands where a live display will go above, so an erase that
@@ -147,17 +137,11 @@ def kept_line_terminal(
 
     Args:
         monkeypatch: The fixture ``sys.stderr`` is replaced through.
-        stream: The terminal the console writes to; ``None`` keeps the console's own buffer.
-        width: Console width in columns.
-        height: Console height in rows.
-        color_system: The color system the console writes.
 
     Returns:
         The console, its kept line already printed.
     """
-    console = sealed_console(width=width, height=height, color_system=color_system)
-    if stream is not None:
-        console.file = stream
+    console = sealed_console()
     console.print(KEPT_LINE)
     monkeypatch.setattr(sys, "stderr", console.file)
     return console
@@ -167,7 +151,6 @@ def frame_text(
     renderable: RenderableType,
     *,
     width: int = 80,
-    height: int = 24,
     get_time: Callable[[], float] | None = None,
 ) -> str:
     """Render ``renderable`` through a throwaway non-terminal console, as plain text.
@@ -178,8 +161,6 @@ def frame_text(
     Args:
         renderable: What to render.
         width: Console width in columns.
-        height: Console height in rows, pinned so the real terminal's height
-            never leaks into the render.
         get_time: Pins the console clock so that a ``Spinner`` picks a
             deterministic frame rather than whatever the wall clock says.
             None uses a clock stopped at zero.
@@ -191,7 +172,7 @@ def frame_text(
     console = Console(
         file=buf,
         width=width,
-        height=height,
+        height=24,  # pinned so the real terminal's height never leaks into the render
         force_terminal=False,
         no_color=True,
         legacy_windows=False,

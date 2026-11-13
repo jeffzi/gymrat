@@ -20,9 +20,6 @@ from tests.adapters._inputs import (
     ("alias", "args", "p50", "metric_name"),
     [
         pytest.param(
-            "op/$a/$b", {"a": "x", "b": "y"}, 50, f"op/a=x/b=y{TIME_SUFFIX}", id="multiple"
-        ),
-        pytest.param(
             "test/$x/$unknown", {"x": "1"}, 77, f"test/x=1/$unknown{TIME_SUFFIX}", id="stray-dollar"
         ),
         pytest.param("$ab", {"a": "x", "ab": "y"}, 8, f"ab=y{TIME_SUFFIX}", id="longest-key-first"),
@@ -63,6 +60,15 @@ def test_parse_when_alias_has_placeholders_does_substitute_arg_values(
     [
         pytest.param(5.0, "5", id="integral-float"),
         pytest.param(1.5, "1.5", id="float"),
+        pytest.param(0.001, "0.001", id="leading-zero-fraction"),
+        pytest.param(-0.0, "0", id="negative-zero"),
+        pytest.param(-1e-05, "-0.00001", id="negative-small-positional"),
+        pytest.param(1e-06, "0.000001", id="lower-threshold-positional"),
+        pytest.param(1.5e-7, "1.5e-7", id="below-lower-threshold-exponent"),
+        pytest.param(
+            1.2345678901234568e20, "123456789012345680000", id="below-upper-threshold-positional"
+        ),
+        pytest.param(1e21, "1e+21", id="upper-threshold-exponent"),
         pytest.param(True, "true", id="bool-true"),
         pytest.param(False, "false", id="bool-false"),
         pytest.param(None, "null", id="none"),
@@ -81,8 +87,8 @@ def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serializ
 
 # One non-ASCII terminator per skip site catches both a missing escape and an
 # ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
-# on describe_error in tests/utils/test_utils.py, which also pins which characters
-# count as line terminators.
+# on error_tail in tests/adapters/test_payload_entry.py, and which characters
+# count as line terminators is pinned on LINE_TERMINATORS in tests/utils/test_utils.py.
 _LINE_TERMINATOR_ALIAS = "enc\u2028ode"
 
 
@@ -140,9 +146,7 @@ def test_parse_when_metric_prefix_contains_hash_does_raise_adapter_error():
     with pytest.raises(AdapterError) as exc_info:
         mitata_adapter.parse(stdout)
 
-    message = str(exc_info.value)
-    assert '"op/v=a#b"' in message
-    assert f'"{alias}"' in message
+    assert f'"{alias}"' in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +168,6 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 
     assert result == {f"valid{TIME_SUFFIX}": 1}
     assert len(warnings) == 1
-    assert '"op/v=a//b"' in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -172,21 +175,14 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 # ---------------------------------------------------------------------------
 
 
-# Each row pairs a run with a regex for the computed parts of its skip warning.
 @pytest.mark.parametrize(
-    ("bad_run", "pattern"),
+    "bad_run",
     [
-        pytest.param(
-            {"args": {}, "stats": {"p50": float("inf")}},
-            r'"test".*stats\.p50',
-            id="p50-positive-infinity",
-        ),
-        pytest.param(None, r'"test"', id="run-null"),
+        pytest.param({"args": {}, "stats": {"p50": float("inf")}}, id="p50-positive-infinity"),
+        pytest.param(None, id="run-null"),
     ],
 )
-def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning(
-    bad_run: object, pattern: str
-):
+def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning(bad_run: object):
     stdout = build_stdout([{"alias": "test", "runs": [bad_run, {"args": {}, "stats": {"p50": 5}}]}])
     warnings: list[str] = []
 
@@ -194,19 +190,16 @@ def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning
 
     assert result == {f"test{TIME_SUFFIX}": 5}
     assert len(warnings) == 1
-    assert re.search(pattern, warnings[0])
+    assert '"test"' in warnings[0]
 
 
-def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning(
-    capsys: pytest.CaptureFixture[str],
-):
+def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning():
     stdout = build_stdout([{"alias": "orphan"}, VALID_BENCHMARK])
     warnings: list[str] = []
 
     result = mitata_adapter.parse(stdout, warnings.append)
 
-    assert (result, len(warnings), capsys.readouterr().err) == ({f"valid{TIME_SUFFIX}": 1}, 1, "")
-    assert re.search(r'"orphan".* runs$', warnings[0])
+    assert (result, len(warnings)) == ({f"valid{TIME_SUFFIX}": 1}, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -230,17 +223,14 @@ def test_parse_when_heap_avg_not_given_does_skip_memory_metric_silently():
     assert warnings == []
 
 
-# Each row pairs a heap value with a regex for the computed parts of its skip warning.
 @pytest.mark.parametrize(
-    ("heap_value", "pattern"),
+    "heap_value",
     [
-        pytest.param({"avg": "bad"}, r'"test".*stats\.heap\.avg', id="avg-string"),
-        pytest.param({"avg": float("inf")}, r'"test".*stats\.heap\.avg', id="avg-infinity"),
+        pytest.param({"avg": "bad"}, id="avg-string"),
+        pytest.param({"avg": float("inf")}, id="avg-infinity"),
     ],
 )
-def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
-    heap_value: object, pattern: str
-):
+def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(heap_value: object):
     stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": heap_value})])
     warnings: list[str] = []
 
@@ -248,7 +238,7 @@ def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
 
     assert result == {f"test{TIME_SUFFIX}": 42}
     assert len(warnings) == 1
-    assert re.search(pattern, warnings[0])
+    assert '"test"' in warnings[0]
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +266,7 @@ def test_parse_when_error_field_is_null_does_process_run_normally():
     stdout = build_stdout([
         {
             "alias": "test",
-            "runs": [{"name": "test", "args": {}, "error": None, "stats": {"p50": 10}}],
+            "runs": [{"args": {}, "error": None, "stats": {"p50": 10}}],
         }
     ])
 

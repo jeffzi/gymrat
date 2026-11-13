@@ -23,13 +23,14 @@ import asyncio
 import codecs
 import contextlib
 import os
-import signal as _signal_module
 import sys
+import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
 from gymrat import process_group
+from gymrat.child_signal_mask import unblock_termination_signals
 from gymrat.process_group import (
     TERMINATE_GRACE_S,
     attach_process_group,
@@ -41,10 +42,8 @@ from gymrat.process_group import (
     wait_for_process_group_exit_async,
 )
 from gymrat.signals import (
-    TERMINATION_SIGNALS,
     deferring_termination_signals,
     install_termination_escalation,
-    pthread_sigmask,
 )
 from gymrat.utils import MS_PER_SECOND
 
@@ -133,12 +132,6 @@ class SpawnError(Exception):
     """
 
 
-def _child_reset_signal_mask() -> None:
-    """Unblock termination signals in the child, reversing the parent's mask."""
-    if pthread_sigmask is not None:
-        pthread_sigmask(_signal_module.SIG_UNBLOCK, TERMINATION_SIGNALS)
-
-
 def kill_live_process_groups() -> None:
     """Stop every process tree :func:`spawn_contained` started and still holds, never raising.
 
@@ -177,18 +170,32 @@ def _kill_live_process_groups_now() -> None:
 def _sweep_live_process_groups(grace_s: float) -> None:
     # Iterate a snapshot: a run settling on another task may deregister its PID
     # mid-sweep. The process-group calls already tolerate an already-dead tree and
-    # warn on other failures; each suppress(Exception) guard keeps any other
-    # unexpected exception (for example a warning escalated to an error by a
-    # warnings filter) from escaping into the signal-path cleanup that calls this.
+    # warn on other failures; _run_sweep_step reports any other exception and
+    # moves on, so one failing step never skips the steps and groups after it.
     leaders = list(_live_process_groups)
     for pid in leaders:
-        with contextlib.suppress(Exception):
-            terminate_process_group(pid)
-    with contextlib.suppress(Exception):
-        wait_for_process_group_exit(leaders, grace_s)
+        _run_sweep_step("terminate", pid, lambda pid=pid: terminate_process_group(pid))
+    _run_sweep_step("wait", None, lambda: wait_for_process_group_exit(leaders, grace_s))
     for pid in leaders:
-        with contextlib.suppress(Exception):
-            kill_process_group(pid)
+        _run_sweep_step("kill", pid, lambda pid=pid: kill_process_group(pid))
+
+
+def _run_sweep_step(step: str, pid: int | None, action: Callable[[], object]) -> None:
+    # The sweep runs inside the signal-path cleanup, which records warnings and
+    # writes them out itself, so the failure is reported as a warning rather than
+    # written to stderr here. The outer suppress keeps a warnings filter set to
+    # "error" (which turns the report into an exception) from escaping into
+    # that cleanup.
+    with contextlib.suppress(Exception):
+        try:
+            action()
+        except Exception as error:  # noqa: BLE001 -- reported as a warning; the sweep must never raise
+            target = "for the process groups to exit" if pid is None else f"process group {pid}"
+            warnings.warn(
+                f"termination sweep could not {step} {target}: {error}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +493,14 @@ async def _feed_stdin(proc: asyncio.subprocess.Process, data: str | None) -> Non
             stdin.close()
 
 
+def _stdin_error(stdin_task: asyncio.Task[None]) -> BaseException | None:
+    # Read only a write that has already finished: a descendant can hold stdin
+    # open without reading it, so awaiting the write could outlast the run.
+    if not stdin_task.done() or stdin_task.cancelled():
+        return None
+    return stdin_task.exception()
+
+
 async def _await_normal(
     proc: asyncio.subprocess.Process,
     stdout_task: asyncio.Task[None],
@@ -544,21 +559,33 @@ def _containment_kwargs() -> dict[str, Any]:
         # POSIX rejects ``creationflags`` outright, so only win32 passes it.
         create_suspended = 0x4
         return {"creationflags": create_suspended}
-    return {"start_new_session": True, "preexec_fn": _child_reset_signal_mask}
+    return {"start_new_session": True, "preexec_fn": unblock_termination_signals}
 
 
 def release_contained(pid: int) -> None:
     """Forget a child :func:`spawn_contained` started, and drop its container.
 
-    Called once the child's owner has stopped and reaped it. On win32 dropping
-    the job is the last sweep of the tree, so a descendant that outlived the
-    child does not outlive its owner either.
+    Called once the child's owner has stopped and reaped it. Dropping the
+    container is the last sweep of the tree, so a descendant that outlived the
+    child does not outlive its owner either: on POSIX the group is killed, on
+    win32 the job is closed.
 
     Args:
         pid: The process ID :func:`spawn_contained` returned the child with.
     """
-    _live_process_groups.discard(pid)
-    release_process_group(pid)
+    if sys.platform == "win32":
+        # Losing this process closes the job handle, which ends the tree, so the
+        # sweep need not reach it. Dropping the pid after the release would leave a
+        # window where a sweep finds no job and runs taskkill on a reaped pid.
+        _live_process_groups.discard(pid)
+        release_process_group(pid)
+        return
+    # Nothing kills a POSIX group the sweep no longer lists, so the kill lands
+    # while the pid is still registered.
+    try:
+        release_process_group(pid)
+    finally:
+        _live_process_groups.discard(pid)
 
 
 async def _discard_failed_spawn(proc: asyncio.subprocess.Process) -> None:
@@ -684,9 +711,18 @@ async def spawn_contained(
 
 
 def _spawn_failure(message: str) -> ExecResult:
-    """Build the failed :class:`ExecResult` a spawn error resolves to."""
-    stderr = f"{message}\n"
-    return ExecResult("", stderr, FAILURE_EXIT_CODE, 0, len(stderr.encode()))
+    """Build the failed :class:`ExecResult` a spawn error resolves to.
+
+    The diagnostic is not command output, so it counts toward neither byte
+    count, as :meth:`OutputBuffer.append_failure` leaves them.
+
+    Args:
+        message: The spawn error to report on standard error.
+
+    Returns:
+        A failed result whose standard error holds ``message``.
+    """
+    return ExecResult("", f"{message}\n", FAILURE_EXIT_CODE, 0, 0)
 
 
 async def _settle(
@@ -727,6 +763,10 @@ async def _settle(
             # failure code rather than leaking a negative or missing value.
             returncode = proc.returncode
             if returncode is None or returncode < 0:
+                returncode = FAILURE_EXIT_CODE
+            stdin_error = _stdin_error(stdin_task)
+            if stdin_error is not None:
+                stderr_buf.append_failure(str(stdin_error))
                 returncode = FAILURE_EXIT_CODE
             return _build_result(stdout_buf, stderr_buf, returncode)
 
@@ -800,8 +840,9 @@ async def _run(
     finally:
         try:
             # A run that left _settle by raising may have a reaped shell and a
-            # descendant still running in its group; release_contained below
-            # drops the group from the live set, so nothing would kill it later.
+            # descendant still running in its group. It gets the full teardown,
+            # stop request and grace included, rather than only the bare group
+            # kill release_contained sends below.
             if not settled or proc.returncode is None:
                 await _terminate_and_reap(proc, reap_timeout=_CANCEL_REAP_TIMEOUT_S)
         finally:

@@ -46,6 +46,10 @@ def _is_json_document(outcome: ExecResult) -> bool:
     return isinstance(parsed, dict)
 
 
+# The child runs the interpreter running this one, so it is the same gymrat.
+_GYMRAT_ARGV = (sys.executable, "-m", "gymrat")
+
+
 class ToolHost:
     """Runs gymrat subcommands as child processes and maps results for MCP.
 
@@ -54,8 +58,6 @@ class ToolHost:
         abort: Event that, once set, kills in-flight child runs.
         extra_env: Extra environment variables forwarded to the child
             (e.g. ``GYMRAT_TRACEPARENT``).
-        argv_prefix: Command prefix before the subcommand name. Defaults to
-            ``[sys.executable, "-m", "gymrat"]``; override for testing.
         _exec_fn: Subprocess executor, exposed as a test seam. Defaults to
             :func:`gymrat.exec.exec_argv`.
     """
@@ -66,13 +68,11 @@ class ToolHost:
         root: str,
         abort: asyncio.Event,
         extra_env: Mapping[str, str],
-        argv_prefix: Sequence[str] = (sys.executable, "-m", "gymrat"),
         _exec_fn: _ExecFn = exec_argv,
     ) -> None:
         self._root = root
         self._abort = abort
         self._extra_env = extra_env
-        self._prefix = list(argv_prefix)
         self._exec_fn = _exec_fn
         self._busy = False
 
@@ -112,7 +112,9 @@ class ToolHost:
         if self._busy:
             return _result("a gymrat command is already running", is_error=True)
         self._busy = True
-        argv = [*self._prefix, cmd, *_JSON_FORMAT_ARGS, *args]
+        # The agent reads the child's error text, so it must stay plain. The flag
+        # beats an inherited FORCE_COLOR, which outranks the NO_COLOR set below.
+        argv = [*_GYMRAT_ARGV, "--no-color", cmd, *_JSON_FORMAT_ARGS, *args]
         try:
             # The origin marks the run as one the agent made through a tool, so the
             # child can tell it apart from a command a person typed.

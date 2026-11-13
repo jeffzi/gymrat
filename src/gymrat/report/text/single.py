@@ -27,12 +27,12 @@ from gymrat.report.table.cells import (
     VERDICT_COLUMN_MIN,
     VerdictParts,
     aggregate_label_cell,
+    geomean_count,
     geomean_parts,
     geomean_scope_label,
     geomean_value_style,
     group_metric_cell,
     header_metric_cell,
-    stable_metric_count,
     variant_name_cell,
     verdict_cell,
     verdict_widths,
@@ -43,12 +43,9 @@ from gymrat.report.table.grid import (
     AggregateRows,
     build_cell_dispatcher,
     compute_column_width,
-    is_grouped,
     join_value_cell,
-    metric_column_width,
-    name_cell,
-    plan_body,
     plan_sections,
+    plan_table_skeleton,
     render_body,
     value_widths,
 )
@@ -66,7 +63,7 @@ if TYPE_CHECKING:
     from gymrat.model import GeomeanResult
     from gymrat.report.display import DisplayClass
     from gymrat.report.table.cells import VerdictWidths
-    from gymrat.report.table.grid import BodyLine
+    from gymrat.report.table.grid import TableSkeleton
     from gymrat.report.types import CandidateComparison, ComparisonResult
 
 # The glyph slot a geomean figure fills — a blank, since the row states a mean,
@@ -86,39 +83,33 @@ class _AggregateCell:
     band_style: str | None
 
 
-def geomean_label(n: int) -> str:
-    """The geomean row's label, carrying the count of metrics behind the figure.
+def geomean_label(geomean: GeomeanResult) -> str:
+    """The flat geomean row's label, carrying the count of metrics behind the figure.
 
     A table with one candidate names the count here, which frees its cells of
     everything but the aggregate itself.
 
     Args:
-        n: The count of metrics behind the aggregate figure.
+        geomean: The aggregate the row closes on.
 
     Returns:
         The label with the metric count, or the bare :data:`GEOMEAN_LABEL` when
-        ``n`` is zero.
+        no metric stands behind the figure.
     """
-    return GEOMEAN_LABEL if n == 0 else f"{GEOMEAN_LABEL} ({stable_metric_count(n)})"
-
-
-def geomean_provenance(geomean: GeomeanResult) -> str:
-    """The provenance suffix behind a scope's figure.
-
-    Args:
-        geomean: The scope's aggregate result.
-
-    Returns:
-        ``"(n)"`` when every scope metric stands behind the figure, or
-        ``"(n/m)"`` when exclusions reduced the count.
-    """
-    total = geomean.n + len(geomean.excluded)
-    return f"({geomean.n})" if total == geomean.n else f"({geomean.n}/{total})"
+    return GEOMEAN_LABEL if geomean.n == 0 else f"{GEOMEAN_LABEL} {geomean_count(geomean)}"
 
 
 def scoped_geomean_label(scope: str, geomean: GeomeanResult) -> str:
-    """A sectioned table's aggregate label with the provenance behind its figure."""
-    return f"{geomean_scope_label(scope)} {geomean_provenance(geomean)}"
+    """A sectioned table's aggregate label with the count behind its figure.
+
+    Args:
+        scope: The group or kind the aggregate covers.
+        geomean: The scope's aggregate.
+
+    Returns:
+        ``<scope label> (n/total)``, the count as :func:`geomean_count` phrases it.
+    """
+    return f"{geomean_scope_label(scope)} {geomean_count(geomean)}"
 
 
 def _geomean_cell(
@@ -169,36 +160,41 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
         result.metrics,
         comparison_row_builder(1, result.samples, with_band=True),
     )
-    baseline_fields = value_widths([row.baseline for row in layout.ordered])
-    candidate_fields = value_widths([_side(row).value for row in layout.ordered])
-
-    aggregates = _aggregate_rows(candidate)
-    body: list[BodyLine[ComparisonRow, _AggregateCell]] = plan_body(
-        layout, aggregates, result.config_kinds
+    skeleton = plan_table_skeleton(
+        layout,
+        _aggregate_rows(candidate),
+        result.config_kinds,
+        lambda row: row.baseline,
+        baseline,
     )
-    grouped = is_grouped(layout, body)
+    body = skeleton.body
+    candidate_fields = value_widths([_side(row).value for row in layout.ordered])
 
     aggregate_lines = [line for line in body if isinstance(line, AggregateLine)]
     verdict_fields = _verdict_fields(layout.ordered, [line.cell.parts for line in aggregate_lines])
 
     def metric_cells(row: ComparisonRow) -> _MetricCells:
         return (
-            Text(name_cell(row, grouped=grouped)),
-            Text(join_value_cell(row.baseline, baseline_fields)),
+            Text(skeleton.name_cell(row)),
+            Text(skeleton.value_cell(row)),
             Text(join_value_cell(_side(row).value, candidate_fields)),
             _metric_verdict_cell(row, verdict_fields),
         )
 
-    cells_by_name = {row.name: metric_cells(row) for row in layout.ordered}
+    cells_by_row = {row: metric_cells(row) for row in layout.ordered}
     aggregate_cells = {
-        line.cell: _aggregate_verdict_cell(line.cell, verdict_fields) for line in aggregate_lines
+        line.cell: verdict_cell(
+            line.cell.parts,
+            verdict_fields,
+            glyph_style=line.cell.glyph_style,
+            delta_style=line.cell.delta_style,
+            band_style=line.cell.band_style,
+        )
+        for line in aggregate_lines
     }
     widths = _column_widths(
-        headers, list(cells_by_name.values()), body, list(aggregate_cells.values())
+        headers, list(cells_by_row.values()), skeleton, list(aggregate_cells.values())
     )
-
-    def cells_of(row: ComparisonRow) -> _MetricCells:
-        return cells_by_name[row.name]
 
     to_cells = build_cell_dispatcher(
         header=lambda title: (
@@ -208,7 +204,7 @@ def render_table(result: ComparisonResult, *, color: bool | None) -> list[str]:
             Text.assemble("vs ", variant_name_cell(headers[0])),
         ),
         group=lambda label: (group_metric_cell(label), "", "", ""),
-        metric=cells_of,
+        metric=cells_by_row.__getitem__,
         aggregate=lambda line: (
             aggregate_label_cell(line.label),
             "",
@@ -228,7 +224,7 @@ def _aggregate_rows(
     def line(scope: str | None, aggregates: list[ScopeAggregate]) -> AggregateLine[_AggregateCell]:
         (aggregate,) = aggregates
         geomean = aggregate.geomean
-        label = geomean_label(geomean.n) if scope is None else scoped_geomean_label(scope, geomean)
+        label = geomean_label(geomean) if scope is None else scoped_geomean_label(scope, geomean)
         return AggregateLine(label=label, cell=_geomean_cell(geomean, aggregate.outcomes))
 
     return comparison_aggregate_rows([candidate], line)
@@ -237,23 +233,19 @@ def _aggregate_rows(
 def _column_widths(
     headers: tuple[str, str, str],
     rows: Sequence[_MetricCells],
-    body: Sequence[BodyLine[ComparisonRow, _AggregateCell]],
+    skeleton: TableSkeleton[ComparisonRow, _AggregateCell],
     aggregate_verdicts: Sequence[Text],
 ) -> list[int]:
-    """The four column widths, measured over the rows, headers and aggregates' plain text."""
-
-    def value_width(index: int, header: str) -> int:
-        return compute_column_width(
-            cell_len(header), [row[index].cell_len for row in rows], VALUE_COLUMN_MIN
-        )
-
+    """The four column widths: the skeleton's name and baseline, then the candidate and verdict."""
     verdict_lengths = [row[3].cell_len for row in rows] + [
         verdict.cell_len for verdict in aggregate_verdicts
     ]
     return [
-        metric_column_width(body, [row[0].cell_len for row in rows]),
-        value_width(1, headers[0]),
-        value_width(2, headers[1]),
+        skeleton.metric_width,
+        skeleton.value_width,
+        compute_column_width(
+            cell_len(headers[1]), [row[2].cell_len for row in rows], VALUE_COLUMN_MIN
+        ),
         compute_column_width(cell_len(headers[2]), verdict_lengths, VERDICT_COLUMN_MIN),
     ]
 
@@ -295,15 +287,4 @@ def _metric_verdict_cell(row: ComparisonRow, verdict_fields: VerdictWidths) -> T
         glyph_style=VERDICT_STYLES[outcome],
         delta_style=VERDICT_STYLES[outcome] if quiet else None,
         band_style="dim",
-    )
-
-
-def _aggregate_verdict_cell(cell: _AggregateCell, verdict_fields: VerdictWidths) -> Text:
-    """A geomean row's verdict cell, each field in the style the aggregate chose for it."""
-    return verdict_cell(
-        cell.parts,
-        verdict_fields,
-        glyph_style=cell.glyph_style,
-        delta_style=cell.delta_style,
-        band_style=cell.band_style,
     )

@@ -64,10 +64,6 @@ def within_hang_guard(limit_s: float) -> Generator[None]:
     assert time.monotonic() - started < limit_s, "the fake-clock wait took real time"
 
 
-def _no_sleep_hook() -> None:
-    pass
-
-
 # Clock reads a wait may make between two sleeps. A poll loop reads the clock
 # once or twice per sleep, so a loop that reads it this often has slept on real
 # time between reads and would otherwise spin until the suite's own timeout.
@@ -90,7 +86,7 @@ class WaitClock:
 
     now: float = 0.0
     sleeps: list[float] = dataclasses.field(default_factory=list)
-    on_sleep: Callable[[], None] = _no_sleep_hook
+    on_sleep: Callable[[], None] = lambda: None
     _reads_since_sleep: int = dataclasses.field(default=0, init=False, repr=False)
 
     def monotonic(self) -> float:

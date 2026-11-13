@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from gymrat.config import KindEntry
@@ -18,7 +17,6 @@ from gymrat.verdict import GroupAggregate, KindAggregate
 from tests._pipeline import CLEAN_RESULT
 from tests.report._verdicts import (
     band_metric,
-    band_verdict,
     exact_verdict,
     geomean_of,
     metric_meta,
@@ -35,7 +33,7 @@ if TYPE_CHECKING:
         GeomeanResult,
         MetricUnit,
     )
-    from gymrat.sampling import CleanupResult
+    from gymrat.worktree_sweep import CleanupResult
 
 
 # ---------------------------------------------------------------------------
@@ -176,8 +174,6 @@ def permutation_metric(
     verdict: ApproximateVerdict,
     delta: float,
     baseline_median: float = 100.0,
-    baseline_spread: float = 1.0,
-    p: float = 0.01,
     noise_pct: float = 2.5,
     noise_abs: float = 3.5,
     unit: MetricUnit | None = None,
@@ -191,8 +187,6 @@ def permutation_metric(
         verdict: The verdict the permutation test reached.
         delta: The candidate's delta against the baseline, in percent.
         baseline_median: The baseline's measured value.
-        baseline_spread: The baseline's spread, in percent of its median.
-        p: The permutation test's p-value.
         noise_pct: The noise band, in percent.
         noise_abs: The noise band, in the metric's own unit.
         unit: The metric's unit, or ``None`` for a unitless count.
@@ -205,7 +199,7 @@ def permutation_metric(
     """
     return MetricComparison(
         baseline_median=baseline_median,
-        baseline_spread=baseline_spread,
+        baseline_spread=1.0,
         candidates=(
             CandidateMetric(
                 median=baseline_median * (1 + delta / 100),
@@ -214,7 +208,7 @@ def permutation_metric(
                     verdict=verdict,
                     delta=delta,
                     n=n,
-                    p=p,
+                    p=0.01,
                     noise_pct=noise_pct,
                     noise_abs=noise_abs,
                 ),
@@ -261,30 +255,6 @@ def exact_metric(
     )
 
 
-def undefined_ratio_metric(short_name: str, *, n: int) -> MetricComparison:
-    """A unitless exact metric whose zero baseline leaves its delta undefined.
-
-    Args:
-        short_name: The name the metric displays under.
-        n: The pair count behind the verdict.
-
-    Returns:
-        The metric comparison, its candidate at 120 against a baseline of 0.
-    """
-    return exact_metric(
-        delta=math.nan, n=n, unit=None, baseline_median=0, median=120, short_name=short_name
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class NWayCandidate:
-    """One candidate's permutation outcome, carrying its own measured median."""
-
-    verdict: ApproximateVerdict
-    delta: float
-    median: float
-
-
 def permutation_candidate(
     *, verdict: ApproximateVerdict, delta: float, median: float
 ) -> CandidateMetric:
@@ -303,42 +273,6 @@ def permutation_candidate(
         spread=1.0,
         verdict=permutation_verdict(verdict=verdict, delta=delta, p=0.01, noise_abs=3.5),
     )
-
-
-def detecting_candidate(candidate: CandidateMetric, pct: float) -> CandidateMetric:
-    """``candidate`` with its verdict carrying a ``pct`` detectable change.
-
-    Args:
-        candidate: A candidate judged by an approximate method.
-        pct: The smallest change, in percent, the verdict could have detected.
-
-    Returns:
-        The candidate with the detectable change set on its verdict.
-
-    Raises:
-        AssertionError: ``candidate`` has no verdict or an exact one, which carries no
-            detectable change.
-    """
-    if candidate.verdict is None or candidate.verdict.method == "exact":
-        msg = f"no approximate verdict to carry a detectable change on {candidate!r}"
-        raise AssertionError(msg)
-    return replace(candidate, verdict=replace(candidate.verdict, detectable_pct=pct))
-
-
-def detecting_metric(metric: MetricComparison, pct: float) -> MetricComparison:
-    """``metric`` with every candidate's verdict carrying a ``pct`` detectable change.
-
-    Args:
-        metric: A metric whose candidates are all judged by an approximate method.
-        pct: The smallest change, in percent, each verdict could have detected.
-
-    Returns:
-        The metric with the detectable change set on every candidate's verdict.
-
-    Raises:
-        AssertionError: A candidate has no verdict or an exact one.
-    """
-    return replace(metric, candidates=tuple(detecting_candidate(c, pct) for c in metric.candidates))
 
 
 def shared_baseline_metric(
@@ -361,31 +295,16 @@ def shared_baseline_metric(
     )
 
 
-def n_way_metric(candidates: Sequence[NWayCandidate]) -> MetricComparison:
-    """One metric judged for several candidates against a single shared baseline."""
-    return shared_baseline_metric([
-        permutation_candidate(
-            verdict=candidate.verdict, delta=candidate.delta, median=candidate.median
-        )
-        for candidate in candidates
-    ])
-
-
 def multi_candidate_result(
-    candidate_count: int = 3,
     *,
-    labels: Sequence[str] = ("candidate-a", "candidate-b", "candidate-c"),
+    labels: Sequence[str] = ("candidate-a", "candidate-b"),
     name: str = "decode/time",
 ) -> ComparisonResult:
-    """A multi-candidate comparison with one metric judged per candidate.
+    """A two-candidate comparison with one metric: the first improved, the second regressed.
 
     Args:
-        candidate_count: ``3`` gives the first candidate improved, the second
-            regressed and the third unstable (band method); ``2`` gives the
-            first pair alone.
-        labels: The candidate labels, in order; only the first
-            ``candidate_count`` are used.
-        name: The name of the one metric every candidate is judged on.
+        labels: The two candidate labels, in order.
+        name: The name of the one metric both candidates are judged on.
 
     Returns:
         The comparison result.
@@ -406,23 +325,10 @@ def multi_candidate_result(
             verdict=permutation_verdict(verdict="regressed", delta=4, p=0.002),
         ),
     ]
-    if candidate_count == 3:
-        candidates.append(create_candidate(label=labels[2], kinds=[other_kind(0, 1)]))
-        metric_candidates.append(
-            CandidateMetric(
-                median=150.0,
-                spread=3.0,
-                verdict=band_verdict(
-                    verdict="unstable", delta=50, usable_n=3, noise_pct=30, noise_abs=30
-                ),
-            )
-        )
     return create_comparison_result(
         baseline_label="main",
         candidates=candidates,
-        metrics={
-            name: shared_baseline_metric(metric_candidates, name=name),
-        },
+        metrics={name: shared_baseline_metric(metric_candidates, name=name)},
     )
 
 
@@ -430,7 +336,7 @@ def n_way_kind_metric(
     *,
     kind: str,
     short_name: str,
-    candidates: Sequence[NWayCandidate],
+    candidates: Sequence[CandidateMetric],
     gating: bool = True,
 ) -> MetricComparison:
     """A permutation-judged metric under one kind, judged once per candidate.
@@ -438,13 +344,13 @@ def n_way_kind_metric(
     Args:
         kind: The kind the metric belongs to.
         short_name: The name the metric displays under.
-        candidates: Each candidate's permutation outcome, in candidate order.
+        candidates: Each candidate's slice of the metric, in candidate order.
         gating: Whether the metric counts toward the gated geomean.
 
     Returns:
         The metric comparison.
     """
-    metric = n_way_metric(candidates)
+    metric = shared_baseline_metric(candidates)
     return replace(
         metric,
         meta=replace(metric.meta, kind=kind, short_name=short_name, gating=gating),
@@ -606,8 +512,8 @@ def grouped_comparison() -> ComparisonResult:
                 kind="time",
                 short_name="entity.alive_check",
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-10, median=90),
-                    NWayCandidate(verdict="regressed", delta=4, median=104),
+                    permutation_candidate(verdict="improved", delta=-10, median=90),
+                    permutation_candidate(verdict="regressed", delta=4, median=104),
                 ],
             ),
             "encode#memory": n_way_kind_metric(
@@ -615,8 +521,8 @@ def grouped_comparison() -> ComparisonResult:
                 short_name="encode",
                 gating=False,
                 candidates=[
-                    NWayCandidate(verdict="improved", delta=-7, median=93),
-                    NWayCandidate(verdict="improved", delta=-2, median=98),
+                    permutation_candidate(verdict="improved", delta=-7, median=93),
+                    permutation_candidate(verdict="improved", delta=-2, median=98),
                 ],
             ),
         },

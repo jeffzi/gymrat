@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from gymrat.cli.iterate.progress import IterateRenderer
 from gymrat.cli.iterate.state import IterationFacts
+from gymrat.cli.progress import ProgressReporter, RunShape
 from gymrat.progress_events import PassFinished, PassStarted
 from tests._rich import Clock, sealed_console, track
 
@@ -63,7 +64,6 @@ def report_full_pass(
     duration_s: float,
     target_count: int = 1,
     label: str = "bench",
-    phase: Literal["measure", "confirm"] = "measure",
 ) -> None:
     """Report one pass starting now and finishing ``duration_s`` later on ``clock``.
 
@@ -76,7 +76,6 @@ def report_full_pass(
         duration_s: How long the pass takes, in seconds.
         target_count: Targets sampled per pass.
         label: The target the pass samples.
-        phase: Whether the pass measures or confirms.
     """
     renderer.report(
         pass_started(
@@ -85,7 +84,6 @@ def report_full_pass(
             target_count=target_count,
             label=label,
             at_ms=ms_from_clock(clock),
-            phase=phase,
         )
     )
     clock.tick(duration_s)
@@ -96,7 +94,6 @@ def report_full_pass(
             target_count=target_count,
             label=label,
             at_ms=ms_from_clock(clock),
-            phase=phase,
         )
     )
 
@@ -107,7 +104,6 @@ def iteration_facts(
     session_id: str = "test-session",
     sample_count: int = 5,
     metric_count: int = 3,
-    primary_metric: str = "geomean",
     checks_cmd: str | None = None,
     has_before_hook: bool = False,
     has_after_hook: bool = False,
@@ -119,20 +115,20 @@ def iteration_facts(
         session_id: The session identifier shown.
         sample_count: Samples per pass.
         metric_count: Metrics the bench reports.
-        primary_metric: The metric the verdict ranks by.
         checks_cmd: The checks command, or ``None`` when checks are off.
         has_before_hook: Whether a before hook runs.
         has_after_hook: Whether an after hook runs.
 
     Returns:
-        The facts, with every field not given left at its default.
+        The facts, with every field not given left at its default and ``geomean``
+        as the primary metric.
     """
     return IterationFacts(
         seq=seq,
         session_id=session_id,
         sample_count=sample_count,
         metric_count=metric_count,
-        primary_metric=primary_metric,
+        primary_metric="geomean",
         checks_cmd=checks_cmd,
         has_before_hook=has_before_hook,
         has_after_hook=has_after_hook,
@@ -142,45 +138,31 @@ def iteration_facts(
 def iterate_renderer(
     mode: Literal["live", "plain"],
     *,
-    console: Console | None = None,
-    width: int = 80,
     height: int = 24,
     seq: int = 1,
     session_id: str = "test-session",
     sample_count: int = 5,
     metric_count: int = 3,
-    primary_metric: str = "geomean",
     verbose: bool = False,
-    checks_cmd: str | None = None,
-    has_before_hook: bool = False,
-    has_after_hook: bool = False,
 ) -> tuple[Console, Clock[float], IterateRenderer]:
-    """Build an iterate renderer on a sealed console driven by a hand-advanced clock.
+    """Build an iterate renderer on a sealed 80-column console driven by a hand-advanced clock.
 
     The renderer is tracked, so the CLI tests' autouse teardown stops it.
 
     Args:
         mode: ``"live"`` for a rich live checklist, ``"plain"`` for milestone lines.
-        console: The console to render to; a sealed ``width`` x ``height``
-            console pinned to the clock when ``None``.
-        width: Columns of the console built when ``console`` is ``None``.
-        height: Rows of the console built when ``console`` is ``None``.
+        height: Rows of the console.
         seq: The iteration number shown.
         session_id: The session identifier shown.
         sample_count: Samples per pass.
         metric_count: Metrics the bench reports.
-        primary_metric: The metric the verdict ranks by.
         verbose: Whether the renderer shows its verbose detail.
-        checks_cmd: The checks command, or ``None`` when checks are off.
-        has_before_hook: Whether a before hook runs.
-        has_after_hook: Whether an after hook runs.
 
     Returns:
         The console, the clock, and the renderer.
     """
     clock = Clock(0.0)
-    if console is None:
-        console = sealed_console(width=width, height=height, get_time=clock)
+    console = sealed_console(width=80, height=height, get_time=clock)
     renderer = IterateRenderer(
         mode=mode,
         console=console,
@@ -189,12 +171,52 @@ def iterate_renderer(
             session_id=session_id,
             sample_count=sample_count,
             metric_count=metric_count,
-            primary_metric=primary_metric,
-            checks_cmd=checks_cmd,
-            has_before_hook=has_before_hook,
-            has_after_hook=has_after_hook,
         ),
         verbose=verbose,
         clock=clock,
     )
     return console, clock, track(renderer)
+
+
+def progress_reporter(
+    mode: Literal["live", "plain"],
+    *,
+    console: Console | None = None,
+    height: int = 24,
+    target_count: int = 1,
+    sample_count: int = 3,
+    command: str | None = None,
+    target_labels: tuple[str, ...] = (),
+) -> tuple[Console, Clock[float], ProgressReporter]:
+    """Build a measure/compare progress reporter driven by a hand-advanced clock.
+
+    The reporter is tracked, so the CLI tests' autouse teardown stops it.
+
+    Args:
+        mode: ``"live"`` for a rich live display, ``"plain"`` for milestone lines.
+        console: The console to render to; a sealed 80-column console on the
+            reporter's clock when omitted.
+        height: Rows of the console built when ``console`` is omitted.
+        target_count: Targets sampled per pass.
+        sample_count: Samples per target.
+        command: The command named in the display, or ``None``.
+        target_labels: The labels of the targets, in order.
+
+    Returns:
+        The console, the clock, and the reporter.
+    """
+    clock = Clock(0.0)
+    if console is None:
+        console = sealed_console(width=80, height=height, get_time=clock)
+    reporter = ProgressReporter(
+        mode=mode,
+        console=console,
+        shape=RunShape(
+            target_count=target_count,
+            sample_count=sample_count,
+            command=command,
+            target_labels=target_labels,
+        ),
+        clock=clock,
+    )
+    return console, clock, track(reporter)

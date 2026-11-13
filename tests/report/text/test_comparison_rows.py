@@ -1,35 +1,38 @@
-"""Tests for reading a candidate's geomeans back out and pairing them with each scope's outcomes."""
+"""Tests for a verdict's shown parts, a candidate's geomeans, and each scope's outcomes."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
 
+from gymrat.errors import GymratError
 from gymrat.report.table.grid import AggregateLine
 from gymrat.report.text.comparison_rows import (
-    NO_AGGREGATE,
     ComparisonRow,
     ScopeAggregate,
     comparison_aggregate_rows,
     comparison_row_builder,
     group_geomean_of,
     kind_geomean_of,
+    shown_verdict,
 )
 from tests.report._comparisons import (
-    NWayCandidate,
     create_candidate,
     gating_kind,
+    informational_kind,
     memory_kind,
     n_way_kind_metric,
+    permutation_candidate,
     time_kind,
 )
-from tests.report._verdicts import geomean_of
+from tests.report._verdicts import geomean_of, permutation_verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gymrat.model import GeomeanResult
+    from gymrat.model import PermutationVerdict
     from gymrat.report.table.grid import AggregateRows
 
 # ---------------------------------------------------------------------------
@@ -37,39 +40,87 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def test_kind_geomean_of_when_kind_reported_does_return_its_geomean():
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    geomean = kind_geomean_of(candidate, "memory")
+
+    assert geomean == memory_kind().geomean
+
+
+def test_kind_geomean_of_when_kind_unreported_does_raise_an_internal_error_naming_it():
+    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+
+    with pytest.raises(Exception, match="cpu") as exc_info:
+        kind_geomean_of(candidate, "cpu")
+
+    assert not isinstance(exc_info.value, GymratError)
+
+
 @pytest.mark.parametrize(
-    ("kind", "expected"),
+    ("kind", "group"),
     [
-        pytest.param("memory", memory_kind().geomean, id="reported-kind"),
-        pytest.param("cpu", NO_AGGREGATE, id="unreported-kind"),
+        pytest.param("time", "render", id="unreported-group"),
+        pytest.param("cpu", "entity", id="unreported-kind"),
     ],
 )
-def test_kind_geomean_of_when_looking_up_a_kind_does_return_its_geomean_or_no_aggregate(
-    kind: str, expected: GeomeanResult
+def test_group_geomean_of_when_group_unreported_does_raise_an_internal_error_naming_kind_and_group(
+    kind: str, group: str
 ):
     candidate = create_candidate(kinds=[time_kind(), memory_kind()])
 
-    geomean = kind_geomean_of(candidate, kind)
+    with pytest.raises(Exception, match=group) as exc_info:
+        group_geomean_of(candidate, kind, group)
 
-    assert geomean == expected
+    assert kind in str(exc_info.value)
+    assert not isinstance(exc_info.value, GymratError)
+
+
+# ---------------------------------------------------------------------------
+# shown_verdict — which rows show a noise band and a detectable change
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("kind", "group", "expected"),
+    ("verdict", "with_band", "shows_band"),
     [
-        pytest.param("time", "entity", time_kind().groups[0].geomean, id="reported-group"),
-        pytest.param("time", "render", NO_AGGREGATE, id="unreported-group"),
-        pytest.param("cpu", "entity", NO_AGGREGATE, id="unreported-kind"),
+        pytest.param(permutation_verdict(verdict="no-signal"), True, True, id="within-noise"),
+        pytest.param(permutation_verdict(verdict="improved"), True, True, id="improved"),
+        pytest.param(permutation_verdict(verdict="unstable"), True, False, id="unstable"),
+        pytest.param(permutation_verdict(n=3), True, False, id="inconclusive"),
+        pytest.param(permutation_verdict(verdict="no-signal"), False, False, id="without-band"),
     ],
 )
-def test_group_geomean_of_when_looking_up_a_group_does_return_its_geomean_or_no_aggregate(
-    kind: str, group: str, expected: GeomeanResult
+def test_shown_verdict_when_band_requested_does_show_it_on_stable_conclusive_rows(
+    verdict: PermutationVerdict, with_band: bool, shows_band: bool
 ):
-    candidate = create_candidate(kinds=[time_kind(), memory_kind()])
+    detecting = replace(verdict, detectable_pct=2.1)
 
-    geomean = group_geomean_of(candidate, kind, group)
+    shown = shown_verdict(detecting, 10, with_band=with_band)
 
-    assert geomean == expected
+    assert shown is not None
+    assert (shown.parts.band != "") is shows_band
+
+
+@pytest.mark.parametrize(
+    ("verdict", "with_band", "detects"),
+    [
+        pytest.param(permutation_verdict(verdict="no-signal"), True, "2.1%", id="within-noise"),
+        pytest.param(permutation_verdict(verdict="improved"), True, "", id="improved"),
+        pytest.param(permutation_verdict(verdict="unstable"), True, "", id="unstable"),
+        pytest.param(permutation_verdict(n=3), True, "", id="inconclusive"),
+        pytest.param(permutation_verdict(verdict="no-signal"), False, "", id="without-band"),
+    ],
+)
+def test_shown_verdict_when_verdict_carries_a_detectable_change_does_state_it_only_on_banded_within_noise_rows(
+    verdict: PermutationVerdict, with_band: bool, detects: str
+):
+    detecting = replace(verdict, detectable_pct=2.1)
+
+    shown = shown_verdict(detecting, 10, with_band=with_band)
+
+    assert shown is not None
+    assert shown.parts.detects == detects
 
 
 # ---------------------------------------------------------------------------
@@ -78,14 +129,26 @@ def test_group_geomean_of_when_looking_up_a_group_does_return_its_geomean_or_no_
 
 type _Recorded = tuple[str | None, list[ScopeAggregate]]
 
+# Each kind's gated geomean differs from its whole-kind geomean, so a scope that
+# read the wrong one would show.
 _CANDIDATES = (
     create_candidate(
         label="candidate-a",
-        kinds=[gating_kind("time", geomean_of(-9, 2), {"entity": geomean_of(-8, 1)})],
+        kinds=[
+            replace(
+                gating_kind("time", geomean_of(-9, 2), {"entity": geomean_of(-8, 1)}),
+                gated_geomean=geomean_of(-7, 1),
+            )
+        ],
     ),
     create_candidate(
         label="candidate-b",
-        kinds=[gating_kind("time", geomean_of(-12, 2), {"entity": geomean_of(-11, 1)})],
+        kinds=[
+            replace(
+                gating_kind("time", geomean_of(-12, 2), {"entity": geomean_of(-11, 1)}),
+                gated_geomean=geomean_of(-10, 1),
+            )
+        ],
     ),
 )
 
@@ -96,8 +159,8 @@ def _rows() -> list[ComparisonRow]:
         kind="time",
         short_name="entity.spawn",
         candidates=[
-            NWayCandidate(verdict="no-signal", delta=-9, median=91),
-            NWayCandidate(verdict="improved", delta=-12, median=88),
+            permutation_candidate(verdict="no-signal", delta=-9, median=91),
+            permutation_candidate(verdict="improved", delta=-12, median=88),
         ],
     )
     informational = n_way_kind_metric(
@@ -105,8 +168,8 @@ def _rows() -> list[ComparisonRow]:
         short_name="encode",
         gating=False,
         candidates=[
-            NWayCandidate(verdict="improved", delta=-2, median=98),
-            NWayCandidate(verdict="regressed", delta=3, median=103),
+            permutation_candidate(verdict="improved", delta=-2, median=98),
+            permutation_candidate(verdict="regressed", delta=3, median=103),
         ],
     )
     return [
@@ -167,8 +230,8 @@ def _flat_line(
             (
                 None,
                 [
-                    ScopeAggregate(geomean_of(-9, 2), ["within-noise"]),
-                    ScopeAggregate(geomean_of(-12, 2), ["improved"]),
+                    ScopeAggregate(geomean_of(-7, 1), ["within-noise"]),
+                    ScopeAggregate(geomean_of(-10, 1), ["improved"]),
                 ],
             ),
             id="flat-reads-the-gated-geomean-over-gating-rows-only",
@@ -186,3 +249,46 @@ def test_comparison_aggregate_rows_when_a_scope_closes_does_pair_each_candidate_
     line = build_line(rows, _rows())
 
     assert line.cell == expected
+
+
+_INFORMATIONAL_CANDIDATES = (
+    create_candidate(label="candidate-a", kinds=[informational_kind("time", geomean_of(-5, 2))]),
+    create_candidate(label="candidate-b", kinds=[informational_kind("time", geomean_of(4, 2))]),
+)
+
+
+def _informational_rows() -> list[ComparisonRow]:
+    build = comparison_row_builder(len(_INFORMATIONAL_CANDIDATES), 10, with_band=True)
+    warmup = n_way_kind_metric(
+        kind="time",
+        short_name="warmup",
+        gating=False,
+        candidates=[
+            permutation_candidate(verdict="no-signal", delta=-1, median=99),
+            permutation_candidate(verdict="improved", delta=-6, median=94),
+        ],
+    )
+    encode = n_way_kind_metric(
+        kind="time",
+        short_name="encode",
+        gating=False,
+        candidates=[
+            permutation_candidate(verdict="improved", delta=-9, median=91),
+            permutation_candidate(verdict="regressed", delta=14, median=114),
+        ],
+    )
+    return [build("warmup#time", None, warmup), build("encode#time", None, encode)]
+
+
+def test_comparison_aggregate_rows_when_flat_kind_gates_nothing_does_close_on_its_kind_geomean_over_every_row():
+    rows = comparison_aggregate_rows(_INFORMATIONAL_CANDIDATES, _record)
+
+    line = rows.flat(_informational_rows())
+
+    assert line.cell == (
+        None,
+        [
+            ScopeAggregate(geomean_of(-5, 2), ["within-noise", "improved"]),
+            ScopeAggregate(geomean_of(4, 2), ["improved", "regressed"]),
+        ],
+    )

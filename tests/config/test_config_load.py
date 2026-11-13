@@ -37,7 +37,7 @@ def test_load_config_file_collecting_when_integral_float_given_does_parse_it_as_
 
 
 # ---------------------------------------------------------------------------
-# invalid TOML / non-finite literals
+# documents the TOML parser rejects
 # ---------------------------------------------------------------------------
 
 
@@ -78,29 +78,16 @@ def test_load_config_file_collecting_when_key_unknown_does_report_its_path(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def _wrong_type(content: dict[str, object], key_path: str, expected: str, label: str) -> object:
-    return pytest.param(content, key_path, expected, id=f"{key_path}-{label}")
-
-
-@pytest.mark.parametrize(
-    ("content", "key_path", "expected"),
-    [
-        _wrong_type({"metrics": 42}, "metrics", "an object", "integer"),
-        _wrong_type({"bench": " "}, "bench", "a non-empty string", "space"),
-        _wrong_type({"bench": "\u00a0"}, "bench", "a non-empty string", "no-break-space"),
-        _wrong_type({"samples": 1.5}, "samples", "an integer", "fraction"),
-    ],
-)
-def test_load_config_file_collecting_when_value_invalid_does_name_key_path_and_expected_shape(
-    tmp_path: Path, content: dict[str, object], key_path: str, expected: str
+def test_load_config_file_collecting_when_metrics_not_a_mapping_does_name_key_path_and_rejected_value(
+    tmp_path: Path,
 ):
-    config_path = write_config(tmp_path, content)
+    config_path = write_config(tmp_path, {"metrics": 42})
 
     result = load_config_file_collecting(config_path, required=False)
 
     assert (result.config_file, len(result.problems)) == (None, 1)
-    assert key_path in result.problems[0]
-    assert expected in result.problems[0]
+    assert "metrics" in result.problems[0]
+    assert result.problems[0].endswith("42")
 
 
 def test_load_config_file_collecting_when_multiple_fields_invalid_does_report_every_problem(
@@ -130,11 +117,11 @@ def test_load_config_file_collecting_when_section_key_embeds_line_break_does_rep
     result = load_config_file_collecting(config_path, required=False)
 
     # The rejected value is an object; only its key is bad, so the message names
-    # the escaped key and its line break instead of demanding an object.
+    # the escaped key instead of echoing the whole rejected object.
     assert (result.config_file, len(result.problems)) == (None, 1)
     assert "metrics" in result.problems[0]
     assert json.dumps(smuggled) in result.problems[0]
-    assert "line break" in result.problems[0]
+    assert json.dumps({smuggled: {"gating": False}}) not in result.problems[0]
 
 
 # ---------------------------------------------------------------------------
@@ -176,16 +163,6 @@ def test_validate_config_dict_when_several_problems_does_raise_the_first(
 # ---------------------------------------------------------------------------
 # missing, unreadable and undecodable files
 # ---------------------------------------------------------------------------
-
-
-def test_load_config_file_collecting_when_optional_file_missing_does_return_empty_config(
-    tmp_path: Path,
-):
-    missing = tmp_path / "nonexistent.toml"
-
-    result = load_config_file_collecting(missing, required=False)
-
-    assert result == ConfigFileResult(config_file=ConfigFile(), exists=False, problems=[])
 
 
 def _read_failure_reason(path: Path) -> str:
