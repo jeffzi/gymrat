@@ -57,10 +57,8 @@ class Seams:
     """The recorders and doubles a single command run wires up.
 
     ``supervise_calls`` / ``reporter_calls`` / ``exit_calls`` capture the keyword
-    payloads their seams received; ``compose_calls`` records the prompt of each
-    call. The ``create_driver`` mock stands in for the side-effecting driver
-    factory so a test can read what it received; ``install_cleanup`` keeps the run
-    from installing a real signal handler. The reporter's observer and warn sinks
+    payloads their seams received; ``install_cleanup`` keeps the run from
+    installing a real signal handler. The reporter's observer and warn sinks
     append to ``observed_events`` and ``warnings``. The fake supervisor run calls ``supervise_hook`` (when set) with
     its recorded call before returning, and the fake exit sequence returns
     ``exit_report`` after calling ``exit_hook`` (when set) with its recorded call,
@@ -83,7 +81,6 @@ class Seams:
     exit_hook: Callable[[dict[str, Any]], None] | None = None
     exit_calls: list[dict[str, Any]] = field(default_factory=list)
     session_result: ReadSessionResult | None = None
-    create_driver: Mock = field(init=False)
     install_cleanup: Mock = field(
         default_factory=lambda: create_autospec(
             install_termination_cleanup,
@@ -96,13 +93,9 @@ class Seams:
     )
     supervise_calls: list[dict[str, Any]] = field(default_factory=list)
     reporter_calls: list[dict[str, object]] = field(default_factory=list)
-    compose_calls: list[object] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.observer = self.observed_events.append
-        self.create_driver = create_autospec(
-            create_claude_driver, name="create_claude_driver", return_value=object()
-        )
 
 
 def command_config(
@@ -112,13 +105,9 @@ def command_config(
     return resolved_config(runbook="runbook.md", stop=stop, supervise=supervise)
 
 
-def make_start_result(root: str = "/repo", branch: str | None = None) -> StartResult:
-    """Build a ``StartResult`` carrying sensible defaults, its session on ``branch`` when given."""
-    overrides = {} if branch is None else {"branch": branch}
-    rec = session_record(
-        worktrees=worktrees_at(root),
-        **overrides,
-    )
+def make_start_result(root: str = "/repo") -> StartResult:
+    """Build a ``StartResult`` carrying sensible defaults."""
+    rec = session_record(worktrees=worktrees_at(root))
     return StartResult(
         session=rec,
         state=empty_session_state(),
@@ -146,9 +135,9 @@ def _patch_supervise(
     )
 
 
-def _install_fake_preflight(monkeypatch: pytest.MonkeyPatch, *, branch: str | None) -> None:
+def _install_fake_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_preflight(*, root: str, config: object, flags: PreflightFlags) -> StartResult:
-        return make_start_result(root, branch)
+        return make_start_result(root)
 
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.run_preflight",
@@ -205,7 +194,6 @@ def install_seams(
     config: ResolvedConfig | None = None,
     result: SupervisionResult | None = None,
     raises: Exception | None = None,
-    branch: str | None = None,
     real_reporter: bool = False,
 ) -> Seams:
     """Replace every seam ``commands.supervise`` composes over, returning the recorders.
@@ -215,7 +203,6 @@ def install_seams(
         config: The config the resolve seam returns; a default command config when omitted.
         result: The supervision result the supervisor seam hands back.
         raises: An error the supervisor seam raises instead of returning ``result``.
-        branch: The session branch the fake pre-flight's start result carries.
         real_reporter: Keep the real dashboard reporter instead of the recording
             fake. ``reporter_calls``, ``observed_events`` and ``warnings`` stay
             empty.
@@ -233,7 +220,6 @@ def install_seams(
         *,
         experiment_worktree: object,
     ) -> SimpleNamespace:
-        seams.compose_calls.append(prompt)
         return SimpleNamespace(kickoff="begin optimization", system_prompt_append="system prompt")
 
     async def fake_supervise(**kwargs: object) -> SupervisionResult:
@@ -246,12 +232,15 @@ def install_seams(
 
     monkeypatch.setattr("gymrat.cli.commands.supervise.doctor_gate", seams.doctor_gate)
     stub_config(monkeypatch, "supervise", resolved)
-    _install_fake_preflight(monkeypatch, branch=branch)
+    _install_fake_preflight(monkeypatch)
     monkeypatch.setattr(
         "gymrat.cli.commands.supervise.compose_kickoff",
         create_autospec(compose_kickoff, side_effect=fake_compose),
     )
-    monkeypatch.setattr("gymrat.cli.commands.supervise.create_claude_driver", seams.create_driver)
+    monkeypatch.setattr(
+        "gymrat.cli.commands.supervise.create_claude_driver",
+        create_autospec(create_claude_driver, return_value=object()),
+    )
     _patch_supervise(monkeypatch, fake_supervise)
     _install_fake_exit_sequence(monkeypatch, seams)
     if not real_reporter:

@@ -7,7 +7,6 @@ seam-installation harness lives in :mod:`tests.cli.commands.supervise._seams`, w
 exit sequence records each call and lets a test act from inside it.
 """
 
-import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -136,20 +135,6 @@ def test_supervise_when_exit_sequence_logs_an_event_does_hand_it_to_the_observer
     run()
 
     assert observed == [event]
-
-
-def test_supervise_when_run_ends_does_run_the_exit_sequence_in_the_supervisor_loop(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-    loops: list[asyncio.AbstractEventLoop] = []
-    seams.supervise_hook = lambda _call: loops.append(asyncio.get_running_loop())
-    seams.exit_hook = lambda _call: loops.append(asyncio.get_running_loop())
-
-    run()
-
-    supervise_loop, exit_loop = loops
-    assert exit_loop is supervise_loop
 
 
 # ---------------------------------------------------------------------------

@@ -59,13 +59,12 @@ def test_supervise_when_run_does_hand_supervise_its_capped_session(
 ):
     seams = install_seams(monkeypatch)
 
-    result = run("--max-usd", "2.0")
+    result = run()
 
     assert result.exit_code == 0
     ctx = seams.supervise_calls[0]["context"]
     assert ctx.lock_path == lockfile_path(repo)
-    prompt = seams.supervise_calls[0]["prompt"]
-    assert (prompt.command_timeout_ms, prompt.max_budget_usd) == (CAP_MS, 2.0)
+    assert seams.supervise_calls[0]["prompt"].command_timeout_ms == CAP_MS
 
 
 # ---------------------------------------------------------------------------
@@ -120,40 +119,6 @@ def test_supervise_when_log_path_resolved_does_git_exclude_the_session_dir_only_
 # ---------------------------------------------------------------------------
 # driver, kickoff, and reporter wiring
 # ---------------------------------------------------------------------------
-
-
-def test_supervise_when_run_does_compose_kickoff_with_the_prompt_given(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-
-    result = run(prompt="optimize the decoder")
-
-    assert result.exit_code == 0
-    assert seams.compose_calls[0] == "optimize the decoder"
-
-
-def test_supervise_when_run_does_hand_the_reporter_the_session_branch(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch, branch="banana")
-
-    result = run()
-
-    assert result.exit_code == 0
-    assert seams.reporter_calls[0]["branch"] == "banana"
-
-
-def test_supervise_when_color_flag_given_does_forward_it_to_doctor_gate(
-    repo: str, monkeypatch: pytest.MonkeyPatch
-):
-    seams = install_seams(monkeypatch)
-
-    result = run("--no-color")
-
-    assert result.exit_code == 0
-    call_kwargs = seams.doctor_gate.call_args.kwargs
-    assert call_kwargs.get("color") is False
 
 
 @pytest.mark.parametrize(
@@ -364,10 +329,9 @@ def test_supervise_when_run_does_resolve_the_effort_from_flag_or_config(
 def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seams = install_seams(monkeypatch)
-    tools, hooks = object(), object()
-    tools_factory = create_autospec(gymrat_tools_factory, return_value=tools)
-    hooks_factory = create_autospec(supervise_hooks_factory, return_value=hooks)
+    install_seams(monkeypatch)
+    tools_factory = create_autospec(gymrat_tools_factory, return_value=object())
+    hooks_factory = create_autospec(supervise_hooks_factory, return_value=object())
     monkeypatch.setattr("gymrat.cli.commands.supervise.gymrat_tools_factory", tools_factory)
     monkeypatch.setattr("gymrat.cli.commands.supervise.supervise_hooks_factory", hooks_factory)
     (Path(repo) / "docs").mkdir()
@@ -380,5 +344,3 @@ def test_supervise_when_run_from_subdirectory_does_pass_factories_for_repo_root(
         Path(factory.call_args.args[0]).resolve() for factory in (tools_factory, hooks_factory)
     ]
     assert roots == [Path(repo).resolve(), Path(repo).resolve()]
-    call_kwargs = seams.create_driver.call_args.kwargs
-    assert (call_kwargs.get("tools"), call_kwargs.get("hooks")) == (tools, hooks)

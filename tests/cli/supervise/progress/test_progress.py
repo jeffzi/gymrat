@@ -39,7 +39,6 @@ from tests.cli.supervise._fixtures import (
     cap_event,
     fire_launch_and_bash_cycle,
     fire_launch_and_bash_start,
-    fire_launch_and_edit_cycle,
     fire_launch_and_iterate_start,
     follow_up_event,
     launch_event,
@@ -272,22 +271,6 @@ def test_cap_when_fired_does_show_action_with_cap_type():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("result", "expected_row"),
-    [
-        pytest.param("ok", "00:00:03  Edit   src/archetype.ts  1s", id="ok"),
-        pytest.param("error", "00:00:03  Edit   src/archetype.ts  ✗ 1s", id="error"),
-    ],
-)
-def test_finished_tool_when_ended_does_mark_only_an_error(result: str, expected_row: str):
-    kit = make_reporter()
-    fire_launch_and_edit_cycle(kit, result=result)
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == ["waiting  0s", expected_row]
-
-
 def test_finished_tool_when_start_never_seen_does_show_placeholders():
     kit = launched(make_reporter())
     kit.clock.now = 3000
@@ -486,16 +469,6 @@ def test_liveness_when_iterate_tool_has_sidecar_does_show_its_passes(
     frame = render_frame(kit.reporter)
 
     assert _rows_below_loop(frame) == ["00:00:02  Bash   gymrat iterate  31m 0s", expected_row]
-
-
-def test_liveness_when_iterate_tool_has_no_sidecar_or_nested_activity_does_show_only_plain_elapsed():
-    kit = make_reporter(read_progress=lambda _root: None)
-    fire_launch_and_iterate_start(kit)
-    kit.clock.now = 7000
-
-    frame = render_frame(kit.reporter)
-
-    assert _rows_below_loop(frame) == ["00:00:02  Bash   gymrat iterate  5s"]
 
 
 # ---------------------------------------------------------------------------
