@@ -63,7 +63,7 @@ def _undecodable_file(package_root: Path) -> tuple[Traversable, Traversable]:
 def _corrupt_archive(_package_root: Path) -> tuple[Traversable, Traversable]:
     """Build a package root inside an archive that fails on read.
 
-    Every traversal from the root, by ``joinpath`` or by ``/``, lands on the one resource.
+    A ``joinpath`` from the root lands on the one resource.
 
     Args:
         _package_root: Unused; an archive has no directory on disk.
@@ -73,7 +73,6 @@ def _corrupt_archive(_package_root: Path) -> tuple[Traversable, Traversable]:
     """
     resource = create_autospec(Traversable, instance=True)
     resource.joinpath.return_value = resource
-    resource.__truediv__.return_value = resource
     resource.read_text.side_effect = zipfile.BadZipFile("Bad magic number")
     return resource, resource
 

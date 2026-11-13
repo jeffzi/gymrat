@@ -161,7 +161,6 @@ async def test_with_repo_lock_when_outside_repo_does_run_body_without_a_lock(
 async def test_with_repo_lock_when_git_fails_otherwise_does_raise_without_running_body(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
-    seeded_session(repo)
     refuse_git_lookups(monkeypatch)
     called: list[bool] = []
 
@@ -341,8 +340,9 @@ async def test_with_repo_lock_when_append_fails_does_keep_the_body_result_with_a
     seeded_session(repo)
     await asyncio.to_thread(Path(session_jsonl_path(repo_root())).chmod, 0o400)
 
-    await with_repo_lock("measure", _result_body)
+    result = await with_repo_lock("measure", _result_body)
 
+    assert result == "result"
     assert os.strerror(errno.EACCES) in capsys.readouterr().err
 
 
@@ -381,8 +381,9 @@ async def test_with_repo_lock_when_session_log_size_unreadable_does_keep_the_bod
         return "result"
 
     with _searchable_on_exit(directory):
-        await with_repo_lock("measure", body)
+        result = await with_repo_lock("measure", body)
 
+    assert result == "result"
     warnings = capsys.readouterr().err.splitlines()
     assert len(warnings) == 1
     assert os.strerror(errno.EACCES) in warnings[0]
@@ -482,16 +483,12 @@ async def test_with_repo_lock_when_tracing_enabled_without_traceparent_does_pare
     assert span.parent.span_id == span_id_of(header.session_id, "session")
 
 
-def _seeded_session_with_gaps(
-    root: str, gap_before_header: str, gap_after_header: str, gap_after_hook: str
-) -> SessionRecord:
-    """Write a session header and a hook record, with raw gap text before, between and after."""
+def _seeded_session_with_blank_lines(root: str) -> SessionRecord:
+    """Write a session header and a hook record with two blank lines between them."""
     header = session_record()
-    append_raw(session_jsonl_path(root), gap_before_header.encode())
     append_records(root, header)
-    append_raw(session_jsonl_path(root), gap_after_header.encode())
+    append_raw(session_jsonl_path(root), b"\n\n")
     append_records(root, hook_record())
-    append_raw(session_jsonl_path(root), gap_after_hook.encode())
     return header
 
 
@@ -501,20 +498,10 @@ async def _iterate_body(trace: CommandTrace) -> str:
     return "ok"
 
 
-#: Blank text around the pre-body records, as (before the header, after the header,
-#: after the hook record).
-_PRE_BODY_GAPS = [
-    pytest.param("", "\n\n", "", id="blank-lines-between-records"),
-]
-
-
-@pytest.mark.parametrize(
-    ("gap_before_header", "gap_after_header", "gap_after_hook"), _PRE_BODY_GAPS
-)
 async def test_with_repo_lock_when_log_holds_blank_lines_does_key_the_span_on_record_position_with_only_body_events(
-    repo: str, gap_before_header: str, gap_after_header: str, gap_after_hook: str
+    repo: str,
 ):
-    header = _seeded_session_with_gaps(repo, gap_before_header, gap_after_header, gap_after_hook)
+    header = _seeded_session_with_blank_lines(repo)
     appended_events = [
         record_event(iteration_record())[0],
         record_event(baseline_record())[0],
@@ -573,7 +560,7 @@ def _unreadable_once(monkeypatch: pytest.MonkeyPatch, jsonl_path: Path) -> None:
     )
 
 
-async def test_with_repo_lock_when_session_log_unreadable_before_body_does_warn_and_emit_no_command_span(
+async def test_with_repo_lock_when_session_log_unreadable_before_body_does_warn_once_naming_the_error(
     repo: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -581,13 +568,25 @@ async def test_with_repo_lock_when_session_log_unreadable_before_body_does_warn_
     header = seeded_session(repo)
     _unreadable_once(monkeypatch, Path(session_jsonl_path(repo_root())))
 
-    with memory_tracing(header.session_id) as exporter:
+    with memory_tracing(header.session_id):
         await with_repo_lock("measure", ok_body)
 
     warnings = capsys.readouterr().err.splitlines()
-    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
     assert len(warnings) == 1
     assert os.strerror(errno.EACCES) in warnings[0]
+
+
+async def test_with_repo_lock_when_session_log_unreadable_before_body_does_emit_no_command_span(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    header = seeded_session(repo)
+    _unreadable_once(monkeypatch, Path(session_jsonl_path(repo_root())))
+
+    with memory_tracing(header.session_id) as exporter:
+        await with_repo_lock("measure", ok_body)
+
+    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
 
 
 async def test_with_repo_lock_when_session_log_unparsable_after_body_does_keep_the_body_error_with_a_warning(
@@ -619,8 +618,9 @@ async def test_with_repo_lock_when_session_log_unparsable_before_body_does_keep_
     garbage_at = f"{session_jsonl_path(repo_root())}:2"
 
     with memory_tracing(header.session_id):
-        await with_repo_lock("iterate", _iterate_body)
+        result = await with_repo_lock("iterate", _iterate_body)
 
+    assert result == "ok"
     warnings = capsys.readouterr().err.splitlines()
     assert len(warnings) == 1
     assert garbage_at in warnings[0]

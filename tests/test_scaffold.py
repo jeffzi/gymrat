@@ -91,20 +91,20 @@ _PLANTED = {
 
 
 @pytest.mark.parametrize(
-    ("planted", "bench", "statuses"),
+    ("planted", "statuses"),
     [
-        pytest.param(("gymrat.toml",), None, ("exists", "created", "created"), id="config"),
-        pytest.param(tuple(_PLANTED), None, ("exists", "exists", "exists"), id="every-artifact"),
+        pytest.param(("gymrat.toml",), ("exists", "created", "created"), id="config"),
+        pytest.param(tuple(_PLANTED), ("exists", "exists", "exists"), id="every-artifact"),
     ],
 )
 def test_scaffold_when_artifacts_already_exist_does_keep_them(
-    tmp_path: Path, planted: tuple[str, ...], bench: str | None, statuses: tuple[str, str, str]
+    tmp_path: Path, planted: tuple[str, ...], statuses: tuple[str, str, str]
 ):
     for relative in planted:
         (tmp_path / relative).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / relative).write_text(_PLANTED[relative], encoding="utf-8")
 
-    result = scaffold(str(tmp_path), ScaffoldRequest(bench=bench, install_skill=True))
+    result = scaffold(str(tmp_path), ScaffoldRequest(bench=None, install_skill=True))
 
     assert (result.config.status, result.runbook.status, result.skill.status) == statuses
     assert {

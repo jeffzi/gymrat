@@ -178,21 +178,14 @@ def test_parse_when_metric_name_has_empty_path_segment_does_skip_run_with_one_wa
 # ---------------------------------------------------------------------------
 
 
-# Each row pairs a run with a regex for the values its skip warning inserts.
 @pytest.mark.parametrize(
-    ("bad_run", "pattern"),
+    "bad_run",
     [
-        pytest.param(
-            {"args": {}, "stats": {"p50": float("inf")}},
-            r'"test"',
-            id="p50-positive-infinity",
-        ),
-        pytest.param(None, r'"test"', id="run-null"),
+        pytest.param({"args": {}, "stats": {"p50": float("inf")}}, id="p50-positive-infinity"),
+        pytest.param(None, id="run-null"),
     ],
 )
-def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning(
-    bad_run: object, pattern: str
-):
+def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning(bad_run: object):
     stdout = build_stdout([{"alias": "test", "runs": [bad_run, {"args": {}, "stats": {"p50": 5}}]}])
     warnings: list[str] = []
 
@@ -200,7 +193,7 @@ def test_parse_when_run_is_malformed_does_skip_only_the_bad_run_with_one_warning
 
     assert result == {f"test{TIME_SUFFIX}": 5}
     assert len(warnings) == 1
-    assert re.search(pattern, warnings[0])
+    assert '"test"' in warnings[0]
 
 
 def test_parse_when_benchmark_is_malformed_does_skip_only_the_bad_benchmark_with_one_warning():
@@ -233,17 +226,14 @@ def test_parse_when_heap_avg_not_given_does_skip_memory_metric_silently():
     assert warnings == []
 
 
-# Each row pairs a heap value with a regex for the values its skip warning inserts.
 @pytest.mark.parametrize(
-    ("heap_value", "pattern"),
+    "heap_value",
     [
-        pytest.param({"avg": "bad"}, r'"test"', id="avg-string"),
-        pytest.param({"avg": float("inf")}, r'"test"', id="avg-infinity"),
+        pytest.param({"avg": "bad"}, id="avg-string"),
+        pytest.param({"avg": float("inf")}, id="avg-infinity"),
     ],
 )
-def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
-    heap_value: object, pattern: str
-):
+def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(heap_value: object):
     stdout = build_stdout([benchmark("test", stats={"p50": 42, "heap": heap_value})])
     warnings: list[str] = []
 
@@ -251,7 +241,7 @@ def test_parse_when_heap_is_malformed_does_keep_time_metric_with_one_warning(
 
     assert result == {f"test{TIME_SUFFIX}": 42}
     assert len(warnings) == 1
-    assert re.search(pattern, warnings[0])
+    assert '"test"' in warnings[0]
 
 
 # ---------------------------------------------------------------------------

@@ -122,4 +122,6 @@ def test_drop_prefix_errors_when_locations_nest_does_keep_only_the_deepest(
 def test_describe_key_when_parts_vary_does_quote_only_parts_misread_bare(
     loc: tuple[str | int, ...], expected: str
 ):
-    assert describe_key(loc) == expected
+    described = describe_key(loc)
+
+    assert described == expected

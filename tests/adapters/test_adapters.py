@@ -53,7 +53,7 @@ def test_defaults_from_suffixes_when_kind_suffix_varies_does_derive_defaults_fro
 # ---------------------------------------------------------------------------
 
 
-def test_parse_when_single_metric_line_does_return_named_value():
+def test_parse_when_line_has_surrounding_whitespace_does_strip_it():
     assert metric_lines_adapter.parse("  METRIC foo=42  ") == {"foo": 42.0}
 
 

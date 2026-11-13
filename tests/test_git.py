@@ -108,5 +108,7 @@ def test_run_git_step_when_command_fails_does_raise_with_git_diagnostics(repo: s
 @pytest.mark.parametrize("unusable_git", [pytest.param(False, id="git-missing")], indirect=True)
 @pytest.mark.usefixtures("unusable_git")
 def test_run_git_step_when_git_cannot_be_started_does_raise_gymrat_error(tmp_path: Path):
-    with pytest.raises(GymratError, match=r"^lookup failed: .+"):
+    with pytest.raises(GymratError, match=r"^lookup failed: .+") as exc_info:
         run_git_step(["status"], str(tmp_path), "lookup failed")
+
+    assert isinstance(exc_info.value.__cause__, OSError)

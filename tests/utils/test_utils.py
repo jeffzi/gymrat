@@ -343,21 +343,20 @@ def _raise_boom(_: _Event) -> None:
 
 
 def test_fan_out_when_called_does_dispatch_to_subscribers_in_order():
-    calls: list[tuple[str, _Event]] = []
+    calls: list[str] = []
     errors: list[Exception] = []
 
-    def first(event: _Event) -> None:
-        calls.append(("first", event))
+    def first(_event: _Event) -> None:
+        calls.append("first")
 
-    def second(event: _Event) -> None:
-        calls.append(("second", event))
+    def second(_event: _Event) -> None:
+        calls.append("second")
 
     dispatch = fan_out([first, second], errors.append)
-    event = _Event()
 
-    dispatch(event)
+    dispatch(_Event())
 
-    assert [name for name, _ in calls] == ["first", "second"]
+    assert calls == ["first", "second"]
 
 
 def test_fan_out_when_subscriber_raises_does_report_the_error():
@@ -485,7 +484,7 @@ def test_write_text_atomic_when_target_is_owner_only_does_never_hold_new_content
 # ---------------------------------------------------------------------------
 
 
-def _fail_fsync(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def _fail_fsync(monkeypatch: pytest.MonkeyPatch) -> str:
     def exploding_fsync(fd: int) -> None:
         msg = "disk full"
         raise OSError(msg)
@@ -494,7 +493,7 @@ def _fail_fsync(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return "disk full"
 
 
-def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def _fail_replace(monkeypatch: pytest.MonkeyPatch) -> str:
     def exploding_replace(src: object, dst: object) -> None:
         msg = "Read-only file system"
         raise OSError(msg)
@@ -513,9 +512,9 @@ def _fail_replace(_directory: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_write_text_atomic_when_write_fails_does_leave_the_directory_as_it_was(
     target: Path,
     monkeypatch: pytest.MonkeyPatch,
-    break_write: Callable[[Path, pytest.MonkeyPatch], str],
+    break_write: Callable[[pytest.MonkeyPatch], str],
 ):
-    reason = break_write(target.parent, monkeypatch)
+    reason = break_write(monkeypatch)
 
     with pytest.raises(OSError, match=reason):
         write_text_atomic(target, NEW_TEXT)
@@ -553,7 +552,7 @@ def test_create_text_atomic_when_target_exists_does_raise_leaving_the_directory_
 def test_create_text_atomic_when_write_fails_does_leave_directory_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    reason = _fail_fsync(tmp_path, monkeypatch)
+    reason = _fail_fsync(monkeypatch)
 
     with pytest.raises(OSError, match=reason):
         create_text_atomic(tmp_path / "state.json", NEW_TEXT)
@@ -1019,7 +1018,8 @@ def test_point_stream_at_devnull_when_stream_has_no_descriptor_does_return_witho
 def test_point_stream_at_devnull_when_redirect_fails_does_raise_leaking_no_descriptor():
     before = _open_descriptors()
 
-    with pytest.raises(OSError, match="Bad file descriptor"):
+    with pytest.raises(OSError, match=os.strerror(errno.EBADF)) as caught:
         point_stream_at_devnull(_BadDescriptorStream())
 
+    assert caught.value.errno == errno.EBADF
     assert _open_descriptors() == before

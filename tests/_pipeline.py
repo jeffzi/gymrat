@@ -30,10 +30,10 @@ QUANTIZED_STEP_NS = 42.0
 """The step, in nanoseconds, between quantized readings that the warning names."""
 
 QUANTIZED_GAP = f"{QUANTIZED_STEP_NS:g}ns"
+""":data:`QUANTIZED_STEP_NS` as the quantized-readings warning names it."""
 
 # A duration the warning would insert as the step, such as ``42ns`` or ``1.5 µs``.
 _STEP_VALUE = re.compile(r"\d(?:\.\d+)?\s*[nµm]?s\b")
-""":data:`QUANTIZED_STEP_NS` as the quantized-readings warning names it."""
 
 
 def is_quantized_warning(text: str, name: str, gap: str | None) -> bool:

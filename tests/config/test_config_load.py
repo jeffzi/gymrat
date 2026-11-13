@@ -37,7 +37,7 @@ def test_load_config_file_collecting_when_integral_float_given_does_parse_it_as_
 
 
 # ---------------------------------------------------------------------------
-# invalid TOML / non-finite literals
+# documents the TOML parser rejects
 # ---------------------------------------------------------------------------
 
 

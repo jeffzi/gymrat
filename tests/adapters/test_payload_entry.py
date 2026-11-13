@@ -12,7 +12,7 @@ from gymrat.adapters.payload_entry import (
     named_subject,
     record_metric,
 )
-from gymrat.utils import expected_got
+from gymrat.utils import expected_got, phrase_for_error
 from tests._validation import validation_error
 
 # ---------------------------------------------------------------------------
@@ -109,6 +109,11 @@ class _Task(BaseModel):
     name: str
 
 
+def _phrase_of(value: object) -> str:
+    """The phrase ``phrase_for_error`` gives the first error validating ``value`` as a task."""
+    return phrase_for_error(validation_error(_Task, value).errors()[0])
+
+
 @pytest.mark.parametrize(
     ("value", "prefix", "expected"),
     [
@@ -116,10 +121,10 @@ class _Task(BaseModel):
         pytest.param(
             {"name": 1},
             (),
-            f" with invalid name: {expected_got('a string', 1)}",
+            f" with invalid name: {expected_got(_phrase_of({'name': 1}), 1)}",
             id="invalid-key",
         ),
-        pytest.param(None, (), f": {expected_got('an object', None)}", id="invalid-root"),
+        pytest.param(None, (), f": {expected_got(_phrase_of(None), None)}", id="invalid-root"),
         pytest.param({}, ("result",), " with missing result.name", id="prefixed"),
     ],
 )

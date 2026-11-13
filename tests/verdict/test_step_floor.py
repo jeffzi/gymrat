@@ -72,23 +72,39 @@ def test_compute_verdicts_when_permutation_delta_inside_noise_band_does_still_si
 
 
 @pytest.mark.parametrize(
-    ("baseline", "candidate", "expected_noise_pct", "expected_verdict", "expected_reason"),
+    ("baseline", "candidate", "expected_noise_pct"),
     [
-        pytest.param(4.0, 0.0, 31.25, "improved", None, id="zero-candidate"),
-        pytest.param(0.0, 5.0, 0.5, "no-signal", "non-finite-delta", id="zero-baseline"),
+        pytest.param(4.0, 0.0, 31.25, id="zero-candidate"),
+        pytest.param(0.0, 5.0, 0.5, id="zero-baseline"),
     ],
 )
 def test_compute_verdicts_when_byte_side_median_zero_does_floor_from_baseline_only(
     baseline: float,
     candidate: float,
     expected_noise_pct: float,
+):
+    result = run(create_samples(2, baseline), create_samples(2, candidate), METRIC_BYTES_LOWER)
+
+    verdict = get_band(result)
+    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("baseline", "candidate", "expected_verdict", "expected_reason"),
+    [
+        pytest.param(4.0, 0.0, "improved", None, id="zero-candidate"),
+        pytest.param(0.0, 5.0, "no-signal", "non-finite-delta", id="zero-baseline"),
+    ],
+)
+def test_compute_verdicts_when_byte_side_median_zero_does_judge_against_the_baseline_floor(
+    baseline: float,
+    candidate: float,
     expected_verdict: str,
     expected_reason: str | None,
 ):
     result = run(create_samples(2, baseline), create_samples(2, candidate), METRIC_BYTES_LOWER)
 
     verdict = get_band(result)
-    assert verdict.noise_pct == pytest.approx(expected_noise_pct, abs=1e-5)
     assert (verdict.verdict, verdict.reason) == (expected_verdict, expected_reason)
 
 

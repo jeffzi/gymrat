@@ -37,23 +37,11 @@ def _ignore(_message: str) -> None:
     pass
 
 
-def _options(
-    *,
-    samples: int,
-    baseline: TargetSpec | None = None,
-    candidate_targets: tuple[str, ...] = ("cand",),
-    candidates: list[TargetSpec] | None = None,
-) -> CompareOptions:
-    resolved_baseline = baseline if baseline is not None else TargetSpec(label=None, target="base")
-    resolved_candidates = (
-        candidates
-        if candidates is not None
-        else [TargetSpec(label=None, target=name) for name in candidate_targets]
-    )
+def _options(*, samples: int, candidate_targets: tuple[str, ...] = ("cand",)) -> CompareOptions:
     return CompareOptions(
         run=run_options(samples=samples),
-        baseline=resolved_baseline,
-        candidates=resolved_candidates,
+        baseline=TargetSpec(label=None, target="base"),
+        candidates=[TargetSpec(label=None, target=name) for name in candidate_targets],
         unstable_noise_pct=DEFAULT_UNSTABLE_NOISE_PCT,
     )
 
@@ -170,5 +158,5 @@ async def test_compare_when_two_refs_given_does_compare_them_in_disposable_workt
 
     assert result.metrics["x"].baseline_median == 1.0
     assert result.metrics["x"].candidates[0].median == 2.0
-    assert result.cleanup.removed >= 2
+    assert result.cleanup.removed == 2
     assert list_worktree_dirs(repo, include_main=False) == []

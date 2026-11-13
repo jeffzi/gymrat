@@ -71,4 +71,4 @@ async def test_measure_when_ref_target_does_bench_in_a_disposable_worktree(
     result = await measure(_e2e_options("HEAD"))
 
     assert result.metrics["x"].median == 1.0
-    assert result.cleanup.removed >= 1
+    assert result.cleanup.removed == 1

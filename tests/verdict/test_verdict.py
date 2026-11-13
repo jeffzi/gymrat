@@ -200,17 +200,12 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n():
 
 
 @pytest.mark.parametrize(
-    ("meta", "samples_a", "samples_b", "expected"),
+    ("samples_a", "samples_b", "expected"),
     [
         pytest.param(
-            METRIC_APPROX_LOWER,
-            samples(100.0, 110.0),
-            samples(30.0, 50.0),
-            ("improved", None),
-            id="exceeds-band",
+            samples(100.0, 110.0), samples(30.0, 50.0), ("improved", None), id="exceeds-band"
         ),
         pytest.param(
-            METRIC_APPROX_LOWER,
             create_samples(2, 100.0),
             samples(99.8, 99.6),
             ("no-signal", "noise"),
@@ -219,12 +214,11 @@ def test_compute_verdicts_when_band_fallback_does_report_usable_n():
     ],
 )
 def test_compute_verdicts_when_band_does_signal_only_beyond_noise_band(
-    meta: dict[str, MetricMeta],
     samples_a: list[dict[str, float]],
     samples_b: list[dict[str, float]],
     expected: tuple[str, str | None],
 ):
-    result = run(samples_a, samples_b, meta)
+    result = run(samples_a, samples_b, METRIC_APPROX_LOWER)
 
     verdict = get_band(result)
     assert (verdict.verdict, verdict.reason) == expected
@@ -342,13 +336,13 @@ def test_compute_verdicts_when_threshold_given_does_mark_unstable_only_above_it(
 # inf, the engine caps it and forces the verdict to unstable on both paths.
 
 
-@pytest.mark.parametrize(
-    ("values_a", "values_b"),
-    [
-        pytest.param([-5.0, 5.0], [10.0, 10.0], id="baseline-zero"),
-        pytest.param([10.0, 10.0], [-5.0, 5.0], id="candidate-zero"),
-    ],
-)
+_ZERO_MEDIAN_WITH_SPREAD = [
+    pytest.param([-5.0, 5.0], [10.0, 10.0], id="baseline-zero"),
+    pytest.param([10.0, 10.0], [-5.0, 5.0], id="candidate-zero"),
+]
+
+
+@pytest.mark.parametrize(("values_a", "values_b"), _ZERO_MEDIAN_WITH_SPREAD)
 def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
     values_a: list[float],
     values_b: list[float],
@@ -357,6 +351,16 @@ def test_compute_verdicts_when_zero_median_with_spread_does_report_unstable(
 
     verdict = get_band(result)
     assert (verdict.verdict, verdict.reason) == ("unstable", None)
+
+
+@pytest.mark.parametrize(("values_a", "values_b"), _ZERO_MEDIAN_WITH_SPREAD)
+def test_compute_verdicts_when_zero_median_with_spread_does_cap_the_noise_band(
+    values_a: list[float],
+    values_b: list[float],
+):
+    result = run(samples(*values_a), samples(*values_b), METRIC_APPROX_LOWER)
+
+    verdict = get_band(result)
     assert verdict.noise_pct == pytest.approx(0.5, abs=1e-5)
 
 

@@ -84,7 +84,9 @@ def test_pair_metric_when_given_any_rounds_does_drop_unpaired_rounds_preserving_
     [
         pytest.param("lower", -1.0, True, id="lower-negative"),
         pytest.param("lower", 0.0, False, id="lower-zero"),
+        pytest.param("lower", 1.0, False, id="lower-positive"),
         pytest.param("higher", 1.0, True, id="higher-positive"),
+        pytest.param("higher", -1.0, False, id="higher-negative"),
         pytest.param("higher", 0.0, False, id="higher-zero"),
         pytest.param("lower", float("nan"), False, id="lower-nan"),
         pytest.param("higher", float("nan"), False, id="higher-nan"),

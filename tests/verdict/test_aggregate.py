@@ -1,10 +1,9 @@
 """Behavioral tests for geomean aggregation over verdict records.
 
 Drives behavior through the public ``compute_geomean`` and
-``compute_kind_aggregates`` APIs. Exclusion ordering, ratio normalization and
-noise-band propagation are exercised on the geomean itself; bucketing order,
-per-kind grouping and the per-subset exclusion taxonomy on the kind aggregates
-built from it.
+``compute_kind_aggregates`` APIs. Exclusion ordering, the unstable exclusion
+and noise-band propagation are exercised on the geomean itself; shape, grouping
+by name path, ordering and geomean scope on the kind aggregates built from it.
 
 A compact ``MetricSpec`` describes one metric's contribution to a run, and
 :func:`build_inputs` turns a list of specs into the ``(verdicts, metric_meta)``
@@ -80,7 +79,7 @@ def build_inputs(
 
 
 # ---------------------------------------------------------------------------
-# Multiple gating metrics
+# Excluded metrics
 # ---------------------------------------------------------------------------
 
 

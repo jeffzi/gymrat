@@ -431,7 +431,10 @@ def test_inspect_config_when_runbook_embeds_nul_does_report_problem_not_raise(
     assert '"a\\u0000b"' in result.problems[0]
 
 
-def test_inspect_config_when_flag_holds_blank_string_does_report_the_flag():
+def test_inspect_config_when_flag_holds_blank_string_does_report_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
     names = ["--config"]
 
     result = inspect_config(CliFlags(config="   "))

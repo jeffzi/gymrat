@@ -31,7 +31,6 @@ from pydantic import BaseModel
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE
 from gymrat.event_docs import (
     READERS,
-    ReaderSpec,
     main,
     render_all,
     render_asyncapi,
@@ -223,15 +222,17 @@ def test_render_asyncapi_when_called_does_describe_each_message_payload(
 
 
 @pytest.mark.parametrize(
-    ("op_name", "reader", "extra_keys"),
+    ("op_name", "extra_keys"),
     [
-        pytest.param("supervisor-guard", READERS["supervisor-guard"], {"description"}, id="note"),
-        pytest.param("dashboard", READERS["dashboard"], set(), id="no-note"),
+        pytest.param("supervisor-guard", {"description"}, id="note"),
+        pytest.param("dashboard", set(), id="no-note"),
     ],
 )
-def test_render_asyncapi_when_called_does_have_receive_operation_per_reader(
-    op_name: str, reader: ReaderSpec, extra_keys: set[str]
+def test_render_asyncapi_when_reader_has_a_note_does_describe_its_operation_with_it(
+    op_name: str, extra_keys: set[str]
 ):
+    reader = READERS[op_name]
+
     doc = _render_asyncapi_doc()
 
     op = doc["operations"][op_name]
@@ -286,20 +287,38 @@ def _field_rows(section: str) -> dict[str, tuple[str, str]]:
     }
 
 
-def test_render_reference_when_field_rendered_does_fill_type_and_status_columns():
+def test_render_reference_when_field_rendered_does_fill_the_status_column():
     statuses = {"seq": "required", "confirm": "optional"}
-    verdict = "IterationMetricVerdict"
-    types = {
-        "confirm": "[Confirm](#confirm)",
-        "metrics": f"object (values: [{verdict}](#{verdict.lower()}))",
-        "outcome": '`"improved"` \\| `"regressed"` \\| `"no-signal"`',
-    }
 
     md = _render_reference_doc()
 
     rows = _field_rows(_type_section(md, "iteration"))
     assert {field: rows[field][1] for field in statuses} == statuses
-    assert {field: rows[field][0] for field in types} == types
+
+
+_VERDICT = "IterationMetricVerdict"
+"""The nested object an iteration's ``metrics`` map holds as values."""
+
+
+@pytest.mark.parametrize(
+    ("field", "type_cell"),
+    [
+        pytest.param("confirm", "[Confirm](#confirm)", id="object-link"),
+        pytest.param(
+            "metrics",
+            f"object (values: [{_VERDICT}](#{_VERDICT.lower()}))",
+            id="map-of-objects",
+        ),
+        pytest.param(
+            "outcome", '`"improved"` \\| `"regressed"` \\| `"no-signal"`', id="literal-union"
+        ),
+    ],
+)
+def test_render_reference_when_field_rendered_does_fill_the_type_column(field: str, type_cell: str):
+    md = _render_reference_doc()
+
+    rows = _field_rows(_type_section(md, "iteration"))
+    assert rows[field][0] == type_cell
 
 
 # ---------------------------------------------------------------------------
