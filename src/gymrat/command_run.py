@@ -206,7 +206,7 @@ async def with_repo_lock[T](
                             pre_body_records=pre_body_records,
                         )
                 except Exception as span_error:  # noqa: BLE001 -- must not mask the command outcome
-                    warn_to_stderr(f"failed to emit command span: {span_error}")
+                    warn_to_stderr(f"warning: failed to emit command span: {span_error}")
         finally:
             release()
     return result
@@ -261,7 +261,7 @@ def _try_append_command_record(  # noqa: PLR0913 -- one parameter per distinct c
         )
         append_record(jsonl, record)
     except Exception as error:  # noqa: BLE001 -- construction or IO failure must not mask the command outcome
-        warn_to_stderr(f"failed to append command record: {error}")
+        warn_to_stderr(f"warning: failed to append command record: {error}")
         return None
     return record
 
@@ -296,7 +296,7 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     try:
         return session_id, _count_record_lines(jsonl)
     except OSError as error:
-        warn_to_stderr(f"failed to emit command span: {error}")
+        warn_to_stderr(f"warning: failed to emit command span: {error}")
         return session_id, None
 
 

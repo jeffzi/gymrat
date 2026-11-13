@@ -1,9 +1,9 @@
 """Stop the current session: append a stop record without reverting or committing anything.
 
 A stop records a closing report and marks the session as stopped. The session
-stays open, the worktree is untouched, and ``iterate``, ``keep``, ``discard``,
-and ``finalize`` all remain available. ``iterate``, ``keep``, and ``discard``
-clear the stopped state; ``finalize`` after a stop is allowed.
+stays open and the worktree is untouched. A stop needs a settled session, so
+nothing is left to keep or discard: ``iterate`` continues the session and clears
+the stopped state, and ``finalize`` after a stop is allowed.
 
 Five states refuse a stop:
 
@@ -11,8 +11,7 @@ Five states refuse a stop:
 2. **Finalized** — ``require_open_session`` raises.
 3. **Unsettled iteration** — the edit must be kept or discarded first.
 4. **Standing gating block** — same: the blocked edit must be settled first.
-5. **Already stopped** — the log already ends on a stop; iterate, keep, or
-   discard to continue.
+5. **Already stopped** — the log already ends on a stop; iterate to continue.
 """
 
 from __future__ import annotations
@@ -75,7 +74,7 @@ def stop_session(root: str, message: str) -> StopResult:
         msg = "Already stopped"
         raise GymratError(
             msg,
-            hint="Run iterate, keep, or discard to continue.",
+            hint="Run iterate to continue the session.",
             reason="already-stopped",
         )
 

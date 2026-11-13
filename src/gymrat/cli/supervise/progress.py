@@ -170,7 +170,7 @@ class _DashboardShell(LiveDisplayMixin):
             # unreadable does not print a line on every re-read.
             if not self._session_read_warned:
                 self._session_read_warned = True
-                self.warn(f"session read failed: {exc}")
+                self.warn(f"warning: session read failed: {exc}")
             return None
 
     def handle_event(self, event: SessionEvent) -> None:

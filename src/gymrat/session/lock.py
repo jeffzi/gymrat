@@ -272,7 +272,7 @@ def acquire_lock(
         try:
             lock.release()
         except Exception as error:  # noqa: BLE001 — intentional catch-all: release must never raise
-            warn_to_stderr(f"Warning: failed to release lock at {lock_path}: {error!s}")
+            warn_to_stderr(f"warning: failed to release lock at {lock_path}: {error!s}")
 
     return release
 

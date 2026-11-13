@@ -598,7 +598,7 @@ def test_plain_when_session_read_fails_again_after_recovering_does_warn_once():
     kit.reporter.refresh_session()
     kit.reporter.refresh_session()
 
-    assert writes == ["[00:00:00] session read failed: no session file"]
+    assert writes == ["[00:00:00] warning: session read failed: no session file"]
 
 
 @pytest.mark.parametrize(

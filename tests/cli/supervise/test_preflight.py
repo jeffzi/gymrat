@@ -26,6 +26,7 @@ from gymrat.cli.supervise.preflight import (
 from gymrat.config import ResolvedConfig, StopConfig
 from gymrat.doctor import Check, DoctorReport, build_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
+from gymrat.loop.keep import gate_off_warning
 from gymrat.session.paths import (
     experiment_worktree_dir,
 )
@@ -221,7 +222,7 @@ def test_preflight_when_checks_not_configured_does_print_one_warning_to_stderr(
 
     _run_preflight(repo, config=resolved_config(checks=None))
 
-    assert len(capsys.readouterr().err.splitlines()) == 1
+    assert capsys.readouterr().err == gate_off_warning(color=False) + "\n"
 
 
 @pytest.mark.parametrize(

@@ -71,8 +71,8 @@ class ChecksRun:
     stderr_bytes: int
 
 
-def _gate_off_warning(*, color: bool) -> str:
-    """The warning a keep emits when no checks command gates it.
+def gate_off_warning(*, color: bool) -> str:
+    """The warning that no checks command gates a keep, from ``keep`` and ``supervise`` alike.
 
     Args:
         color: Whether the hint line carries ANSI color escapes.
@@ -86,10 +86,7 @@ def _gate_off_warning(*, color: bool) -> str:
         ),
         color=color,
     )
-    return (
-        "Warning: no checks command is configured, so gymrat keep is committing "
-        f"with the gate off.\n{hint}"
-    )
+    return f"warning: no checks command is configured, so keep commits with the gate off\n{hint}"
 
 
 async def run_checks(
@@ -124,9 +121,9 @@ async def run_checks(
     if command is None:
         if warn is None:
             stderr_color = stream_color_from_env(sys.stderr) if color is None else color
-            warn_to_stderr(_gate_off_warning(color=stderr_color))
+            warn_to_stderr(gate_off_warning(color=stderr_color))
         else:
-            warn(_gate_off_warning(color=False))
+            warn(gate_off_warning(color=False))
         return None
 
     result = await exec(

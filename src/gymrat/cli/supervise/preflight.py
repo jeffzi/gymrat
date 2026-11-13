@@ -30,6 +30,7 @@ from gymrat.config import CliFlags, ResolvedConfig, config_trace_args
 from gymrat.doctor import build_doctor_report, render_doctor_report
 from gymrat.errors import TOOL_FAILURE_EXIT_CODE, GymratError
 from gymrat.loop.baseline import measure_baseline
+from gymrat.loop.keep import gate_off_warning
 from gymrat.loop.start import start_session
 from gymrat.loop.stop_condition import stop_condition
 from gymrat.report.loop import format_start_summary
@@ -107,7 +108,7 @@ def run_preflight(*, root: str, config: ResolvedConfig, flags: PreflightFlags) -
             overran the capture cap.
     """
     if config.checks is None:
-        warn_to_stderr("warning: checks is not configured — keep will commit with the gate off")
+        warn_to_stderr(gate_off_warning(color=resolve_stream_color(None, sys.stderr)))
 
     async def body(_trace: CommandTrace) -> StartResult:
         _working_tree_gate(root, allow_dirty=flags.allow_dirty)

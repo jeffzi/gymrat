@@ -187,7 +187,7 @@ def _revert_target(
     error = try_git(["cat-file", "-t", target], experiment_dir)
     if error is not None:
         warn_to_stderr(
-            f"Commit {target} is unreachable in the experiment worktree: {error}\n"
+            f"warning: commit {target} is unreachable in the experiment worktree: {error}\n"
             "  reverting to the worktree's HEAD instead"
         )
         return worktree_head(experiment_dir)
