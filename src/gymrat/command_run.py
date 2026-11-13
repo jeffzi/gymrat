@@ -167,12 +167,15 @@ async def with_repo_lock[T](
 
     jsonl = session_jsonl_path(root)
     start_ns = utils.now_ns()
-    pre_body_session_id, pre_body_records = _pre_body_log(root, jsonl)
 
     release = acquire_lock(lockfile_path(root), command)
     caught: BaseException | None = None
+    pre_body_session_id, pre_body_records = "", None
     result: T
     try:
+        # Read under the lock: a rival that appended while this command waited
+        # for it must not have its records counted among the body's.
+        pre_body_session_id, pre_body_records = _pre_body_log(root, jsonl)
         recover_torn_tail(jsonl)
         result = await body(trace)
     except BaseException as exc:
@@ -272,9 +275,10 @@ def _pre_body_log(root: str, jsonl: str) -> tuple[str, int | None]:
     """Read what the command span needs from the session log before the body runs.
 
     The span's events are the records the body appends, so the record count
-    must be taken before the body runs. Without an endpoint no span is emitted,
-    so the log is not read. A log that exists but cannot be read warns to stderr:
-    without its record count the span cannot tell the body's records apart.
+    must be taken under the lock and before the body runs. Without an endpoint
+    no span is emitted, so the log is not read. A log that exists but cannot be
+    read warns to stderr: without its record count the span cannot tell the
+    body's records apart.
 
     Args:
         root: The repository whose session header names the session.

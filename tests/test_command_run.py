@@ -13,15 +13,18 @@ import itertools
 import os
 from collections.abc import Awaitable, Callable, Generator, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import create_autospec
 
 import pytest
 import typer
+from filelock import FileLock
+from filelock import Timeout as FileLockTimeout
 
 from gymrat.command_run import CommandTrace, command_origin, with_repo_lock
 from gymrat.errors import GymratError
 from gymrat.loop.stop_condition import LoopStopError
-from gymrat.session.lock import is_held
+from gymrat.session.lock import LockContentionError, acquire_lock, is_held, os_lock_file
 from gymrat.session.paths import lockfile_path, repo_root, session_dir, session_jsonl_path
 from gymrat.session.records import CommandRecord, SessionRecord, record_event
 from gymrat.session.schema import CommandReason
@@ -31,7 +34,7 @@ from gymrat.utils import monotonic_ms
 from tests._command_bodies import ok_body
 from tests._git import refuse_git_lookups
 from tests._imports import loaded_under, modules_imported_by
-from tests._lock import remove_lock_files
+from tests._lock import hold_lock, remove_lock_files
 from tests._mode_bits import needs_mode_bits
 from tests.session.records._fixtures import (
     FRESH_SESSION_ID,
@@ -515,6 +518,79 @@ async def test_with_repo_lock_when_log_holds_blank_lines_does_key_the_span_on_re
     assert context is not None
     assert [e.name for e in span.events] == appended_events
     assert context.span_id == span_id_of(header.session_id, f"command:{len(log_records(repo))}")
+
+
+def _rival_appends_during_lock_wait(
+    monkeypatch: pytest.MonkeyPatch, root: str, *, wait_expires: bool
+) -> None:
+    """Hold ``root``'s repository lock as a rival that appends a hook record while a command waits.
+
+    The rival appends its record when the command first waits on the OS lock.
+    The wait then either expires, the rival still holding the lock, or ends with
+    the rival releasing it so the command takes the lock.
+
+    Args:
+        monkeypatch: The fixture that patches ``FileLock.acquire`` for the test.
+        root: The repository whose lock the rival holds.
+        wait_expires: Whether the command's wait for the lock times out.
+    """
+    lock_file = os_lock_file(lockfile_path(root))
+    rival = hold_lock(lockfile_path(root), "iterate")
+    real_acquire = FileLock.acquire
+    appended: list[bool] = []
+
+    def acquire_after_rival(self: FileLock, *args: Any, **kwargs: Any) -> Any:
+        if self.lock_file != lock_file:
+            return real_acquire(self, *args, **kwargs)
+        if not appended:
+            appended.append(True)
+            append_records(root, hook_record())
+        if wait_expires:
+            raise FileLockTimeout(self.lock_file)
+        if rival.is_locked:
+            rival.release()
+        return real_acquire(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        FileLock, "acquire", create_autospec(FileLock.acquire, side_effect=acquire_after_rival)
+    )
+
+
+async def test_with_repo_lock_when_rival_appended_during_lock_wait_does_export_only_records_appended_after_taking_the_lock(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    header = seeded_session(repo)
+    _rival_appends_during_lock_wait(monkeypatch, repo_root(), wait_expires=False)
+    appended_events = [
+        record_event(iteration_record())[0],
+        record_event(baseline_record())[0],
+    ]
+
+    with memory_tracing(header.session_id) as exporter:
+        await with_repo_lock("iterate", _iterate_body)
+
+    span = span_by_name(exporter.get_finished_spans(), "gymrat.command.iterate")
+    assert [e.name for e in span.events] == appended_events
+
+
+async def test_with_repo_lock_when_lock_wait_fails_does_raise_the_contention_error_without_a_command_span(
+    repo: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    header = seeded_session(repo)
+    _rival_appends_during_lock_wait(monkeypatch, repo_root(), wait_expires=True)
+
+    with (
+        memory_tracing(header.session_id) as exporter,
+        pytest.raises(LockContentionError) as caught,
+    ):
+        await with_repo_lock("measure", ok_body)
+
+    assert spans_by_prefix(exporter.get_finished_spans(), "gymrat.command.") == []
+    with pytest.raises(LockContentionError) as direct:
+        acquire_lock(lockfile_path(repo_root()), "measure")
+    assert (str(caught.value), caught.value.hint) == (str(direct.value), direct.value.hint)
 
 
 @pytest.mark.parametrize(
