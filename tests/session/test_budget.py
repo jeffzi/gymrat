@@ -2,10 +2,12 @@
 
 ``read_budget`` returns the budget only when the file parses, the deadline has
 not passed, and the supervise lock for that root is held; otherwise it returns
-``None``.  ``remaining_ms`` reports milliseconds left against a supplied
-current time, clamped at zero.  ``arm_budget`` writes a budget due its minutes
-from now and returns a release that removes it, and ``iterate_headroom`` gives
-up when any of its inputs is missing.
+``None``.  ``read_held_budget`` drops the deadline condition: it returns the
+budget whenever the file parses and the supervise lock is held.
+``remaining_ms`` reports milliseconds left against a supplied current time,
+clamped at zero.  ``arm_budget`` writes a budget due its minutes from now and
+returns a release that removes it, and ``iterate_headroom`` gives up when any
+of its inputs is missing.
 """
 
 from collections.abc import Sequence
@@ -20,6 +22,7 @@ from gymrat.session.budget import (
     estimate_iterate_duration,
     iterate_headroom,
     read_budget,
+    read_held_budget,
     write_budget,
 )
 from gymrat.session.paths import budget_path
@@ -93,6 +96,33 @@ def test_read_budget_when_file_absent_does_return_none(root: str):
     result = read_budget(root, now_ms=0.0)
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# read_held_budget
+# ---------------------------------------------------------------------------
+
+
+_EXPIRED = _make_budget(deadline_ms=1000.0)
+
+
+@pytest.mark.parametrize(
+    ("supervise_lock", "expected"),
+    [
+        pytest.param(True, _EXPIRED, id="lock-held-past-deadline"),
+        pytest.param(False, None, id="supervise-lock-not-held"),
+    ],
+    indirect=["supervise_lock"],
+)
+@pytest.mark.usefixtures("supervise_lock")
+def test_read_held_budget_when_file_written_does_return_it_while_held_whatever_the_deadline(
+    root: str, expected: Budget | None
+):
+    write_budget(root, _EXPIRED)
+
+    result = read_held_budget(root)
+
+    assert result == expected
 
 
 # ---------------------------------------------------------------------------

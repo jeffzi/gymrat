@@ -1,11 +1,12 @@
 """Session time budget: write, read, and clear a deadline-bounded budget file.
 
 The budget file is written atomically via temp-file-and-replace so a concurrent
-reader never sees a partial write.  Reading checks three liveness conditions
-before returning the budget: the file must parse, its deadline must be ahead of
-``now_ms``, and the supervise lock for the repository root must be held.  When
-any condition fails the budget is treated as absent; a supervise lock that
-cannot be probed is an error, not an absent budget.
+reader never sees a partial write.  A budget is held while the file parses and
+the supervise lock for the repository root is held; that alone says a
+supervised run is in progress, deadline or not.  Reading the budget for the
+time it leaves adds a third condition: its deadline must be ahead of
+``now_ms``.  When any condition fails the budget is treated as absent; a
+supervise lock that cannot be probed is an error, not an absent budget.
 """
 
 from collections.abc import Callable, Sequence
@@ -93,6 +94,29 @@ def read_budget(root: str, *, now_ms: float) -> Budget | None:
     if not is_held(supervise_lockfile_path(root)):
         return None
 
+    return budget
+
+
+def read_held_budget(root: str) -> Budget | None:
+    """Read the budget file while a supervised run holds *root*, whatever its deadline.
+
+    The supervise lock is probed only when the file parses, so a repository
+    with no budget never touches the lock.
+
+    Args:
+        root: Repository root under which the budget file lives.
+
+    Returns:
+        The validated budget, or ``None`` when the file is absent, does not
+        parse as a budget, or the supervise lock for *root* is not held.
+
+    Raises:
+        GymratError: When the supervise lock file cannot be opened, so whether
+            a supervised run holds it is unknown.
+    """
+    budget = read_sidecar(Path(budget_path(root)), Budget)
+    if budget is None or not is_held(supervise_lockfile_path(root)):
+        return None
     return budget
 
 

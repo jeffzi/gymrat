@@ -1,15 +1,15 @@
 """Supervised-run detection and the guard that refuses shell-typed commands during one.
 
-A supervised run is live while its budget is live (see
-:func:`~gymrat.session.budget.read_budget`). During that window the agent must
-drive the loop through its tools, so a command whose origin is not ``tool`` is
-refused with a hint pointing at the matching tool.
+A supervised run is live for as long as it holds the supervise lock over a
+parseable budget file (see :func:`~gymrat.session.budget.read_held_budget`),
+including after the budget's deadline has passed. During that window the agent
+must drive the loop through its tools, so a command whose origin is not
+``tool`` is refused with a hint pointing at the matching tool.
 """
 
-from gymrat import utils
 from gymrat.command_run import command_origin
 from gymrat.errors import GymratError
-from gymrat.session.budget import read_budget
+from gymrat.session.budget import read_held_budget
 
 __all__ = [
     "guard_supervised_origin",
@@ -24,13 +24,14 @@ def is_supervised_run_live(root: str) -> bool:
         root: Repository root whose budget and supervise lock are read.
 
     Returns:
-        ``True`` when a supervised run with a live budget holds the repository.
+        ``True`` when a supervised run holds the repository over a parseable
+        budget file, whether or not the budget's deadline has passed.
 
     Raises:
         GymratError: When the supervise lock file cannot be opened, so whether
             a supervised run holds it is unknown.
     """
-    return read_budget(root, now_ms=utils.now_ms()) is not None
+    return read_held_budget(root) is not None
 
 
 def guard_supervised_origin(root: str, command: str) -> None:
