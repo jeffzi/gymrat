@@ -377,7 +377,7 @@ def test_compute_verdicts_when_some_windows_one_sided_does_warn_once_naming_the_
     run(_ONE_SIDED_A, _ONE_SIDED_B, METRIC_EXACT_LOWER, warn=collected.append)
 
     assert len(collected) == 1
-    assert collected[0].startswith("metric:")
+    assert collected[0].startswith("warning: metric:")
     assert re.search(r"\b2\b", collected[0])
 
 

@@ -301,7 +301,9 @@ def test_iterate_command_when_subscriber_raises_does_warn_once_per_distinct_fail
 
     result = runner.invoke(app, ["iterate", "--bench", "npm run bench"])
 
-    assert warning_lines(result.stderr) == warnings
+    # The fake run cannot fingerprint the worktree and warns about that too.
+    raised = [line for line in warning_lines(result.stderr) if any(m in line for m in messages)]
+    assert raised == warnings
 
 
 def test_iterate_command_when_subscriber_raises_does_finish_the_run_without_a_traceback(

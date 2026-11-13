@@ -50,7 +50,7 @@ def warn_skip(warn: WarnSink, subject: str, tail: str) -> None:
         tail: The reason, from :func:`~gymrat.adapters.payload_entry.first_problem`
             or written by the caller.
     """
-    warn(f"Skipping {subject}{tail}")
+    warn(f"warning: skipping {subject}{tail}")
 
 
 def _scan_json_objects(text: str) -> tuple[list[dict[str, object]], str | None]:
@@ -278,7 +278,7 @@ def record_metric(
             closing the warning.
     """
     if name in metrics:
-        warn(f"Duplicate metric name: {name} (keeping the last value; {advice})")
+        warn(f"warning: duplicate metric name: {name} (keeping the last value; {advice})")
     metrics[name] = value
 
 

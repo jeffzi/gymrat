@@ -251,7 +251,7 @@ def _prune_stale_worktrees(root: str, warn: WarnSink) -> None:
         error = try_git(["worktree", "remove", "--force", directory], root)
         if error is not None and _NOT_A_WORKTREE not in error:
             warn(
-                f"Could not prune the stale worktree entry at {directory}: {error}\n"
+                f"warning: could not prune the stale worktree entry at {directory}: {error}\n"
                 "  inspect it with: git worktree list"
             )
 
@@ -311,7 +311,7 @@ def unwind_workspace(
     error = try_git(["branch", "-D", workspace.branch], root)
     if error is not None:
         warnings.append(
-            f"Could not delete the session branch '{workspace.branch}': {error}\n"
+            f"warning: could not delete the session branch '{workspace.branch}': {error}\n"
             f"  delete it by hand with: git branch -D {workspace.branch}"
         )
     return warnings
@@ -588,6 +588,6 @@ def _remove_worktree(root: str, directory: str) -> str | None:
     if error is None or not Path(directory).is_dir():
         return None
     return (
-        f"Could not remove the worktree at {directory}: {error}\n"
+        f"warning: could not remove the worktree at {directory}: {error}\n"
         f"  remove it by hand with: git worktree remove --force {directory}"
     )

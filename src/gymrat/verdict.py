@@ -470,7 +470,7 @@ def compute_verdicts(
 
         if paired.dropped > 0:
             warn(
-                f"{metric}: dropped {pluralize(paired.dropped, 'paired window')} "
+                f"warning: {metric}: dropped {pluralize(paired.dropped, 'paired window')} "
                 "where the metric was measured on only one side",
             )
 

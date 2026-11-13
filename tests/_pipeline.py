@@ -52,7 +52,7 @@ def is_quantized_warning(text: str, name: str, gap: str | None) -> bool:
         ``True`` when ``text`` opens on ``name`` and names exactly that step.
     """
     names_step = _STEP_VALUE.search(text) is None if gap is None else gap in text
-    return text.startswith(f"{name}:") and names_step
+    return text.startswith(f"warning: {name}:") and names_step
 
 
 def run_options(

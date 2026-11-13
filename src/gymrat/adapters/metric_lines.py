@@ -102,7 +102,10 @@ def _follows_grammar(metric_name: str, warn: WarnSink) -> bool:
         )
         raise AdapterError(msg) from exc
     except MetricNameError as exc:
-        warn(f"Skipping METRIC line with {exc.flaw} in its metric name: {json.dumps(metric_name)}")
+        warn(
+            f"warning: skipping METRIC line with {exc.flaw} in its metric name: "
+            f"{json.dumps(metric_name)}"
+        )
         return False
     return True
 
@@ -137,7 +140,7 @@ class _MetricLinesAdapter:
             trimmed = line.strip()
             if not trimmed.startswith(_PREFIX):
                 continue
-            parse_failure = f"Failed to parse METRIC line: {json.dumps(trimmed)}"
+            parse_failure = f"warning: failed to parse METRIC line: {json.dumps(trimmed)}"
             if not trimmed.startswith(_PREFIX_WITH_SPACE):
                 warn(parse_failure)
                 continue
@@ -165,8 +168,8 @@ class _MetricLinesAdapter:
 
             if _PREFIX_WITH_SPACE in metric_name:
                 warn(
-                    f"Parsed metric name {json.dumps(metric_name)} embeds the METRIC token "
-                    "— the line may carry a duplicate METRIC prefix"
+                    f"warning: parsed metric name {json.dumps(metric_name)} embeds the "
+                    "METRIC token — the line may carry a duplicate METRIC prefix"
                 )
 
             readings.append({metric_name: value})

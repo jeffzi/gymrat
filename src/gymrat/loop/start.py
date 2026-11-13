@@ -184,7 +184,7 @@ def _create_session(
             landed = _header_landed(jsonl_path)
         except GymratError as error:
             warn(
-                f"Could not read the session log back after the start failed: {error}"
+                f"warning: could not read the session log back after the start failed: {error}"
                 + (f" ({error.hint})" if error.hint else "")
                 + f"\n  the workspace on branch '{workspace.branch}' stays in place"
             )
@@ -214,7 +214,7 @@ def _restore_closed_log(jsonl_path: str, archived_path: str, warn: WarnSink) -> 
         landed = True
     if landed:
         warn(
-            f"The new session's log at {jsonl_path} was kept after the start failed;\n"
+            f"warning: the new session's log at {jsonl_path} was kept after the start failed;\n"
             f"  the closed session's records stay archived at {archived_path}"
         )
         return
@@ -222,7 +222,7 @@ def _restore_closed_log(jsonl_path: str, archived_path: str, warn: WarnSink) -> 
         Path(archived_path).rename(jsonl_path)
     except OSError as error:
         warn(
-            f"Could not put the closed session's log back at {jsonl_path}: {error}\n"
+            f"warning: could not put the closed session's log back at {jsonl_path}: {error}\n"
             f"  its records stay at {archived_path}"
         )
 

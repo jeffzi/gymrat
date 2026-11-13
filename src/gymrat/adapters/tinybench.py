@@ -118,7 +118,7 @@ def _extract_task_metric(entry: object, metrics: dict[str, float], warn: WarnSin
 
     if p50_ns == 0:
         warn(
-            f"Task {quoted_name} has a median of 0: its calls run faster than the "
+            f"warning: task {quoted_name} has a median of 0: its calls run faster than the "
             "timer can resolve, so a comparison cannot see a change in it (have the task "
             "batch its calls and return the time per call as overriddenDuration)"
         )

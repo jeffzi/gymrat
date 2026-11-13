@@ -463,7 +463,7 @@ async def iterate_session(
     measured_tree = _workspace.worktree_fingerprint(session.worktrees.experiment)
     if measured_tree is None:
         opts.warn(
-            "Could not fingerprint the experiment worktree; "
+            "warning: could not fingerprint the experiment worktree; "
             "measured_tree is omitted from the iteration record."
         )
 
