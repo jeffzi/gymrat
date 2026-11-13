@@ -14,18 +14,16 @@ from typing import Annotated
 from pydantic import BaseModel, Strict, ValidationError
 
 from gymrat.adapters.contract import TIME_SUFFIX
-from gymrat.adapters.json_payload import (
+from gymrat.adapters.payload_entry import (
     JsonArrayAdapter,
     NameWording,
     accepts_metric_prefix,
-    warn_skip,
-)
-from gymrat.adapters.payload_entry import (
     error_tail,
     first_problem,
     is_finite_or_warn,
     named_subject,
     record_metric,
+    warn_skip,
 )
 from gymrat.utils import NS_PER_MS, Number, WarnSink
 

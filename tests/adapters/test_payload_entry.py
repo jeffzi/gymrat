@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from gymrat.adapters.payload_entry import (
-    describe_error,
+    error_tail,
     first_problem,
     is_finite_or_warn,
     named_subject,
@@ -16,20 +16,39 @@ from gymrat.utils import expected_got, phrase_for_error
 from tests._validation import validation_error
 
 # ---------------------------------------------------------------------------
-# describe_error
+# error_tail
 # ---------------------------------------------------------------------------
 
 
-def test_describe_error_when_string_holds_a_line_terminator_does_escape_only_the_terminator():
-    described = describe_error('naïve "x"\nboom')
+def test_error_tail_when_string_holds_a_line_terminator_does_escape_only_the_terminator():
+    tail = error_tail('naïve "x"\nboom')
 
-    assert described == r'naïve "x"\nboom'
+    assert tail == r' (naïve "x"\nboom)'
 
 
-def test_describe_error_when_value_is_not_a_string_does_render_it_as_json():
-    described = describe_error({"code": 7})
+def test_error_tail_when_value_is_not_a_string_does_render_it_as_json():
+    tail = error_tail({"code": 7})
 
-    assert described == '{"code": 7}'
+    assert tail == ' ({"code": 7})'
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("", id="empty-string"),
+        pytest.param({}, id="empty-object"),
+    ],
+)
+def test_error_tail_when_error_carries_no_detail_does_add_nothing(error: object):
+    tail = error_tail(error)
+
+    assert tail == ""
+
+
+def test_error_tail_when_error_carries_a_detail_does_append_it_in_parentheses():
+    tail = error_tail("boom")
+
+    assert tail == " (boom)"
 
 
 # ---------------------------------------------------------------------------

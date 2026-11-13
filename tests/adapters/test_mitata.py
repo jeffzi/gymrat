@@ -90,7 +90,7 @@ def test_parse_when_arg_value_given_does_serialize_js_style(value: Any, serializ
 
 # One non-ASCII terminator per skip site catches both a missing escape and an
 # ``ensure_ascii=False`` regression; the per-character escape table is pinned once,
-# on describe_error in tests/adapters/test_payload_entry.py, and which characters
+# on error_tail in tests/adapters/test_payload_entry.py, and which characters
 # count as line terminators is pinned on LINE_TERMINATORS in tests/utils/test_utils.py.
 _LINE_TERMINATOR_ALIAS = "enc\u2028ode"
 
@@ -263,26 +263,6 @@ def test_parse_when_run_has_error_field_does_skip_only_the_errored_run_with_one_
     assert result == {f"test{TIME_SUFFIX}": 20}
     assert len(warnings) == 1
     assert re.search(r'"test".*boom', warnings[0])
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        pytest.param("", id="empty-string"),
-        pytest.param({}, id="empty-object"),
-    ],
-)
-def test_parse_when_errored_run_carries_no_error_detail_does_warn_ending_on_alias(error: object):
-    stdout = build_stdout([
-        {"alias": "test", "runs": [{"args": {}, "error": error}]},
-        VALID_BENCHMARK,
-    ])
-    warnings: list[str] = []
-
-    mitata_adapter.parse(stdout, warnings.append)
-
-    assert len(warnings) == 1
-    assert re.search(r'"test"$', warnings[0])
 
 
 def test_parse_when_error_field_is_null_does_process_run_normally():

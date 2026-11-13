@@ -4,7 +4,7 @@ import sys
 import pytest
 
 from gymrat.adapters.contract import AdapterError
-from gymrat.adapters.json_payload import JsonArrayAdapter, NameWording, accepts_metric_prefix
+from gymrat.adapters.payload_entry import JsonArrayAdapter, NameWording, accepts_metric_prefix
 from gymrat.adapters.registry import get_adapter
 from gymrat.utils import WarnSink
 from tests.adapters._inputs import VALID_BENCHMARK, VALID_TASK, build_stdout, build_tinybench_stdout
