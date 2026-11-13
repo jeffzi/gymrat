@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** Raise the default `samples` from 10 to 12; set `samples` in `gymrat.toml` or pass
   `--samples` to choose another count.
 - **Breaking:** Refuse a sample count that cannot balance the run order before any bench or hook
-  runs; use an even count for two targets, a multiple of `N` for an even number `N` of targets, or
-  a multiple of `2N` for an odd number.
+  runs; a single target takes any count, two targets an even count, an even number `N` of targets a
+  multiple of `N`, and an odd number `N` of three or more a multiple of `2N`.
 - **Breaking:** Rename the `#heap` metric suffix to `#memory`; rename `#heap` to `#memory` in your
   `METRIC` lines and `[metrics]` keys, since a name ending in `#heap` is now a plain number and the
   `mitata` adapter emits `<alias>#memory`.

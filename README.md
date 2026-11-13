@@ -339,11 +339,9 @@ it measures, so anything the hook changes afterwards goes unrecorded.
 ## Machine-readable output
 
 `compare`, `measure`, `probe`, `doctor`, and every session command accept `--format json` for
-structured output. The session commands are `start`, `iterate`, `keep`, `discard`, `status`,
-`stop`, `sync`, and `finalize`.
-`init`, `export`, and `supervise` are text-only. Text output is for humans and may change between
-releases. From the first release published to PyPI, the log schema and the `--format json`
-documents are additive-only. Each JSON document starts with a `schema_version` field.
+structured output. `init`, `export`, and `supervise` are text-only. Text output is for humans and
+may change between releases. From the first release published to PyPI, the log schema and the
+`--format json` documents are additive-only. Each JSON document starts with a `schema_version` field.
 
 The [event reference](https://github.com/jeffzi/gymrat/blob/main/docs/event-reference.md) documents
 the session log and supervisor event log formats, with JSON Schema and AsyncAPI files in
@@ -400,10 +398,11 @@ gymrat export --endpoint http://localhost:4318              # override the colle
 Each candidate is sampled in rounds with its baseline: every round runs each side once, so machine
 drift hits both sides equally. The run order changes from round to round so each target runs in
 every position, and after every other target, equally often. The sample count must be a multiple of
-the order's cycle: an even count for two targets, a multiple of `N` for an even number `N` of
-targets, and a multiple of `2N` for an odd number. The default of 12 balances 1, 2, 3, 4, 6
-and 12 targets. gymrat refuses any other count before a bench or hook runs, and names the nearest valid
-counts. `gymrat doctor` lists the target counts from 2 through 8 the configured `samples` balances.
+the order's cycle: any count for a single target, an even count for two targets, a multiple of `N`
+for an even number `N` of targets, and a multiple of `2N` for an odd number `N` of three or more.
+The default of 12 balances 1, 2, 3, 4, 6 and 12 targets. gymrat refuses any other count before a
+bench or hook runs, and names the nearest valid counts. `gymrat doctor` lists the target counts
+from 2 through 8 the configured `samples` balances.
 
 A metric's verdict comes from a sign-flip permutation test on the signed-rank sum of the paired
 differences. Tied pairs carry no sign to flip. When fewer than 6 pairs differ, a noise-band
