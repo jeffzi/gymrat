@@ -177,30 +177,18 @@ def _rerun_lines(*reruns: RerunConfirmation) -> list[str]:
     return trimmed_report_lines(render_plain(*block[: len(reruns)]))
 
 
-@pytest.mark.parametrize(
-    ("rerun", "absent", "rerun_lines"),
-    [
-        pytest.param(
-            PairedRun(
-                experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
-                baseline=_filtered_rounds("total_ms", BASELINE_MS),
-            ),
-            ("alloc_bytes",),
-            _rerun_lines(
-                RerunConfirmation("total_ms", "confirmed"),
-                RerunConfirmation("alloc_bytes", "absent"),
-            ),
-            id="silent-on-one-metric",
-        ),
-    ],
-)
 async def test_iterate_session_when_rerun_skips_a_metric_does_keep_it_regressed_as_absent(
-    open_repo: str,
-    samples_mock: CollectSamplesRecorder,
-    rerun: PairedRun,
-    absent: tuple[str, ...],
-    rerun_lines: list[str],
+    open_repo: str, samples_mock: CollectSamplesRecorder
 ):
+    rerun = PairedRun(
+        experiment=_filtered_rounds("total_ms", scaled(BASELINE_MS, 1.2)),
+        baseline=_filtered_rounds("total_ms", BASELINE_MS),
+    )
+    absent = ("alloc_bytes",)
+    rerun_lines = _rerun_lines(
+        RerunConfirmation("total_ms", "confirmed"),
+        RerunConfirmation("alloc_bytes", "absent"),
+    )
     stub_runs(samples_mock, open_repo, [regressed_run(), rerun])
     expected_confirm = Confirm(
         ran=True,

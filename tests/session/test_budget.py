@@ -190,7 +190,7 @@ def test_arm_budget_when_removal_refused_does_warn_through_the_given_sink(
         ),
     ],
 )
-def test_estimate_iterate_duration_when_records_vary_does_prefer_newest_iteration_duration_over_baseline(
+def test_estimate_iterate_duration_when_records_vary_does_prefer_an_iteration_duration_over_a_baseline_one(
     records: list[SessionLogRecord], expected: DurationEstimate | None
 ):
     result = estimate_iterate_duration(records)

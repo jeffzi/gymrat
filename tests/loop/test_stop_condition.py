@@ -48,6 +48,11 @@ def test_stop_reason_when_a_configured_condition_is_met_does_name_it(
             id="target-not-kept",
         ),
         pytest.param(
+            resolved_config(stop=StopConfig(max_iterations=3)),
+            session_state(iteration_count=2),
+            id="max-iterations-not-reached",
+        ),
+        pytest.param(
             resolved_config(),
             session_state(iteration_count=5, target_reached_and_kept=True),
             id="no-stop-configured",

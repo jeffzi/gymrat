@@ -164,11 +164,9 @@ def test_parse_record_when_field_invalid_does_reject_naming_key_shape_and_value(
         parse_record(value)
 
     message = str(exc.value)
-    assert (f" {key}: " in message, shape in message, message.endswith(f" {shown}")) == (
-        True,
-        True,
-        True,
-    )
+    assert f" {key}: " in message
+    assert shape in message
+    assert message.endswith(f" {shown}")
 
 
 def test_parse_record_when_whole_float_coerces_below_minimum_does_reject_naming_key_and_value():
@@ -178,7 +176,8 @@ def test_parse_record_when_whole_float_coerces_below_minimum_does_reject_naming_
         parse_record(value)
 
     message = str(exc.value)
-    assert (" config.samples: " in message, message.endswith(" 0")) == (True, True)
+    assert " config.samples: " in message
+    assert message.endswith(" 0")
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +193,12 @@ def test_parse_record_when_whole_float_coerces_below_minimum_does_reject_naming_
             "budget-exceeded",
             id="success-with-reason",
         ),
-        pytest.param(omitting(COMMAND_RECORD, "reason"), "1", id="failure-without-reason"),
+        pytest.param(
+            omitting(COMMAND_RECORD, "reason"), "exit_code is 1 ", id="failure-without-reason"
+        ),
     ],
 )
-def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_with_the_rule(
+def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_naming_the_inserted_value(
     value: object, fragment: str
 ):
     with pytest.raises(GymratError) as exc:
@@ -256,7 +257,7 @@ def test_parse_record_when_command_exit_code_and_reason_disagree_does_reject_wit
         ),
     ],
 )
-def test_record_event_when_called_does_return_the_event_name_and_its_scalar_attributes(
+def test_record_event_when_record_varies_does_name_the_event_with_its_scalar_attributes(
     record: SessionLogRecord, expected: tuple[str, dict[str, object]]
 ):
     result = record_event(record)

@@ -10,6 +10,7 @@ checks command (the consumer's own test suite); every git operation is real.
 """
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import pytest
 
@@ -167,6 +168,7 @@ async def test_keep_session_when_checks_fail_does_block_reporting_both_streams_l
     assert settling_record_of(repo) == result.record
     assert (CHECKS_STDOUT in result.report, CHECKS_STDERR in result.report) == (True, True)
     assert head_of(worktree) == before
+    assert (Path(worktree) / "README.md").read_text(encoding="utf-8") == "# edited by the agent\n"
 
 
 async def test_keep_session_when_checks_time_out_does_block_like_a_failure(
@@ -296,44 +298,40 @@ def _checks_skipped(monkeypatch: pytest.MonkeyPatch) -> ExecRecorder:
     return install_exec(monkeypatch, KEEP_EXEC, UNUSED_EXEC)
 
 
-@pytest.mark.parametrize(
-    ("install_checks", "checks", "recorded_checks", "checks_ran"),
-    [
-        pytest.param(
-            checks_pass,
-            CHECKS,
-            KeepChecks(configured=True, passed=True),
-            True,
-            id="passing-checks-keep-it",
-        ),
-        pytest.param(
-            _checks_skipped,
-            None,
-            KeepChecks(configured=False),
-            False,
-            id="no-checks-keep-it-unchecked",
-        ),
-    ],
-)
 async def test_keep_session_when_clean_and_ahead_does_commit_the_standing_commit(
-    *,
-    repo: str,
-    monkeypatch: pytest.MonkeyPatch,
-    install_checks: Callable[[pytest.MonkeyPatch], ExecRecorder],
-    checks: str | None,
-    recorded_checks: KeepChecks,
-    checks_ran: bool,
+    repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (iteration_record(seq=1),))
     edit_experiment(repo)
     committed = commit_experiment_directly(repo)
-    recorder = install_checks(monkeypatch)
+    recorder = checks_pass(monkeypatch)
 
-    result = await keep_session(repo, checks_config(checks=checks))
+    result = await keep_session(repo, checks_config(checks=CHECKS))
 
-    assert (result.record.status, result.record.checks) == ("committed", recorded_checks)
+    assert (result.record.status, result.record.checks) == (
+        "committed",
+        KeepChecks(configured=True, passed=True),
+    )
     assert head_of(baseline_worktree_dir(repo)) == committed
-    assert bool(recorder.calls) is checks_ran
+    assert recorder.calls
+
+
+async def test_keep_session_when_no_checks_configured_does_commit_without_running_any(
+    repo: str, monkeypatch: pytest.MonkeyPatch
+):
+    start_with(repo, (iteration_record(seq=1),))
+    edit_experiment(repo)
+    committed = commit_experiment_directly(repo)
+    recorder = _checks_skipped(monkeypatch)
+
+    result = await keep_session(repo, checks_config(checks=None))
+
+    assert (result.record.status, result.record.checks) == (
+        "committed",
+        KeepChecks(configured=False),
+    )
+    assert head_of(baseline_worktree_dir(repo)) == committed
+    assert recorder.calls == []
 
 
 async def _measured_without_an_edit(repo: str, monkeypatch: pytest.MonkeyPatch) -> int:

@@ -597,20 +597,10 @@ def test_read_live_session_when_keeps_committed_does_report_the_best_committed_i
 _FIRST_KEEP_SHA = "1" * 40
 
 
-@pytest.mark.parametrize(
-    ("deltas", "discarded", "expected"),
-    [
-        pytest.param(
-            (-7.2, -20.0, -9.0), (2,), (3, _FIRST_KEEP_SHA), id="previous-keep-across-a-discard"
-        ),
-    ],
-)
-def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
+def test_read_live_session_when_keeps_precede_the_best_does_name_the_previous_keep_as_its_baseline(
     fresh_root: str,
-    deltas: tuple[float, ...],
-    discarded: tuple[int, ...],
-    expected: tuple[int, str],
 ):
+    deltas, discarded = (-7.2, -20.0, -9.0), (2,)
     history = tuple(
         record
         for seq, delta_pct in enumerate(deltas, start=1)
@@ -625,24 +615,17 @@ def test_read_live_session_when_keeps_precede_the_best_does_name_its_baseline(
     result = _read_back(fresh_root, history)
 
     assert result.best is not None
-    assert (result.best.seq, result.best.baseline_sha) == expected
+    assert (result.best.seq, result.best.baseline_sha) == (3, _FIRST_KEEP_SHA)
 
 
-@pytest.mark.parametrize(
-    "history",
-    [
-        pytest.param(
-            (
-                iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=None)),
-                committed_keep(1),
-            ),
-            id="committed-keep-without-a-delta",
-        ),
-    ],
-)
 def test_read_live_session_when_no_committed_keep_has_a_delta_does_report_no_best(
-    fresh_root: str, history: tuple[SessionLogRecord, ...]
+    fresh_root: str,
 ):
+    history = (
+        iteration_record(seq=1, primary=IterationPrimary(kind="geomean", delta_pct=None)),
+        committed_keep(1),
+    )
+
     result = _read_back(fresh_root, history)
 
     assert result.best is None

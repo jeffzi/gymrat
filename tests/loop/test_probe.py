@@ -96,7 +96,7 @@ async def test_probe_session_when_samples_requested_or_unset_does_take_the_count
     assert result.samples == expected
 
 
-async def test_probe_session_when_no_names_does_bench_in_the_experiment_worktree(
+async def test_probe_session_when_probed_does_bench_in_the_experiment_worktree(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     start_with(repo, (baseline_record(samples=BASELINE_SAMPLES),))

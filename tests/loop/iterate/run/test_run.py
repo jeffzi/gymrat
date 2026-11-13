@@ -19,6 +19,7 @@ throwaway repository, so the suite is order-independent and safe under
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,6 +79,18 @@ async def test_iterate_session_when_last_iteration_unsettled_does_refuse_before_
         await iterate_session(repo, resolved_config())
 
     assert exc.value.reason == "unsettled"
+
+
+@pytest.mark.usefixtures("samples_mock")
+async def test_iterate_session_when_stop_condition_met_does_refuse_naming_it(repo: str):
+    write_iterate_session(repo, settled_history())
+    config = resolved_config(stop=StopConfig(max_iterations=1))
+
+    with pytest.raises(LoopStopError) as exc:
+        await iterate_session(repo, config)
+
+    assert exc.value.reason == "stop-condition"
+    assert re.search(r"\(\d+ of 1\)", str(exc.value))
 
 
 # ---------------------------------------------------------------------------
@@ -264,22 +277,6 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_naming_the_estim
         await iterate_session(repo, resolved_config())
 
     assert [part for part in computed if part not in str(exc.value)] == []
-
-
-# ---------------------------------------------------------------------------
-# a configured stop condition is met
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.usefixtures("samples_mock")
-async def test_iterate_session_when_stop_condition_met_does_refuse_naming_it(repo: str):
-    write_iterate_session(repo, settled_history())
-    config = resolved_config(stop=StopConfig(max_iterations=1))
-
-    with pytest.raises(LoopStopError) as exc:
-        await iterate_session(repo, config)
-
-    assert exc.value.reason == "stop-condition"
 
 
 # ---------------------------------------------------------------------------

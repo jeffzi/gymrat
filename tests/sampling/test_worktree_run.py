@@ -2,9 +2,8 @@
 
 The lifecycle tests drive ``plan_worktree``, ``materialize_worktree`` and
 ``cleanup_worktrees`` against real git in a scratch repository, including the
-awkward temp bases a host can hand the planner: a symlinked or slash-terminated
-base resolves to its real path, and a read-only base fails without registering
-anything.
+awkward temp bases a host can hand the planner: a symlinked base resolves to its
+real path, and a missing base fails naming the temp directory.
 """
 
 import asyncio
@@ -639,8 +638,13 @@ def test_plan_worktree_when_temp_base_symlinked_does_name_a_dir_under_its_real_p
 
     worktree = plan_worktree(RefTarget(ref="my-tag", resolved_sha=UNKNOWN_SHA))
 
-    assert worktree.sha == UNKNOWN_SHA
     assert str(Path(worktree.dir).parent) == real_base
+
+
+def test_plan_worktree_when_ref_resolved_does_plan_its_resolved_sha():
+    worktree = plan_worktree(RefTarget(ref="my-tag", resolved_sha=UNKNOWN_SHA))
+
+    assert worktree.sha == UNKNOWN_SHA
 
 
 def test_plan_worktree_when_tmpdir_nonexistent_does_raise_naming_temp_dir(

@@ -56,15 +56,8 @@ def _tree_snapshot(root: str) -> dict[str, bytes | str | None]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "files",
-    [
-        pytest.param({"README.md": "# Changed\n", "extra.py": "x = 1\n"}, id="several-files"),
-    ],
-)
-def test_sync_to_experiment_when_changes_present_does_copy_each_changed_file(
-    session_repo: str, files: dict[str, str]
-):
+def test_sync_to_experiment_when_changes_present_does_copy_each_changed_file(session_repo: str):
+    files = {"README.md": "# Changed\n", "extra.py": "x = 1\n"}
     for name, content in files.items():
         (Path(session_repo) / name).write_text(content, encoding="utf-8")
 

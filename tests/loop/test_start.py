@@ -256,16 +256,8 @@ def _footprint(repo: str) -> tuple[list[tuple[str, bytes]], list[str], list[str]
     return files, list_worktree_dirs(repo), session_branches(repo)
 
 
-@pytest.mark.parametrize(
-    "arrange",
-    [
-        pytest.param(_open_and_finalize_a_session, id="closed-session"),
-    ],
-)
-def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(
-    repo: str, arrange: Callable[[str], None]
-):
-    arrange(repo)
+def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(repo: str):
+    _open_and_finalize_a_session(repo)
     before = _footprint(repo)
 
     with pytest.raises(GymratError) as excinfo:
@@ -280,17 +272,11 @@ def test_start_session_when_samples_odd_does_refuse_leaving_the_repo_untouched(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "close",
-    [
-        pytest.param(_close_session_with_one_keep, id="worktrees-taken-down"),
-    ],
-)
 def test_start_session_when_finalized_does_reopen_at_the_pinned_baseline_with_the_old_log_archived(
-    repo: str, repo_head: str, close: Callable[[str], str]
+    repo: str, repo_head: str
 ):
     start_session(repo, "main", CONFIG)
-    closed = close(repo)
+    closed = _close_session_with_one_keep(repo)
     closed_log = log_records(repo)
 
     result = start_session(repo, "main", CONFIG)

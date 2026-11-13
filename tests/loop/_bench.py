@@ -15,6 +15,7 @@ imported as ``tests.loop._bench``.
 """
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def config_text(*, samples: int = 5) -> str:
         The rendered TOML text.
     """
     config: dict[str, object] = {
-        "bench": f"{sys.executable} {BENCH_FILE}",
+        "bench": f"{shlex.quote(sys.executable)} {BENCH_FILE}",
         "adapter": "metric-lines",
         "samples": samples,
         "timeout_seconds": 120,

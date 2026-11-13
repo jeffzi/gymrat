@@ -9,9 +9,9 @@ cannot bleed ANSI into a line comparison.
 The settle-fold cases are the heart of the suite: a nothing-measured keep that
 took a later iteration's number, a gating block superseded by a discard, and a
 not-improved keep later resettled all exercise the positional fold that decides
-which record settles which iteration. The stop footer and runbook line come from
-the *live* config, never the session snapshot, so those cases pass a config the
-snapshot never carried.
+which record settles which iteration. The runbook line comes from the *live*
+config, never the session snapshot, so its case passes a config the snapshot
+never carried.
 
 Expected lines are built with the ``format_status_*`` helpers the report module
 owns, so these tests pin which line the fold produces and in what order, not the
@@ -267,7 +267,7 @@ def test_status_session_when_history_settles_records_does_render_each_line_in_fi
 
 
 # ---------------------------------------------------------------------------
-# live-config footer and runbook
+# runbook line from the live config
 # ---------------------------------------------------------------------------
 
 

@@ -70,7 +70,7 @@ def test_discard_session_when_iteration_unsettled_does_settle_it_as_discarded(re
     assert result.at == result.record.at
 
 
-def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbering_past_it(
+def test_discard_session_when_gating_block_stands_does_number_the_discard_past_the_block(
     repo: str,
 ):
     start_with(repo, gating_blocked_history())
@@ -84,7 +84,7 @@ def test_discard_session_when_gating_block_stands_does_throw_away_the_edit_numbe
     assert_settling_record(result.record, discard_record(2))
 
 
-async def test_discard_session_when_keep_retried_after_block_does_throw_away_the_edit_after_the_refusal(
+async def test_discard_session_when_keep_retried_after_block_does_discard_iteration_one_after_the_refusal(
     repo: str, monkeypatch: pytest.MonkeyPatch
 ):
     await keep_an_edit(repo, monkeypatch, gating_blocked_history())

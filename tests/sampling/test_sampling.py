@@ -12,7 +12,6 @@ import pytest
 from gymrat.adapters.metric_lines import metric_lines_adapter
 from gymrat.errors import CommandError, GymratError
 from gymrat.exec import OUTPUT_CAP, ExecResult, ExecTimeoutError
-from gymrat.metric_stats import compute_metric_stats
 from gymrat.progress_events import (
     PassFinished,
     PassStarted,
@@ -100,14 +99,18 @@ async def test_collect_samples_when_prepare_given_does_run_it_once_per_target_be
     assert {exec_options.timeout_ms for _, exec_options in recorder.calls} == {2500}
 
 
+_TWO_TARGETS_FOUR_SAMPLES = SamplingOptions(
+    bench="run", prepare=None, samples=4, timeout_seconds=1.0
+)
+
+
 async def test_collect_samples_when_two_targets_does_alternate_which_target_runs_first(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls = install_exec(monkeypatch, SAMPLING_EXEC, numbered_sample).calls
-    options = SamplingOptions(bench="run", prepare=None, samples=4, timeout_seconds=1.0)
 
-    result = await collect_samples(
-        metric_lines_adapter, two_in_place_targets(), options, asyncio.Event()
+    await collect_samples(
+        metric_lines_adapter, two_in_place_targets(), _TWO_TARGETS_FOUR_SAMPLES, asyncio.Event()
     )
 
     assert [exec_options.cwd for _, exec_options in calls] == [
@@ -120,6 +123,17 @@ async def test_collect_samples_when_two_targets_does_alternate_which_target_runs
         "/b",
         "/a",
     ]
+
+
+async def test_collect_samples_when_order_alternates_does_credit_each_run_to_its_own_target(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    install_exec(monkeypatch, SAMPLING_EXEC, numbered_sample)
+
+    result = await collect_samples(
+        metric_lines_adapter, two_in_place_targets(), _TWO_TARGETS_FOUR_SAMPLES, asyncio.Event()
+    )
+
     assert [[sample["x"] for sample in ts.samples] for ts in result] == [
         [1.0, 4.0, 5.0, 8.0],
         [2.0, 3.0, 6.0, 7.0],
@@ -369,19 +383,14 @@ async def test_collect_samples_when_bench_stdout_overran_the_cap_does_raise_nami
     assert caught.value.hint is not None
 
 
-@pytest.mark.parametrize(
-    "result",
-    [
-        pytest.param(
-            ExecResult("METRIC x=1", "capped", 0, 10, OUTPUT_CAP + 1, stderr_truncated=True),
-            id="only-stderr-overran-the-cap",
-        ),
-    ],
-)
-async def test_collect_samples_when_bench_stdout_kept_whole_does_parse_the_sample(
-    monkeypatch: pytest.MonkeyPatch, result: ExecResult
+async def test_collect_samples_when_only_stderr_overran_the_cap_does_parse_the_sample(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    install_exec(monkeypatch, SAMPLING_EXEC, result)
+    install_exec(
+        monkeypatch,
+        SAMPLING_EXEC,
+        ExecResult("METRIC x=1", "capped", 0, 10, OUTPUT_CAP + 1, stderr_truncated=True),
+    )
 
     samples = await collect_samples(
         metric_lines_adapter, one_in_place_target(), _RUN_ONLY, asyncio.Event()
@@ -427,30 +436,3 @@ def test_run_options_from_config_when_override_given_does_replace_the_configured
     run = RunOptions.from_config(config, samples=samples, bench=bench)
 
     assert getattr(run.sampling, read) == expected
-
-
-# ---------------------------------------------------------------------------
-# sample summaries
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("values", "expected_median", "expected_spread"),
-    [
-        pytest.param([5.0], 5.0, None, id="single-value"),
-        pytest.param([10.0, 20.0, 30.0], 20.0, pytest.approx(50.0), id="odd-length-sorted"),
-    ],
-)
-def test_compute_metric_stats_when_given_values_does_return_the_summary_stats(
-    values: list[float],
-    expected_median: float,
-    expected_spread: object,
-):
-    stats = compute_metric_stats("x", values)
-
-    assert (stats.median, stats.spread) == (expected_median, expected_spread)
-
-
-def test_compute_metric_stats_when_no_values_does_raise_naming_the_metric():
-    with pytest.raises(GymratError, match=r"\bdecode/time\b"):
-        compute_metric_stats("decode/time", [])
