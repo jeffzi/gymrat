@@ -9,10 +9,11 @@ for stable, locale-independent diagnostics that classification can key on.
 
 import os
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
+from gymrat.child_signal_mask import unblock_termination_signals
 from gymrat.errors import GymratError
-from gymrat.signals import deferring_termination_signals
+from gymrat.signals import deferring_termination_signals, pthread_sigmask
 from gymrat.utils import stderr_text_of
 
 # Env vars an outer git process exports to point child git at a specific repo.
@@ -32,8 +33,12 @@ def run_git(
     cwd: str,
     *,
     env: Mapping[str, str] | None = None,
+    allow_interrupt: bool = False,
 ) -> str:
     """Run git in ``cwd`` and return its untrimmed stdout.
+
+    This process defers its own termination-signal handling until the call
+    returns, whatever ``allow_interrupt`` says.
 
     Args:
         args: Git arguments passed as an argv list, never a shell string.
@@ -42,6 +47,11 @@ def run_git(
             repository-targeting scrub, so a caller can set keys like
             ``GIT_INDEX_FILE`` without them being removed. ``None`` (the
             default) leaves the scrubbed environment unchanged.
+        allow_interrupt: Whether a termination signal sent to the process group
+            may end git and anything it spawns. Keep it ``False`` for a call
+            that must not be cut short, such as a cleanup step: on POSIX that
+            keeps the signals blocked in the child. Win32 has no signal mask,
+            so the flag changes nothing there.
 
     Returns:
         The command's stdout, exactly as git wrote it (not trimmed).
@@ -57,6 +67,11 @@ def run_git(
     child_env["LC_ALL"] = "C"
     if env is not None:
         child_env.update(env)
+    # Without ``pthread_sigmask`` (win32) there is no mask to lift, and
+    # ``preexec_fn`` is rejected there outright.
+    preexec_fn: Callable[[], None] | None = (
+        unblock_termination_signals if allow_interrupt and pthread_sigmask is not None else None
+    )
 
     with deferring_termination_signals():
         completed = subprocess.run(  # noqa: S603 -- argv is a fixed list, not shell-injected
@@ -73,18 +88,22 @@ def run_git(
             env=child_env,
             # Close stdin so a git command that wants user input (credential
             # fill, interactive rebase) fails immediately with its own
-            # diagnostic instead of hanging while the signal mask is held.
+            # diagnostic instead of hanging while this process defers
+            # termination signals.
             stdin=subprocess.DEVNULL,
+            preexec_fn=preexec_fn,
         )
     return completed.stdout
 
 
-def try_git(args: Sequence[str], cwd: str) -> str | None:
+def try_git(args: Sequence[str], cwd: str, *, allow_interrupt: bool = False) -> str | None:
     """Run a git command, reporting success or failure instead of raising.
 
     Args:
         args: Git arguments passed as an argv list.
         cwd: Working directory the git call resolves the repository from.
+        allow_interrupt: Whether a termination signal sent to the process group
+            may end git, as for :func:`run_git`.
 
     Returns:
         ``None`` on success, or the failure's stderr text on failure — callers
@@ -93,7 +112,7 @@ def try_git(args: Sequence[str], cwd: str) -> str | None:
         cannot be found or run all surface as text.
     """
     try:
-        run_git(args, cwd)
+        run_git(args, cwd, allow_interrupt=allow_interrupt)
     except (subprocess.SubprocessError, OSError) as error:
         # SubprocessError covers CalledProcessError and TimeoutExpired; OSError
         # covers a git binary that is missing or cannot be executed
@@ -102,7 +121,14 @@ def try_git(args: Sequence[str], cwd: str) -> str | None:
     return None
 
 
-def run_git_step(args: Sequence[str], cwd: str, message: str, hint: str | None = None) -> str:
+def run_git_step(
+    args: Sequence[str],
+    cwd: str,
+    message: str,
+    hint: str | None = None,
+    *,
+    allow_interrupt: bool = False,
+) -> str:
     """Run git in ``cwd``, turning any failure into a ``GymratError``.
 
     The error carries git's own diagnostics after ``message`` so the reader sees
@@ -113,6 +139,8 @@ def run_git_step(args: Sequence[str], cwd: str, message: str, hint: str | None =
         cwd: Working directory to run the command in.
         message: The error message prefix used if the command fails.
         hint: The hint attached to the raised error, or ``None`` for none.
+        allow_interrupt: Whether a termination signal sent to the process group
+            may end git, as for :func:`run_git`.
 
     Returns:
         The captured stdout from the git command.
@@ -122,7 +150,7 @@ def run_git_step(args: Sequence[str], cwd: str, message: str, hint: str | None =
             binary is missing or cannot be executed.
     """
     try:
-        return run_git(args, cwd)
+        return run_git(args, cwd, allow_interrupt=allow_interrupt)
     except (subprocess.SubprocessError, OSError) as error:
         detail = f"{message}: {stderr_text_of(error)}"
         raise GymratError(detail, hint=hint) from error

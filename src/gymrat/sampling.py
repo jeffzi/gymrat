@@ -566,6 +566,7 @@ def materialize_worktree(worktree: WorktreeInfo, repo_dir: str) -> None:
             ["worktree", "add", "--detach", worktree.dir, worktree.sha],
             repo_dir,
             f"git worktree add failed for {worktree.sha}",
+            allow_interrupt=True,
         )
     finally:
         # git registers the worktree before the command returns, and the add can

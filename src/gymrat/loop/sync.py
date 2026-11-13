@@ -90,7 +90,13 @@ def _dirty_entries(directory: str, error_message: str, hint: str) -> list[_Dirty
     Raises:
         GymratError: When git cannot read the status of ``directory``.
     """
-    raw = run_git_step(["status", "-z", "--untracked-files=all"], directory, error_message, hint)
+    raw = run_git_step(
+        ["status", "-z", "--untracked-files=all"],
+        directory,
+        error_message,
+        hint,
+        allow_interrupt=True,
+    )
     entries: list[_DirtyEntry] = []
     fields: Iterator[str] = iter(raw.split("\0"))
     for field in fields:

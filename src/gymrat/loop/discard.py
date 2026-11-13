@@ -184,7 +184,7 @@ def _revert_target(
         GymratError: When git cannot read the worktree HEAD.
     """
     target = last_kept_position(state, baseline_sha)
-    error = try_git(["cat-file", "-t", target], experiment_dir)
+    error = try_git(["cat-file", "-t", target], experiment_dir, allow_interrupt=True)
     if error is not None:
         warn_to_stderr(
             f"warning: commit {target} is unreachable in the experiment worktree: {error}\n"

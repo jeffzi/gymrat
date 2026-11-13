@@ -263,6 +263,7 @@ def _add_experiment_worktree(root: str, branch: str) -> None:
         root,
         f"Cannot create the experiment worktree at {directory}",
         f"Check whether {branch} is already checked out elsewhere: git worktree list",
+        allow_interrupt=True,
     )
 
 
@@ -273,6 +274,7 @@ def _add_baseline_worktree(root: str, sha: str) -> None:
         root,
         f"Cannot create the baseline worktree at {directory}",
         missing_commit_hint(sha),
+        allow_interrupt=True,
     )
 
 
@@ -344,12 +346,14 @@ def commit_workspace(experiment_dir: str, message: str) -> str:
         experiment_dir,
         f"Cannot stage the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     run_git_step(
         ["commit", "-m", message],
         experiment_dir,
         f"Cannot commit the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     return worktree_head(experiment_dir)
 
@@ -375,12 +379,14 @@ def revert_workspace(experiment_dir: str, *, target: str) -> None:
         experiment_dir,
         f"Cannot revert the experiment worktree at {experiment_dir}",
         INSPECT_STATUS_HINT,
+        allow_interrupt=True,
     )
     run_git_step(
         ["clean", "-fd"],
         experiment_dir,
         f"Cannot remove the untracked files in {experiment_dir}",
         "Inspect what is standing there with: git status --ignored",
+        allow_interrupt=True,
     )
 
 
@@ -407,7 +413,9 @@ def worktree_fingerprint(directory: str) -> str | None:
         invocation fails (missing repo, bad permissions, …).
     """
     try:
-        real_index = run_git(["rev-parse", "--git-path", "index"], directory).strip()
+        real_index = run_git(
+            ["rev-parse", "--git-path", "index"], directory, allow_interrupt=True
+        ).strip()
         # Resolve relative paths git may print against the worktree root.
         real_index_path = Path(directory, real_index)
 
@@ -418,8 +426,8 @@ def worktree_fingerprint(directory: str) -> str | None:
             shutil.copy2(real_index_path, tmp_index)
 
             env = {"GIT_INDEX_FILE": tmp_index}
-            run_git(["add", "-A"], directory, env=env)
-            return run_git(["write-tree"], directory, env=env).strip()
+            run_git(["add", "-A"], directory, env=env, allow_interrupt=True)
+            return run_git(["write-tree"], directory, env=env, allow_interrupt=True).strip()
     except (subprocess.SubprocessError, OSError):
         return None
 
@@ -441,6 +449,7 @@ def worktree_head(directory: str) -> str:
         directory,
         f"Cannot read the HEAD of the worktree at {directory}",
         "Inspect what is standing there with: git log -1",
+        allow_interrupt=True,
     ).strip()
 
 
@@ -515,7 +524,7 @@ def changed_file_count(directory: str, target: str) -> int:
 
 def _git_lines(args: list[str], cwd: str, message: str, hint: str) -> list[str]:
     """Run a git step and split its stdout into non-empty lines."""
-    output = run_git_step(args, cwd, message, hint).strip()
+    output = run_git_step(args, cwd, message, hint, allow_interrupt=True).strip()
     return output.split("\n") if output else []
 
 

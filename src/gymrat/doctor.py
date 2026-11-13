@@ -495,7 +495,7 @@ class GitEnvironment:
 
 def detect_git_environment(cwd: str) -> GitEnvironment:
     """Probe git's availability and repository status from ``cwd``, without raising."""
-    git_available = try_git(["--version"], cwd) is None
+    git_available = try_git(["--version"], cwd, allow_interrupt=True) is None
     if not git_available:
         return GitEnvironment(git_available=False, inside_git_repo=False)
 

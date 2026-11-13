@@ -120,6 +120,7 @@ def resolve_target(target_input: str, repo_dir: str) -> Target:
         repo_dir,
         f"Cannot resolve target '{target_input}'",
         _RESOLVE_TARGET_HINT,
+        allow_interrupt=True,
     ).strip()
 
     return RefTarget(ref=target_input, resolved_sha=resolved_sha)

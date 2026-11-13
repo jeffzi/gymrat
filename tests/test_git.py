@@ -4,6 +4,7 @@ Real-subprocess tests are parallel-safe: the ``create_scratch_repo`` factory
 (see ``conftest.py``) gives every test its own temp git repository.
 """
 
+import signal
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,13 @@ from gymrat.git import (
     run_git_step,
     try_git,
 )
+from gymrat.signals import TERMINATION_SIGNALS
+from tests._signal_masking import needs_signal_masking
+
+
+def _signal_id(signal_number: int) -> str:
+    return signal.Signals(signal_number).name
+
 
 # ---------------------------------------------------------------------------
 # run_git
@@ -43,6 +51,35 @@ def test_run_git_when_extra_env_overrides_scrubbed_key_does_restore_it(
 
     assert run_git(["ls-files"], repo, env=custom_env) == "staged.txt\n"
     assert run_git(["diff", "--cached", "--name-only"], repo) == ""
+
+
+def _self_signalling_alias(signal_number: int) -> list[str]:
+    """Git args for a shell alias that sends ``signal_number`` to itself, then prints ``survived``."""
+    # Git starts the alias in a shell of its own, so the shell is a grandchild
+    # of the caller: what it sees is what anything the git child spawns sees.
+    return [
+        "-c",
+        f"alias.self-signal=!kill -{signal_number} $$; echo survived",
+        "self-signal",
+    ]
+
+
+@needs_signal_masking
+@pytest.mark.parametrize("signal_number", sorted(TERMINATION_SIGNALS), ids=_signal_id)
+def test_run_git_when_interrupt_allowed_does_let_a_termination_signal_end_what_the_child_spawns(
+    repo: str, signal_number: int
+):
+    with pytest.raises(subprocess.CalledProcessError):
+        run_git(_self_signalling_alias(signal_number), repo, allow_interrupt=True)
+
+
+@needs_signal_masking
+def test_run_git_when_interrupt_not_allowed_does_keep_termination_signals_blocked_in_what_the_child_spawns(
+    repo: str,
+):
+    result = run_git(_self_signalling_alias(signal.SIGTERM), repo)
+
+    assert result == "survived\n"
 
 
 # ---------------------------------------------------------------------------

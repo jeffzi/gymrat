@@ -88,7 +88,7 @@ def _rev_parse(flag: str, directory: str) -> str:
             declines to answer.
     """
     try:
-        return run_git(["rev-parse", flag], directory).strip()
+        return run_git(["rev-parse", flag], directory, allow_interrupt=True).strip()
     except (subprocess.SubprocessError, OSError) as error:
         # Bound first: ruff's DOC501 reads ``raise <call>()`` as raising the
         # callee's name and would demand it in ``Raises:``.

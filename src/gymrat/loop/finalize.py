@@ -125,7 +125,10 @@ def _validate_finalize(
         raise GymratError(message, hint=hint, reason="bad-branch")
 
     branch = opts.branch if opts.branch is not None else f"{session.branch}-final"
-    if try_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root) is None:
+    lookup_error = try_git(
+        ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], root, allow_interrupt=True
+    )
+    if lookup_error is None:
         message = f"Finalize refused: the branch '{branch}' already exists."
         hint = f"Name another with --branch <name>, or delete it with: git branch -D {branch}"
         raise GymratError(message, hint=hint, reason="branch-exists")
@@ -225,6 +228,7 @@ def _squash_onto_baseline(
         root,
         f"Cannot read the tree at {tree_source[:SHORT_SHA_LENGTH]}",
         f"Check that the commit is still there: git cat-file -t {tree_source}",
+        allow_interrupt=True,
     ).strip()
 
     return run_git_step(
@@ -232,6 +236,7 @@ def _squash_onto_baseline(
         root,
         f"Cannot build the squash commit from {tree_source[:SHORT_SHA_LENGTH]} onto {baseline_sha}",
         missing_commit_hint(baseline_sha),
+        allow_interrupt=True,
     ).strip()
 
 
