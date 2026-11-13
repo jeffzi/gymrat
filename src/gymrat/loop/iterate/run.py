@@ -350,7 +350,10 @@ def _judge(config: ResolvedConfig, judged: Judged) -> IterationJudgment:
 
 
 def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
-    """Refuse when a live budget cannot afford another iteration.
+    """Refuse when a supervised run's budget cannot afford another iteration.
+
+    The budget counts while the supervise lock is held over it, so once its
+    deadline has passed no time is left and any estimate refuses.
 
     Args:
         root: Repository root whose budget and supervise lock are read.
@@ -358,9 +361,9 @@ def _guard_budget(root: str, records: Sequence[SessionLogRecord]) -> None:
 
     Raises:
         BudgetExceededError: When the estimated iteration would outlast the
-            time left on the budget.
+            time left on the budget, none once its deadline has passed.
         GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+            a supervised run holds the budget is unknown.
     """
     headroom = _budget.iterate_headroom(root, lambda: records)
     if headroom is None:

@@ -236,12 +236,14 @@ _TIMED_RECORDS: list[SessionLogRecord] = [baseline_record(duration_ms=420_000)]
 
 
 @pytest.mark.parametrize(
-    ("budget_written", "records"),
+    ("supervise_lock", "budget_written", "records"),
     [
-        pytest.param(False, _TIMED_RECORDS, id="no-budget-live"),
-        pytest.param(True, None, id="records-unreadable"),
-        pytest.param(True, [baseline_record(), iteration_record()], id="no-record-timed"),
+        pytest.param(True, False, _TIMED_RECORDS, id="no-budget-file"),
+        pytest.param(False, True, _TIMED_RECORDS, id="supervise-lock-free"),
+        pytest.param(True, True, None, id="records-unreadable"),
+        pytest.param(True, True, [baseline_record(), iteration_record()], id="no-record-timed"),
     ],
+    indirect=["supervise_lock"],
 )
 @pytest.mark.usefixtures("supervise_lock")
 def test_iterate_headroom_when_an_input_is_missing_does_return_none(

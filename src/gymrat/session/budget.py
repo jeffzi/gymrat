@@ -221,10 +221,12 @@ def estimate_iterate_duration(
 def iterate_headroom(
     root: str, load_records: Callable[[], Sequence[SessionLogRecord] | None]
 ) -> tuple[float, DurationEstimate] | None:
-    """Read the live budget's time left beside the estimated cost of one ``iterate``.
+    """Read a supervised run's budget time left beside the estimated cost of one ``iterate``.
 
+    The budget counts while the supervise lock is held, whatever its deadline:
+    a run past its deadline has zero time left, so any estimate outlasts it.
     The clock is read once, before the budget, and the records are loaded
-    only once a live budget is found.
+    only once a held budget is found.
 
     Args:
         root: Repository root whose budget and supervise lock are read.
@@ -233,15 +235,15 @@ def iterate_headroom(
 
     Returns:
         The milliseconds left on the budget and the iterate estimate, or
-        ``None`` when no budget is live, the records cannot be read, or no
+        ``None`` when no budget is held, the records cannot be read, or no
         record carries a duration.
 
     Raises:
         GymratError: When the supervise lock file cannot be opened, so whether
-            the budget is live is unknown.
+            the budget is held is unknown.
     """
     current_ms = utils.now_ms()
-    budget = read_budget(root, now_ms=current_ms)
+    budget = read_held_budget(root)
     if budget is None:
         return None
     records = load_records()

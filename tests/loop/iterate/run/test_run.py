@@ -48,6 +48,7 @@ from tests.loop.iterate._fixtures import (
     assert_permutation,
     last_iteration_of,
     run_before_each_call,
+    stub_improved_samples,
     stub_runs,
     write_iterate_session,
 )
@@ -279,13 +280,39 @@ async def test_iterate_session_when_budget_exceeded_does_refuse_naming_the_estim
     assert [part for part in computed if part not in str(exc.value)] == []
 
 
+async def test_iterate_session_when_budget_fits_the_estimate_does_measure(
+    repo: str, monkeypatch: pytest.MonkeyPatch, samples_mock: CollectSamplesRecorder
+):
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    stub_improved_samples(samples_mock, repo)
+    install_budget(repo, monkeypatch, deadline_ms=870_000.0, frozen_now_ms=0)
+
+    result = await iterate_session(repo, resolved_config())
+
+    assert result.record.seq == 2
+
+
+async def test_iterate_session_when_deadline_passed_does_refuse_naming_zero_time_left_before_sampling(
+    repo: str, monkeypatch: pytest.MonkeyPatch, samples_mock: CollectSamplesRecorder
+):
+    write_iterate_session(repo, settled_history(duration_ms=870_000))
+    install_budget(repo, monkeypatch, deadline_ms=90_000.0, frozen_now_ms=100_000)
+
+    with pytest.raises(LoopStopError) as exc:
+        await iterate_session(repo, resolved_config())
+
+    assert "14m 30s" in str(exc.value)
+    assert re.search(r"(?<!\d)0s", str(exc.value))
+    assert samples_mock.call_count == 0
+
+
 # ---------------------------------------------------------------------------
 # adapter warnings: a bench line the adapter cannot read
 # ---------------------------------------------------------------------------
 
 
 def _warnings_about(warnings: list[str], metric: str) -> list[str]:
-    return [warning for warning in warnings if warning.startswith(f"{metric}: ")]
+    return [warning for warning in warnings if warning.startswith(f"warning: {metric}: ")]
 
 
 async def test_iterate_session_when_time_readings_look_quantized_does_warn_the_sink_once_across_the_confirmation(
