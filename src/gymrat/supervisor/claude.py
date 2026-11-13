@@ -21,7 +21,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from math import ceil, isfinite
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from gymrat import utils
 from gymrat.agent_env import TRACEPARENT_ENV
@@ -105,25 +105,6 @@ def _stringify_result(content: object) -> str:
         return json.dumps(content)
     except (TypeError, ValueError):
         return str(content)
-
-
-def detect_origin(message: "ResultMessage") -> Literal["agent", "injected"]:
-    """Classify a result message's origin for the turn-end event.
-
-    A human-initiated turn is still the agent's response.
-
-    Args:
-        message: The result message to classify.
-
-    Returns:
-        ``"agent"`` when the origin is absent, lacks a ``kind``, or has
-        ``kind == "human"``; ``"injected"`` for any other ``kind`` (e.g.
-        ``"task-notification"``).
-    """
-    origin = message.origin
-    if origin is None or origin.get("kind", "human") == "human":
-        return "agent"
-    return "injected"
 
 
 class MessageMapper:
@@ -418,14 +399,6 @@ async def _disconnect_quietly(client: ClaudeClient, warn: utils.WarnSink) -> Non
         warn(f"warning: claude client disconnect failed: {err!s}")
 
 
-@dataclass(frozen=True, slots=True)
-class _OptionFactories:
-    """Per-session builders whose results are merged into the SDK options."""
-
-    tools: ToolsFactory | None
-    hooks: HooksFactory | None
-
-
 # ---------------------------------------------------------------------------
 # Session lifecycle
 # ---------------------------------------------------------------------------
@@ -452,7 +425,8 @@ class _ClaudeSession:
         self._prompt = prompt
         self._observer = observer
         self._abort = abort
-        self._factories = driver.factories
+        self._tools = driver.tools
+        self._hooks = driver.hooks
         self._warn = driver.warn
         self._client: ClaudeClient | None = None
         self._abort_task: asyncio.Task[None] | None = None
@@ -552,11 +526,11 @@ class _ClaudeSession:
 
     async def _stream(self, factory: ClientFactory) -> SessionOutcome:
         options = _build_options(self._prompt)
-        tools = self._factories.tools
+        tools = self._tools
         if tools is not None:
             env = _traceparent_env(self._prompt.traceparent)
             options["mcp_servers"] = {MCP_SERVER: tools(self._abort, env)}
-        hooks = self._factories.hooks
+        hooks = self._hooks
         if hooks is not None:
             options["hooks"] = hooks()
         client = factory(options)
@@ -655,7 +629,12 @@ class _ClaudeSession:
                 at=utils.now_ns(),
                 text=self._mapper.last_top_level_text,
                 cost_usd=self._cost_usd,
-                origin=detect_origin(message),
+                # A human-initiated turn is still the agent's response.
+                origin=(
+                    "agent"
+                    if message.origin is None or message.origin.get("kind", "human") == "human"
+                    else "injected"
+                ),
                 budget_exhausted=budget_exhausted,
             )
         )
@@ -683,7 +662,8 @@ class _ClaudeSession:
 @dataclass(frozen=True, slots=True)
 class _ClaudeDriver:
     client_factory: ClientFactory | None
-    factories: _OptionFactories
+    tools: ToolsFactory | None
+    hooks: HooksFactory | None
     warn: utils.WarnSink
 
     def start(
@@ -721,4 +701,4 @@ def create_claude_driver(
     Returns:
         A driver whose ``start`` launches one SDK session per call.
     """
-    return _ClaudeDriver(client_factory, _OptionFactories(tools=tools, hooks=hooks), warn)
+    return _ClaudeDriver(client_factory, tools, hooks, warn)

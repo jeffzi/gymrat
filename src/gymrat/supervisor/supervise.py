@@ -200,7 +200,8 @@ class EndConditionScan:
         state = fold_session(records)
         self._size = size
         self._cursor = len(records)
-        self._arm_stop_check(state)
+        # A stop condition the log already satisfies is not a new end.
+        self._check_stop = stop_reason(self._config, state) is None
         return records
 
     def scan_if_grown(self) -> None:
@@ -240,10 +241,6 @@ class EndConditionScan:
         )
         # Every record has now been scanned for hook failures, whatever was found.
         self._cursor = len(records)
-
-    def _arm_stop_check(self, state: SessionState) -> None:
-        """Arm stop-condition detection unless ``state`` already satisfies one."""
-        self._check_stop = stop_reason(self._config, state) is None
 
 
 def _warn_failure(warn: WarnSink, context: str, error: BaseException) -> None:

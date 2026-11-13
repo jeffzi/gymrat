@@ -90,6 +90,7 @@ async def test_start_when_result_ends_a_turn_does_carry_that_turns_top_level_tex
     [
         pytest.param(None, "agent", id="origin-absent"),
         pytest.param({"kind": "human"}, "agent", id="origin-human"),
+        pytest.param({}, "agent", id="origin-without-kind"),
         pytest.param({"kind": "task-notification"}, "injected", id="origin-task-notification"),
     ],
 )
