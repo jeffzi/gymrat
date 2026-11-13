@@ -40,6 +40,39 @@ def test_format_value_when_finite_does_scale_to_its_unit_tier(
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
+        pytest.param(1.4, "1.4ns", id="drops-trailing-zeros"),
+        pytest.param(12.34, "12.3ns", id="rounds-to-three-figures"),
+        pytest.param(2.0, "2ns", id="whole-value"),
+        pytest.param(99.94, "99.9ns", id="just-below-the-integer-tier"),
+    ],
+)
+def test_format_value_when_ns_below_100_does_keep_three_significant_figures(
+    value: float, expected: str
+):
+    assert format_value(value, "ns") == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(99.96, "100ns", id="rounds-onto-the-integer-tier"),
+        pytest.param(123.6, "124ns", id="above-100"),
+    ],
+)
+def test_format_value_when_ns_at_least_100_does_round_to_whole_nanoseconds(
+    value: float, expected: str
+):
+    assert format_value(value, "ns") == expected
+
+
+@pytest.mark.parametrize("value", [pytest.param(0.0, id="zero"), pytest.param(-0.0, id="neg-zero")])
+def test_format_value_when_ns_zero_does_render_an_unsigned_zero(value: float):
+    assert format_value(value, "ns") == "0ns"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
         pytest.param(1199.6, "1200", id="rounds-up"),
         pytest.param(99.96, "100", id="rounds-onto-the-integer-tier"),
         pytest.param(-1199.6, "-1200", id="negative"),

@@ -50,7 +50,7 @@ _TIER_MAP: dict[MetricUnit, tuple[_Tier, ...]] = {"ns": _NS_TIERS, "bytes": _BYT
 
 _RELATIVE_SPREAD_CAP_PCT = 100
 
-_UNITLESS_INTEGER_FLOOR = 100
+_INTEGER_FLOOR = 100
 
 
 def _non_finite_token(value: float) -> str:
@@ -58,6 +58,27 @@ def _non_finite_token(value: float) -> str:
     if math.isnan(value):
         return "NaN"
     return "Infinity" if value > 0 else "-Infinity"
+
+
+def _three_figures_below_floor(value: float) -> str | None:
+    """Render ``value`` in three significant figures while they stay below 100.
+
+    The cut-over is decided on the figure *as rounded*, since three significant
+    figures of a magnitude past 999 print in exponent form (``"1.23e+03"``) and
+    ``99.96`` rounds onto ``100``.
+
+    Args:
+        value: The finite value to render.
+
+    Returns:
+        The figure with trailing zeros dropped (``"12.3"``, ``"0.0042"``), in
+        exponent form below ``1e-4`` (``"4.2e-05"``) and ``"0"`` for either
+        zero; or ``None`` when it rounds to 100 or more.
+    """
+    figure = format(value, ".3g")
+    if abs(float(figure)) >= _INTEGER_FLOOR:
+        return None
+    return "0" if value == 0 else figure
 
 
 def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
@@ -75,7 +96,7 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
         tiers: The scale tiers, smallest first.
 
     Returns:
-        The scaled, suffixed figure such as ``"1.7µs"`` or ``"512KB"``.
+        The scaled, suffixed figure such as ``"1.7µs"`` or ``"512.0KB"``.
     """
     magnitude = abs(value)
     for tier in tiers:
@@ -88,30 +109,33 @@ def _scale_tier(value: float, tiers: tuple[_Tier, ...]) -> str:
 def format_value(value: float, unit: MetricUnit | None = None) -> str:
     """Scale a measurement into its unit's tier, or round it when the metric has no unit.
 
-    A unitless value keeps three significant figures so that a sub-1 median does
-    not collapse to ``0``. The integer cut-over is decided on the figure *as
-    rounded*, since three significant figures of a magnitude past 999 print in
-    exponent form (``"1.23e+03"``) and ``99.96`` rounds onto ``100``.
+    A unitless value, or a time under 100 ns, keeps three significant figures so
+    that a sub-1 median does not collapse to ``0`` and a few-nanosecond time
+    keeps its fraction. Whether a value is under 100 is decided on the figure
+    *as rounded*, so ``99.96`` joins the integer tier as ``100``.
 
     Args:
         value: The measurement to format.
         unit: The metric's unit, or ``None`` for a unitless figure.
 
     Returns:
-        The scaled, suffixed figure (``"1.7µs"``); for a unitless value, the
-        rounded integer at 100 or more (``"1200"``), otherwise three significant
-        figures with trailing zeros dropped (``"12.3"``, ``"0.0042"``), in
-        exponent form below ``1e-4`` (``"4.2e-05"``) and ``"0"`` for either
-        zero; or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"`` for a non-finite
-        reading.
+        The scaled, suffixed figure (``"1.7µs"``, ``"512.0KB"``); a time under
+        100 ns as three significant figures with trailing zeros dropped
+        (``"1.4ns"``, ``"2ns"``), in exponent form below ``1e-4`` ns
+        (``"4.2e-05ns"``) and ``"0ns"`` for either zero; for a unitless
+        value, the rounded integer at 100 or more (``"1200"``), otherwise three
+        significant figures with trailing zeros dropped (``"12.3"``,
+        ``"0.0042"``), in exponent form below ``1e-4`` (``"4.2e-05"``) and
+        ``"0"`` for either zero; or ``"Infinity"`` / ``"-Infinity"`` / ``"NaN"``
+        for a non-finite reading.
     """
     if not math.isfinite(value):
         return _non_finite_token(value)
+    figure = _three_figures_below_floor(value)
     if unit is None:
-        figure = format(value, ".3g")
-        if abs(float(figure)) >= _UNITLESS_INTEGER_FLOOR:
-            return str(round(value))
-        return "0" if value == 0 else figure
+        return str(round(value)) if figure is None else figure
+    if unit == "ns" and figure is not None:
+        return f"{figure}ns"
     return _scale_tier(value, _TIER_MAP[unit])
 
 
